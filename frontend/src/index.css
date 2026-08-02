@@ -1,0 +1,148 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /*
+   * Dark-first financial palette: near-black navy canvas, slightly lighter
+   * panels, subtle neutral borders, muted green/red for direction and a single
+   * electric violet accent. Light mode mirrors the same hierarchy.
+   */
+  :root,
+  .dark {
+    --background: 222 47% 5%;
+    --foreground: 213 31% 94%;
+
+    --panel: 222 40% 8%;
+    --panel-raised: 222 33% 11%;
+
+    --card: 222 40% 8%;
+    --card-foreground: 213 31% 94%;
+
+    --popover: 222 42% 9%;
+    --popover-foreground: 213 31% 94%;
+
+    --primary: 245 75% 63%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 222 30% 14%;
+    --secondary-foreground: 213 25% 88%;
+
+    --muted: 222 28% 13%;
+    --muted-foreground: 215 16% 60%;
+
+    --accent: 245 70% 60%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 358 62% 52%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 22% 17%;
+    --input: 220 22% 17%;
+    --ring: 245 75% 63%;
+
+    --bull: 152 48% 48%;
+    --bear: 358 62% 57%;
+
+    --radius: 0.5rem;
+  }
+
+  .light {
+    --background: 210 30% 97%;
+    --foreground: 222 40% 12%;
+
+    --panel: 0 0% 100%;
+    --panel-raised: 210 30% 98%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 40% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 40% 12%;
+
+    --primary: 245 68% 55%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 214 25% 92%;
+    --secondary-foreground: 222 35% 20%;
+
+    --muted: 214 25% 93%;
+    --muted-foreground: 215 16% 42%;
+
+    --accent: 245 68% 55%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 358 60% 48%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 20% 85%;
+    --input: 214 20% 85%;
+    --ring: 245 68% 55%;
+
+    --bull: 152 52% 36%;
+    --bear: 358 60% 48%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'tnum';
+    overscroll-behavior: none;
+  }
+
+  /* Compact, dense scrollbars suited to a data-heavy workspace. */
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-border;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/50;
+  }
+}
+
+@layer components {
+  .numeric {
+    @apply font-mono tabular-nums;
+  }
+
+  .panel {
+    @apply border border-border bg-[hsl(var(--panel))];
+  }
+
+  .label-caps {
+    @apply text-2xs font-medium uppercase tracking-wider text-muted-foreground;
+  }
+
+  /* Drag-to-select overlay on the Lightweight Charts fallback. */
+  .selection-overlay {
+    @apply pointer-events-none absolute inset-0 z-10 overflow-hidden;
+  }
+
+  .selection-band {
+    @apply pointer-events-auto absolute bottom-0 top-0 cursor-move
+      border-x border-primary/70 bg-primary/15;
+  }
+
+  .selection-handle {
+    @apply pointer-events-auto absolute bottom-0 top-0 w-2 cursor-ew-resize bg-primary/40
+      transition-colors hover:bg-primary/70;
+  }
+}

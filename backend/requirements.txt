@@ -1,0 +1,18 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+pydantic>=2.9.0
+pydantic-settings>=2.5.2
+SQLAlchemy>=2.0.35
+pandas>=2.2.0
+numpy>=1.26.0
+httpx>=0.27.2
+python-dateutil>=2.9.0
+tzdata>=2024.1
+
+# Optional provider dependency. The application degrades to demo data if it is
+# missing, so installation failures here are not fatal.
+yfinance>=0.2.44
+
+# Testing
+pytest>=8.3.3
+pytest-asyncio>=0.24.0

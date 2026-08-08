@@ -24,7 +24,10 @@ class IntervalSpec:
     #: Interval we aggregate *from* when a provider cannot serve this one
     #: natively.  ``None`` means the interval is always requested directly.
     aggregate_from: str | None
-    #: TradingView resolution string used by the Advanced Charts datafeed.
+    #: Equivalent TradingView resolution string.  The frontend uses
+    #: Lightweight Charts and speaks the canonical keys, so this is only kept
+    #: so that clients sending resolutions such as ``60`` or ``1D`` are still
+    #: understood.
     tradingview_resolution: str
 
 
@@ -39,7 +42,7 @@ SUPPORTED_INTERVALS: dict[str, IntervalSpec] = {
 
 INTERVAL_ORDER: list[str] = ["5m", "15m", "1h", "4h", "6h", "1d"]
 
-#: Resolution strings the TradingView datafeed may send us mapped onto our
+#: Alternative resolution spellings a client may send, mapped onto our
 #: canonical interval keys.
 TRADINGVIEW_RESOLUTION_MAP: dict[str, str] = {
     "5": "5m",

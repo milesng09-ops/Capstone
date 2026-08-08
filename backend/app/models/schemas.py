@@ -76,6 +76,76 @@ class CacheSymbolStat(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# ICT analysis
+# --------------------------------------------------------------------------
+class SwingPointOut(BaseModel):
+    symbol: str
+    kind: Literal["high", "low"]
+    time: int
+    price: float
+    #: Bar at which the pivot became knowable. Trading rules must use this.
+    confirmed_time: int
+    strength: int
+
+
+class FairValueGapOut(BaseModel):
+    symbol: str
+    direction: Literal["bullish", "bearish"]
+    time: int
+    start_time: int
+    end_time: int
+    bottom: float
+    top: float
+    midpoint: float
+    size: float
+    size_percent: float
+    mitigated: bool
+    mitigated_time: int | None = None
+    filled: bool
+    filled_time: int | None = None
+    #: 0.0 untouched .. 1.0 fully filled.
+    penetration: float
+
+
+class SmtDivergenceOut(BaseModel):
+    kind: Literal["high", "low"]
+    bias: Literal["bearish", "bullish"]
+    primary_symbol: str
+    reference_symbol: str
+    start_time: int
+    end_time: int
+    primary_start_price: float
+    primary_end_price: float
+    reference_start_price: float
+    reference_end_price: float
+    leading_symbol: str
+    lagging_symbol: str
+    validity: Literal["swing_pair", "fvg_edge", "unconfirmed"]
+    valid: bool
+    confirmed_time: int
+    inside_fair_value_gap: bool
+    fair_value_gap_time: int | None = None
+    strength: float
+    separation_bars: int
+
+
+class IctAnalysisResponse(BaseModel):
+    symbol: str
+    interval: str
+    from_time: int
+    to_time: int
+    provider: str
+    bars_analysed: int
+    swing_strength: int
+    reference_symbols: list[str] = Field(default_factory=list)
+    swing_points: list[SwingPointOut] = Field(default_factory=list)
+    fair_value_gaps: list[FairValueGapOut] = Field(default_factory=list)
+    smt_divergences: list[SmtDivergenceOut] = Field(default_factory=list)
+    #: Non-fatal notes: truncation, symbols that could not be compared, etc.
+    warnings: list[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
 # Backtests
 # --------------------------------------------------------------------------
 class SelectionSpec(BaseModel):

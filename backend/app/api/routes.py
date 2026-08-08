@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app import __version__
-from app.api.deps import backtest_service, candle_service, session_id
+from app.api.deps import backtest_service, candle_service, ict_service, session_id
 from app.config import get_settings
 from app.database.repository import (
     cache_statistics,
@@ -33,6 +33,7 @@ from app.models.schemas import (
     CacheSymbolStat,
     FallbackEvent,
     HealthResponse,
+    IctAnalysisResponse,
     MessageResponse,
     ProviderStatusResponse,
     SymbolsResponse,
@@ -46,6 +47,7 @@ from app.services.backtest_service import (
     BacktestValidationError,
 )
 from app.services.candle_service import CandleService, RequestTooLargeError
+from app.services.ict_service import IctService
 from app.utils.intervals import (
     INTERVAL_ORDER,
     UnsupportedIntervalError,
@@ -191,6 +193,72 @@ async def bars(
         ) from exc
 
     return BarsResponse(**result.model_dump())
+
+
+# --------------------------------------------------------------------------
+# ICT analysis
+# --------------------------------------------------------------------------
+@api_router.get("/ict", response_model=IctAnalysisResponse, tags=["analysis"])
+async def ict_analysis(
+    service: Annotated[IctService, Depends(ict_service)],
+    symbol: str = Query(..., description="Chart being analysed: ES, NQ or YM"),
+    interval: str = Query("1h", description="One of 5m, 15m, 1h, 4h, 6h, 1d"),
+    from_: str = Query(..., alias="from", description="Start time (Unix ms, s, or ISO-8601)"),
+    to: str = Query(..., description="End time (Unix ms, s, or ISO-8601)"),
+    reference: str | None = Query(
+        None,
+        description=(
+            "Comma-separated correlated symbols to check for SMT divergence, "
+            "for example 'ES,YM'. Omit to skip divergence detection."
+        ),
+    ),
+    swing_strength: int = Query(
+        2, ge=1, le=20, description="Candles either side that must not exceed a pivot"
+    ),
+    min_gap_percent: float = Query(
+        0.0, ge=0.0, le=10.0, description="Drop fair value gaps smaller than this % of price"
+    ),
+    include_filled_gaps: bool = Query(True, description="Keep gaps price has fully traded through"),
+    include_invalid_smt: bool = Query(
+        False, description="Keep divergences whose anchors are neither swings nor gap edges"
+    ),
+) -> IctAnalysisResponse:
+    try:
+        resolved_interval = normalise_resolution(interval)
+        start = parse_time_param(from_)
+        end = parse_time_param(to)
+    except (UnsupportedIntervalError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    if end <= start:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "'to' must be greater than 'from'")
+
+    references = [part.strip() for part in (reference or "").split(",") if part.strip()]
+
+    try:
+        return await service.analyse(
+            symbol,
+            resolved_interval,
+            start,
+            end,
+            reference_symbols=references,
+            swing_strength=swing_strength,
+            min_gap_percent=min_gap_percent,
+            include_filled_gaps=include_filled_gaps,
+            include_invalid_smt=include_invalid_smt,
+        )
+    except UnknownSymbolError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except RequestTooLargeError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ICT analysis failed for %s %s", symbol, interval)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The analysis could not be completed. Please try again.",
+        ) from exc
 
 
 # --------------------------------------------------------------------------

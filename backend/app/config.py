@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     min_pattern_length: int = 5
     max_pattern_length: int = 400
 
+    # ---- ICT analysis ----------------------------------------------------
+    #: Detectors happily produce thousands of objects over a long lookback.
+    #: These caps keep the JSON response and the chart overlay manageable by
+    #: returning the most recent items.
+    default_swing_strength: int = 2
+    max_swing_points: int = 600
+    max_fair_value_gaps: int = 400
+    max_smt_divergences: int = 200
+
     # ---- Server ----------------------------------------------------------
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     environment: Literal["development", "production"] = "development"

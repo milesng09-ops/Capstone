@@ -6,6 +6,7 @@ from fastapi import Header
 
 from app.services.backtest_service import BacktestService, get_backtest_service
 from app.services.candle_service import CandleService, get_candle_service
+from app.services.ict_service import IctService, get_ict_service
 
 
 def candle_service() -> CandleService:
@@ -14,6 +15,10 @@ def candle_service() -> CandleService:
 
 def backtest_service() -> BacktestService:
     return get_backtest_service()
+
+
+def ict_service() -> IctService:
+    return get_ict_service()
 
 
 def session_id(x_session_id: str | None = Header(default=None)) -> str:

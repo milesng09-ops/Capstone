@@ -1,8 +1,33 @@
 /** Compact form controls for the settings panels. */
 
-import { useId, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 
 import { cn } from '@/utils/cn'
+
+/**
+ * Parse a decimal the user typed, accepting either separator.
+ *
+ * `<input type="number">` renders and parses according to the *browser's*
+ * locale, so on a machine set to a comma-decimal locale these fields showed
+ * `0,02` while every readout, price axis and percentage on the same screen
+ * showed a dot -- two conventions in one panel. A text input with explicit
+ * parsing pins the display to a dot, matching the rest of the UI, while still
+ * accepting a comma from anyone who types one out of habit.
+ *
+ * Returns null for anything not yet a number, so a half-typed `1.` or a lone
+ * `-` never reaches a request body.
+ */
+function parseDecimal(raw: string): number | null {
+  const trimmed = raw.trim().replace(',', '.')
+  if (trimmed === '' || !/^-?\d*\.?\d*$/.test(trimmed)) return null
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** Decimal places implied by a step, so 0.02 + 0.01 does not become 0.030000000000000002. */
+function decimalsOf(step: number): number {
+  return (String(step).split('.')[1] ?? '').length
+}
 
 export function Field({
   label,
@@ -51,23 +76,52 @@ export function NumberField({
   suffix?: string
   disabled?: boolean
 }) {
+  // While the field is being edited the raw text is shown, so a partial entry
+  // like "0." survives the next keystroke instead of being normalised away.
+  const [draft, setDraft] = useState<string | null>(null)
+
+  const display = draft ?? (Number.isFinite(value) ? String(value) : '')
+  const parsed = draft == null ? value : parseDecimal(draft)
+  const outOfRange =
+    parsed != null && ((min != null && parsed < min) || (max != null && parsed > max))
+
+  const nudge = (direction: 1 | -1) => {
+    const base = parsed ?? value
+    if (!Number.isFinite(base)) return
+    const next = Number((base + direction * step).toFixed(decimalsOf(step)))
+    setDraft(null)
+    onChange(Math.min(max ?? Infinity, Math.max(min ?? -Infinity, next)))
+  }
+
   return (
     <Field label={label} hint={hint}>
       <div className="relative">
         <input
-          type="number"
-          className={cn(CONTROL_CLASS, 'numeric', suffix && 'pr-7')}
-          value={Number.isFinite(value) ? value : ''}
-          min={min}
-          max={max}
-          step={step}
+          type="text"
+          inputMode="decimal"
+          className={cn(
+            CONTROL_CLASS,
+            'numeric',
+            suffix && 'pr-7',
+            outOfRange && 'border-destructive focus:border-destructive',
+          )}
+          value={display}
           disabled={disabled}
+          aria-invalid={outOfRange || undefined}
           onChange={(event) => {
-            const next = event.target.valueAsNumber
-            // An empty input reports NaN; keep the last good value rather than
-            // pushing NaN into a request body.
-            if (Number.isNaN(next)) return
-            onChange(next)
+            const raw = event.target.value
+            setDraft(raw)
+            // Only publish once the text is a complete number; keep the last
+            // good value otherwise rather than pushing NaN into a request.
+            const next = parseDecimal(raw)
+            if (next != null) onChange(next)
+          }}
+          onBlur={() => setDraft(null)}
+          onKeyDown={(event) => {
+            // Arrow stepping is the part of type="number" worth keeping.
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+            event.preventDefault()
+            nudge(event.key === 'ArrowUp' ? 1 : -1)
           }}
         />
         {suffix && (

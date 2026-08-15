@@ -18,15 +18,23 @@
  * happens in the side list rather than by clicking the canvas, which keeps the
  * two input models from fighting over the same clicks.
  *
- * **Cross-interval survival.** Stored times are snapped to the nearest current
- * bar at render time, so a level drawn on the 1-hour chart still lands in the
+ * **Cross-interval survival.** Times that fall on the chart are snapped to the
+ * nearest current bar, so a level drawn on the 1-hour chart still lands in the
  * right place after switching to 4-hour, where its exact timestamp may not be
  * a bar at all.
+ *
+ * **Drawing off the data.** Snapping applies only *within* the bar range.
+ * Beyond either edge there is no bar to snap to, so the raw timestamp is kept
+ * and converted through the chart's logical scale, which stays defined in
+ * empty space. That is what lets a trend line be projected forward past the
+ * last candle -- the ordinary way a level is drawn ahead of price. Selections
+ * are the exception: a backtest range has to cover real bars, so it is still
+ * clamped to them.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { nearestBarTime } from '@/lib/chart'
+import { nearestBarTime, snapWithinBars } from '@/lib/chart'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import type { Candle, SelectionRange } from '@/types/market'
 import type { Drawing, DrawingDraft, DrawingPoint, ToolMode } from '@/types/drawing'
@@ -91,13 +99,25 @@ export function ChartOverlay({
 
   const interactive = tool !== 'cursor' && (tool !== 'select' || allowSelection)
 
-  /** Market time -> x, tolerating times that are not bars on this interval. */
+  /**
+   * Market time -> x for objects that always sit on a bar (ICT detections,
+   * selections). Snapping keeps them aligned across interval changes.
+   */
   const xOf = useCallback(
     (ms: number): number | null => {
       const snapped = nearestBarTime(candles, ms)
       return handle.timeToX(snapped ?? ms)
     },
     [candles, handle],
+  )
+
+  /**
+   * Market time -> x for user drawings, which may legitimately sit off the
+   * ends of the data. Falls back to the logical scale out there.
+   */
+  const xOfDrawing = useCallback(
+    (ms: number): number | null => handle.timeToXFree(ms),
+    [handle],
   )
 
   // ---- rendering -------------------------------------------------------
@@ -150,7 +170,7 @@ export function ChartOverlay({
     }
 
     for (const drawing of drawings) {
-      paintDrawing(ctx, drawing, xOf, yOf, width, drawing.id === selectedDrawingId)
+      paintDrawing(ctx, drawing, xOfDrawing, yOf, width, drawing.id === selectedDrawingId)
     }
 
     const gesture = pendingRef.current
@@ -169,6 +189,7 @@ export function ChartOverlay({
     selection,
     tool,
     xOf,
+    xOfDrawing,
   ])
 
   // Redraw on pan, zoom and resize -- the chart notifies us imperatively so
@@ -185,11 +206,15 @@ export function ChartOverlay({
       const x = event.clientX - rect.left
       const y = event.clientY - rect.top
 
-      const rawTime = handle.xToTime(x)
+      // `xToTime` is null everywhere past the last bar, which used to abort
+      // the gesture before it started. The free conversion stays defined.
+      const rawTime = handle.xToTimeFree(x)
       const rawPrice = handle.yToPrice(y)
       if (rawTime == null || rawPrice == null) return null
 
-      let time = nearestBarTime(candles, rawTime) ?? rawTime
+      // Snap only where there is a bar to snap to; keep the free timestamp
+      // outside the data so the point stays under the cursor.
+      let time = snapWithinBars(candles, rawTime) ?? rawTime
       let price = rawPrice
 
       // Snapping to a swing point is what makes "connect these two highs"
@@ -267,9 +292,19 @@ export function ChartOverlay({
     }
 
     if (tool === 'select') {
-      const start = Math.min(gesture.start.time, gesture.current.time)
-      const end = Math.max(gesture.start.time, gesture.current.time)
-      if (start !== end) {
+      // A backtest window has to be made of real bars, so a drag that runs off
+      // the end of the data is pulled back to the edge candle rather than
+      // selecting empty space. Drawings keep their free coordinates; this does
+      // not.
+      const start = nearestBarTime(
+        candles,
+        Math.min(gesture.start.time, gesture.current.time),
+      )
+      const end = nearestBarTime(
+        candles,
+        Math.max(gesture.start.time, gesture.current.time),
+      )
+      if (start != null && end != null && start !== end) {
         onSelectionChange({
           symbol,
           start_time: start,

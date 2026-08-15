@@ -15,6 +15,7 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
+  type Logical,
   type LogicalRange,
   type UTCTimestamp,
 } from 'lightweight-charts'
@@ -24,7 +25,9 @@ import {
   candlesToSeries,
   candlesToVolume,
   fromChartTime,
+  logicalFromTime,
   readChartPalette,
+  timeFromLogical,
   toChartTime,
   withAlpha,
   type ChartPalette,
@@ -42,6 +45,13 @@ export interface ChartHandle {
   priceToY: (price: number) => number | null
   xToTime: (x: number) => number | null
   yToPrice: (y: number) => number | null
+  /**
+   * Like `timeToX`/`xToTime`, but defined across the whole pane rather than
+   * only where bars exist. Drawings use these so they can be placed in the
+   * empty space beyond the first and last candle.
+   */
+  timeToXFree: (ms: number) => number | null
+  xToTimeFree: (x: number) => number | null
   /** Called whenever the visible range or the element size changes. */
   subscribe: (listener: () => void) => () => void
   palette: () => ChartPalette
@@ -215,6 +225,30 @@ export function useChartInstance({ id, candles, precision, onHoverBar }: Options
       if (!chart) return null
       const time = chart.timeScale().coordinateToTime(x)
       return typeof time === 'number' ? fromChartTime(time) : null
+    },
+    timeToXFree: (ms) => {
+      const chart = chartRef.current
+      if (!chart) return null
+      const timeScale = chart.timeScale()
+
+      // A real bar converts directly and exactly; only fall back to the
+      // logical scale for times the library has no bar for.
+      const exact = timeScale.timeToCoordinate(toChartTime(ms) as UTCTimestamp)
+      if (exact != null) return Number(exact)
+
+      const logical = logicalFromTime(candlesRef.current, ms)
+      if (logical == null) return null
+      const coordinate = timeScale.logicalToCoordinate(logical as Logical)
+      return coordinate == null ? null : Number(coordinate)
+    },
+    xToTimeFree: (x) => {
+      const chart = chartRef.current
+      if (!chart) return null
+      // `coordinateToTime` returns null past the edges of the data, which is
+      // what blocked drawing there. Logical coordinates stay defined.
+      const logical = chart.timeScale().coordinateToLogical(x)
+      if (logical == null) return null
+      return timeFromLogical(candlesRef.current, Number(logical))
     },
     yToPrice: (y) => {
       const series = seriesRef.current

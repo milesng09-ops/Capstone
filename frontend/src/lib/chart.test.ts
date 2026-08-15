@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { indexOfBar, nearestBarTime, readChartPalette, withAlpha } from '@/lib/chart'
+import {
+  indexOfBar,
+  logicalFromTime,
+  medianBarSpacingMs,
+  nearestBarTime,
+  readChartPalette,
+  snapWithinBars,
+  timeFromLogical,
+  withAlpha,
+} from '@/lib/chart'
 import type { Candle } from '@/types/market'
 
 function candle(time: number): Candle {
@@ -71,6 +80,74 @@ describe('nearestBarTime', () => {
 
   it('returns null with no candles', () => {
     expect(nearestBarTime([], 1000)).toBeNull()
+  })
+})
+
+describe('snapWithinBars', () => {
+  const candles = [1000, 2000, 3000, 4000].map(candle)
+
+  it('snaps to the closest bar inside the range', () => {
+    expect(snapWithinBars(candles, 2400)).toBe(2000)
+    expect(snapWithinBars(candles, 2600)).toBe(3000)
+  })
+
+  it('refuses to clamp outside the range', () => {
+    // This is the whole point: nearestBarTime would collapse both of these
+    // onto an edge candle, which is what stopped drawings living in the
+    // empty space beyond the data.
+    expect(snapWithinBars(candles, 0)).toBeNull()
+    expect(snapWithinBars(candles, 99_999)).toBeNull()
+  })
+
+  it('returns null with no candles', () => {
+    expect(snapWithinBars([], 1000)).toBeNull()
+  })
+})
+
+describe('medianBarSpacingMs', () => {
+  it('ignores session gaps rather than averaging them in', () => {
+    // A weekend-sized hole between two bars must not stretch the estimate.
+    const candles = [0, 1000, 2000, 500_000, 501_000, 502_000].map(candle)
+    expect(medianBarSpacingMs(candles)).toBe(1000)
+  })
+
+  it('returns null when there is nothing to measure', () => {
+    expect(medianBarSpacingMs([])).toBeNull()
+    expect(medianBarSpacingMs([candle(1000)])).toBeNull()
+  })
+})
+
+describe('logicalFromTime / timeFromLogical', () => {
+  const candles = [1000, 2000, 3000, 4000].map(candle)
+
+  it('maps bars onto their index', () => {
+    expect(logicalFromTime(candles, 1000)).toBe(0)
+    expect(logicalFromTime(candles, 4000)).toBe(3)
+  })
+
+  it('interpolates between two bars', () => {
+    expect(logicalFromTime(candles, 2500)).toBeCloseTo(1.5)
+  })
+
+  it('extrapolates past the last bar so drawings can go there', () => {
+    expect(logicalFromTime(candles, 6000)).toBeCloseTo(5)
+  })
+
+  it('extrapolates before the first bar', () => {
+    expect(logicalFromTime(candles, -1000)).toBeCloseTo(-2)
+  })
+
+  it('round-trips through logical coordinates on both sides of the data', () => {
+    for (const ms of [-5000, 1000, 2500, 4000, 12_345]) {
+      const logical = logicalFromTime(candles, ms)
+      expect(logical).not.toBeNull()
+      expect(timeFromLogical(candles, logical as number)).toBe(ms)
+    }
+  })
+
+  it('returns null with no candles', () => {
+    expect(logicalFromTime([], 1000)).toBeNull()
+    expect(timeFromLogical([], 0)).toBeNull()
   })
 })
 

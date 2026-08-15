@@ -238,6 +238,105 @@ export function nearestBarTime(candles: Candle[], ms: number): number | null {
     : candles[high].time
 }
 
+/**
+ * Nearest bar time, but only *inside* the data range.
+ *
+ * `nearestBarTime` clamps: anything past the last candle comes back as the
+ * last candle. That is right for a selection, which has to cover real bars,
+ * and wrong for a drawing, where it silently collapses a level placed in the
+ * empty space to the right of the chart onto the final bar. Returning `null`
+ * outside the range lets the caller keep the free timestamp instead.
+ */
+export function snapWithinBars(candles: Candle[], ms: number): number | null {
+  if (candles.length === 0) return null
+  if (ms < candles[0].time || ms > candles[candles.length - 1].time) return null
+  return nearestBarTime(candles, ms)
+}
+
+/**
+ * Typical spacing between consecutive bars, in milliseconds.
+ *
+ * The median rather than the mean: weekends and session breaks are large
+ * outliers, and averaging them in would stretch the estimate so that drawings
+ * extrapolated past the last candle drift away from the cursor.
+ */
+export function medianBarSpacingMs(candles: Candle[]): number | null {
+  if (candles.length < 2) return null
+
+  const deltas: number[] = []
+  for (let index = 1; index < candles.length; index += 1) {
+    const delta = candles[index].time - candles[index - 1].time
+    if (delta > 0) deltas.push(delta)
+  }
+  if (deltas.length === 0) return null
+
+  deltas.sort((a, b) => a - b)
+  return deltas[deltas.length >> 1]
+}
+
+/**
+ * Fractional bar index for a timestamp, extrapolating past both ends.
+ *
+ * Lightweight Charts can only convert a time to a pixel when that time is a
+ * bar it holds, which is why drawing in blank space was impossible. Its
+ * *logical* scale has no such limit -- index 0 is the first bar, and -3.5 or
+ * `count + 12` are perfectly valid positions off either end. Converting
+ * through logical coordinates is what unlocks drawing anywhere on the pane.
+ */
+export function logicalFromTime(candles: Candle[], ms: number): number | null {
+  if (candles.length === 0) return null
+  if (candles.length === 1) return ms === candles[0].time ? 0 : null
+
+  const lastIndex = candles.length - 1
+  const first = candles[0].time
+  const last = candles[lastIndex].time
+
+  if (ms >= first && ms <= last) {
+    let low = 0
+    let high = lastIndex
+    while (high - low > 1) {
+      const middle = (low + high) >> 1
+      if (candles[middle].time <= ms) low = middle
+      else high = middle
+    }
+    const span = candles[high].time - candles[low].time
+    // Consecutive bars are exactly one logical unit apart regardless of how
+    // much wall-clock time separates them, so interpolate within the pair.
+    return span > 0 ? low + (ms - candles[low].time) / span : low
+  }
+
+  const spacing = medianBarSpacingMs(candles)
+  if (spacing == null || spacing <= 0) return null
+
+  return ms < first
+    ? (ms - first) / spacing
+    : lastIndex + (ms - last) / spacing
+}
+
+/** Inverse of {@link logicalFromTime}. */
+export function timeFromLogical(candles: Candle[], logical: number): number | null {
+  if (candles.length === 0) return null
+  if (candles.length === 1) return candles[0].time
+
+  const lastIndex = candles.length - 1
+
+  if (logical > 0 && logical < lastIndex) {
+    const low = Math.floor(logical)
+    const high = Math.min(low + 1, lastIndex)
+    const fraction = logical - low
+    return Math.round(
+      candles[low].time + (candles[high].time - candles[low].time) * fraction,
+    )
+  }
+
+  const spacing = medianBarSpacingMs(candles)
+  if (spacing == null || spacing <= 0) return null
+
+  return logical <= 0
+    ? Math.round(candles[0].time + logical * spacing)
+    : Math.round(candles[lastIndex].time + (logical - lastIndex) * spacing)
+}
+
 /** Index of the candle at `ms`, or -1. Used to size selections in bars. */
 export function indexOfBar(candles: Candle[], ms: number): number {
   let low = 0

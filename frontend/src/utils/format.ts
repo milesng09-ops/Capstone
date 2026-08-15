@@ -78,9 +78,10 @@ export function formatInteger(value: number): string {
 }
 
 /** `1.234` -> `1.23x`, with a cap so an infinite profit factor stays readable. */
-export function formatRatio(value: number): string {
-  if (!Number.isFinite(value)) return '--'
-  if (value >= 999) return '>999x'
+export function formatRatio(value: number | null): string {
+  // An undefined ratio (no losing trades) reads as a dash, never as a large
+  // number that could be mistaken for a measured result.
+  if (value == null || !Number.isFinite(value)) return '--'
   return `${value.toFixed(2)}x`
 }
 

@@ -207,7 +207,11 @@ class BacktestEngine:
             fees=round(fees, 6),
             net_return=round(net_return, 6),
             exit_reason=exit_reason,
-            holding_bars=exit_index - entry_index + 1,
+            # Counted from the first bar the position could be closed on, which
+            # is the same origin the ``maximum_holding_bars`` cap uses. Counting
+            # from ``entry_index`` instead let a close-of-pattern entry report
+            # one bar more than the configured maximum.
+            holding_bars=exit_index - first_scan_index + 1,
             similarity_score=match.similarity,
             same_bar_ambiguity=same_bar,
         )

@@ -107,7 +107,8 @@ export interface BacktestSummary {
   average_winner: number
   average_loser: number
   risk_reward_achieved: number
-  profit_factor: number
+  /** `null` when no trade lost: the ratio is undefined, not large. */
+  profit_factor: number | null
   expectancy: number
   maximum_drawdown: number
   longest_winning_streak: number

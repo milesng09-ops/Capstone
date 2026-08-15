@@ -272,6 +272,8 @@ class BacktestSummary(BaseModel):
     breakeven: int
     timeouts: int
     win_rate: float
+    #: Both compounded, so the gap between them is the cost of trading rather
+    #: than an artefact of one being summed and the other compounded.
     gross_return: float
     net_return: float
     average_return: float
@@ -279,7 +281,9 @@ class BacktestSummary(BaseModel):
     average_winner: float
     average_loser: float
     risk_reward_achieved: float
-    profit_factor: float
+    #: ``None`` when no trade lost, which makes the ratio undefined rather
+    #: than merely large.
+    profit_factor: float | None = None
     expectancy: float
     maximum_drawdown: float
     longest_winning_streak: int

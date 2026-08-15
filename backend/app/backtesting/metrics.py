@@ -3,6 +3,12 @@
 All returns are percentages of the entry price.  The equity curve compounds
 them at 1 unit of risk per trade starting from 100, which is what maximum
 drawdown is measured against.
+
+**Gross and net are both compounded.**  They are displayed side by side, so
+they have to be the same kind of number: if gross were a plain sum and net a
+compounded total, the gap between them would read as trading costs when most
+of it was really just compounding.  Computing both the same way means the
+difference is exactly what the fees did.
 """
 
 from __future__ import annotations
@@ -45,7 +51,7 @@ def compute_metrics(
             average_winner=0.0,
             average_loser=0.0,
             risk_reward_achieved=0.0,
-            profit_factor=0.0,
+            profit_factor=None,
             expectancy=0.0,
             maximum_drawdown=0.0,
             longest_winning_streak=0,
@@ -72,14 +78,18 @@ def compute_metrics(
 
     gross_profit = sum(winners)
     gross_loss = abs(sum(losers))
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else (
-        float("inf") if gross_profit > 0 else 0.0
-    )
+    # No losing trades means the ratio is undefined, not enormous. A sentinel
+    # like 999 renders as a plausible number and quietly reads as a result.
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
 
     win_rate = len(winners) / len(trades) * 100.0
+    loss_rate = len(losers) / len(trades)
     average_winner = statistics.fmean(winners) if winners else 0.0
     average_loser = statistics.fmean(losers) if losers else 0.0
-    expectancy = (win_rate / 100.0) * average_winner + (1 - win_rate / 100.0) * average_loser
+    # Weighted by the share of trades that actually lost. Using ``1 - win_rate``
+    # swept breakeven trades into the losing bucket and charged each of them an
+    # average loss, understating expectancy whenever any trade closed flat.
+    expectancy = (win_rate / 100.0) * average_winner + loss_rate * average_loser
     risk_reward = abs(average_winner / average_loser) if average_loser else 0.0
 
     warning = None
@@ -99,15 +109,15 @@ def compute_metrics(
         breakeven=breakeven,
         timeouts=sum(1 for trade in trades if trade.exit_reason == "timeout"),
         win_rate=round(win_rate, 4),
-        gross_return=round(sum(gross_returns), 4),
+        gross_return=round(_compound(gross_returns), 4),
         net_return=round(equity_curve[-1].equity - STARTING_EQUITY, 4),
         average_return=round(statistics.fmean(net_returns), 4),
         median_return=round(statistics.median(net_returns), 4),
         average_winner=round(average_winner, 4),
         average_loser=round(average_loser, 4),
         risk_reward_achieved=round(risk_reward, 4),
-        profit_factor=round(profit_factor, 4) if profit_factor != float("inf") else 999.0,
         expectancy=round(expectancy, 4),
+        profit_factor=round(profit_factor, 4) if profit_factor is not None else None,
         maximum_drawdown=round(maximum_drawdown, 4),
         longest_winning_streak=_longest_streak(net_returns, positive=True),
         longest_losing_streak=_longest_streak(net_returns, positive=False),
@@ -120,6 +130,19 @@ def compute_metrics(
         assumptions=assumptions,
         data_quality=list(data_quality or []),
     )
+
+
+def _compound(returns: list[float]) -> float:
+    """Total percent change from compounding ``returns`` one after another.
+
+    The same arithmetic the equity curve uses, so gross and net are directly
+    comparable rather than one being a sum and the other a compounded total.
+    """
+
+    equity = STARTING_EQUITY
+    for value in returns:
+        equity *= 1.0 + value / 100.0
+    return equity - STARTING_EQUITY
 
 
 def _equity_curve(trades: list[SimulatedTrade]) -> tuple[list[EquityPoint], float]:

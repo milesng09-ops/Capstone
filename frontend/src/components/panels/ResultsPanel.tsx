@@ -144,7 +144,7 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
         label="Net return"
         value={formatPercent(summary.net_return)}
         tone={directionClass(summary.net_return)}
-        hint="Sum of every trade's return after fees and slippage"
+        hint="Every trade's return after fees and slippage, compounded"
       />
       <Metric
         label="Expectancy"
@@ -155,7 +155,11 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
       <Metric
         label="Profit factor"
         value={formatRatio(summary.profit_factor)}
-        hint="Gross winnings divided by gross losses. Above 1 is profitable."
+        hint={
+          summary.profit_factor == null
+            ? 'Undefined: no trade lost, so there is nothing to divide by.'
+            : 'Gross winnings divided by gross losses. Above 1 is profitable.'
+        }
       />
       <Metric
         label="Max drawdown"
@@ -242,7 +246,11 @@ function Notes({ summary }: { summary: NonNullable<BacktestResult['summary']> })
         <Metric label="Best streak" value={`${summary.longest_winning_streak} wins`} />
         <Metric label="Worst streak" value={`${summary.longest_losing_streak} losses`} />
         <Metric label="Timeouts" value={formatInteger(summary.timeouts)} />
-        <Metric label="Gross return" value={formatPercent(summary.gross_return)} />
+        <Metric
+          label="Gross return"
+          value={formatPercent(summary.gross_return)}
+          hint="Compounded the same way as net return, before fees"
+        />
       </div>
     </div>
   )

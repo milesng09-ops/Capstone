@@ -49,7 +49,12 @@ export interface Candle {
   volume: number
 }
 
-export type DataQuality = 'live' | 'delayed' | 'cached' | 'demo'
+/**
+ * `partial` means a provider fetch for part of the window failed, so the bars
+ * on screen are whatever the cache already held. `unknown` is the pre-response
+ * state -- the UI must not claim a provenance it has not been told yet.
+ */
+export type DataQuality = 'live' | 'delayed' | 'cached' | 'demo' | 'partial' | 'unknown'
 export type ProviderName = 'massive' | 'yahoo' | 'demo' | 'auto'
 
 export const PROVIDER_LABELS: Record<string, string> = {
@@ -64,7 +69,15 @@ export const QUALITY_LABELS: Record<DataQuality, string> = {
   delayed: 'Delayed data',
   cached: 'Cached data',
   demo: 'Demo mode',
+  partial: 'Incomplete data',
+  unknown: 'Loading...',
 }
+
+/** Qualities that mean "do not trust a win rate computed on this". */
+export const UNRELIABLE_QUALITIES: ReadonlySet<DataQuality> = new Set<DataQuality>([
+  'demo',
+  'partial',
+])
 
 export interface BarsResponse {
   symbol: string

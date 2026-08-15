@@ -7,7 +7,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 AssetType = Literal["future"]
-DataQuality = Literal["live", "delayed", "cached", "demo"]
+#: ``partial`` means at least one provider fetch for the window failed, so the
+#: bars returned are whatever the cache already held -- possibly none at all.
+#: It is deliberately distinct from ``cached``, which promises a complete window.
+DataQuality = Literal["live", "delayed", "cached", "demo", "partial"]
 
 
 class Instrument(BaseModel):

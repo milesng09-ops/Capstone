@@ -109,6 +109,18 @@ class IctService:
                 )
                 continue
 
+            # SMT divergence only means anything when both series describe the
+            # same market reality. Comparing synthetic demo bars against real
+            # vendor prices produces divergences that are pure artefact, so the
+            # mismatch is surfaced rather than silently charted.
+            if reference_result.provider != primary_result.provider:
+                warnings.append(
+                    f"{reference} came from '{reference_result.provider}' but {primary} came "
+                    f"from '{primary_result.provider}'. SMT divergence compares two markets "
+                    "bar for bar, so a mixed-source comparison is not meaningful -- treat "
+                    "these divergences as unreliable."
+                )
+
             found = await anyio.to_thread.run_sync(
                 _detect_smt,
                 primary_candles,

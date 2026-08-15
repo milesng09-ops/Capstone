@@ -9,7 +9,13 @@ import { useChartRange } from '@/hooks/useChartRange'
 import { useBars, useIct } from '@/hooks/useMarketData'
 import { useChartedSymbols, useWorkspace } from '@/store/workspace'
 import type { DrawingDraft } from '@/types/drawing'
-import { QUALITY_LABELS, type Candle, type DataQuality, type SymbolKey } from '@/types/market'
+import {
+  QUALITY_LABELS,
+  UNRELIABLE_QUALITIES,
+  type Candle,
+  type DataQuality,
+  type SymbolKey,
+} from '@/types/market'
 import { cn } from '@/utils/cn'
 import { directionClass, formatCompact, formatPercent, formatPrice } from '@/utils/format'
 
@@ -79,7 +85,9 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     last && first && first.open ? ((last.close - first.open) / first.open) * 100 : 0
 
   const readout = hovered ?? last
-  const quality = (barsQuery.data?.quality ?? 'cached') as DataQuality
+  // Before a response arrives we genuinely do not know where the bars came
+  // from, so the badge must say so rather than assert a clean cache hit.
+  const quality = (barsQuery.data?.quality ?? 'unknown') as DataQuality
 
   return (
     <div
@@ -109,11 +117,14 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
             <Spinner className="text-muted-foreground" />
           )}
           <Badge
-            tone={quality === 'demo' ? 'warn' : 'neutral'}
+            tone={UNRELIABLE_QUALITIES.has(quality) ? 'warn' : 'neutral'}
             title={
               quality === 'demo'
                 ? 'Synthetic data generated from a fixed seed. Not real market prices.'
-                : `Source: ${barsQuery.data?.provider ?? 'unknown'}`
+                : quality === 'partial'
+                  ? barsQuery.data?.fallback_reason ??
+                    'Part of this window could not be fetched. Bars may be missing.'
+                  : `Source: ${barsQuery.data?.provider ?? 'unknown'}`
             }
           >
             {QUALITY_LABELS[quality] ?? quality}

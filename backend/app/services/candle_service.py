@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 
 import anyio
 
@@ -51,6 +52,30 @@ logger = logging.getLogger(__name__)
 
 class RequestTooLargeError(ValueError):
     """Raised when a query would exceed the configured cost limits."""
+
+
+@dataclass(frozen=True)
+class _CacheOutcome:
+    """What :meth:`CandleService._ensure_cached` learned while filling a window.
+
+    ``incomplete`` is the important one: it separates "the cache already had
+    everything" from "we needed data and could not get it".  Both used to look
+    identical to the caller, which meant a total provider failure was reported
+    to the UI as a clean cache hit.
+    """
+
+    served_from_cache: bool
+    provider: str
+    fallback_reason: str | None
+    quality: str
+    #: True when any gap in the window failed to fetch, so the bars returned
+    #: are whatever was already stored -- possibly nothing.
+    incomplete: bool
+
+    def resolved_quality(self) -> str:
+        if self.incomplete:
+            return "partial"
+        return "cached" if self.served_from_cache else self.quality
 
 
 class CandleService:
@@ -120,7 +145,7 @@ class CandleService:
 
         lock = self._locks[(instrument.symbol, store_interval)]
         async with lock:
-            served_from_cache, provider_name, fallback_reason, quality = await self._ensure_cached(
+            outcome = await self._ensure_cached(
                 instrument.symbol, store_interval, padded, force_refresh=force_refresh
             )
 
@@ -138,11 +163,15 @@ class CandleService:
         return BarsResult(
             symbol=instrument.symbol,
             interval=interval,
-            provider=provider_name,
-            cached=served_from_cache,
-            fallback_active=provider_name != self._preferred_provider(),
-            fallback_reason=fallback_reason,
-            quality="cached" if served_from_cache else quality,
+            provider=outcome.provider,
+            cached=outcome.served_from_cache,
+            # A failed fetch is a degraded serve even when the provider name
+            # still reads as the preferred one, so it counts as a fallback.
+            fallback_active=(
+                outcome.incomplete or outcome.provider != self._preferred_provider()
+            ),
+            fallback_reason=outcome.fallback_reason,
+            quality=outcome.resolved_quality(),
             bars=bars,
         )
 
@@ -154,7 +183,7 @@ class CandleService:
         window: TimeRange,
         *,
         force_refresh: bool,
-    ) -> tuple[bool, str, str | None, str]:
+    ) -> _CacheOutcome:
         """Fetch whatever part of ``window`` is not cached yet."""
 
         gaps = await anyio.to_thread.run_sync(
@@ -166,13 +195,20 @@ class CandleService:
                 await anyio.to_thread.run_sync(self._cached_provider, symbol, store_interval)
                 or self._preferred_provider()
             )
-            return True, provider_name, None, "cached"
+            return _CacheOutcome(
+                served_from_cache=True,
+                provider=provider_name,
+                fallback_reason=None,
+                quality="cached",
+                incomplete=False,
+            )
 
         gaps = merge_adjacent(gaps, store_interval)
         provider_name = self._preferred_provider()
         fallback_reason: str | None = None
         quality = "delayed"
         fetched_any = False
+        failed_gaps = 0
 
         for gap in gaps:
             try:
@@ -192,6 +228,7 @@ class CandleService:
                     exc,
                 )
                 fallback_reason = fallback_reason or str(exc)
+                failed_gaps += 1
                 continue
 
             provider_name = result.provider
@@ -210,7 +247,19 @@ class CandleService:
             )
             fetched_any = True
 
-        return (not fetched_any), provider_name, fallback_reason, quality
+        if failed_gaps:
+            missing = f"{failed_gaps} of {len(gaps)} missing range(s) could not be fetched"
+            fallback_reason = (
+                f"{missing}: {fallback_reason}" if fallback_reason else missing
+            )
+
+        return _CacheOutcome(
+            served_from_cache=not fetched_any,
+            provider=provider_name,
+            fallback_reason=fallback_reason,
+            quality=quality,
+            incomplete=failed_gaps > 0,
+        )
 
     # ------------------------------------------------------------------
     # Synchronous helpers, executed on worker threads

@@ -1,3 +1,10 @@
+# Requires Python 3.10 or newer.
+#
+# pip cannot enforce this from a requirements file, so the check lives in
+# app/__init__.py and fails with an actionable message. The floor is PEP 604
+# union syntax (`str | None`), which Pydantic and SQLAlchemy evaluate at model
+# build time. Note that the system python3 on macOS is often 3.9.
+
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.6
 pydantic>=2.9.0

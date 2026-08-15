@@ -12,17 +12,50 @@ performance.
 
 Two processes: a FastAPI backend on port 8000 and a Vite frontend on 5173.
 
-**Backend**
+**Requirements: Python 3.10 or newer** (3.12 recommended) and Node 18+.
+
+> The `python3` that ships with macOS is usually 3.9, which is too old — the
+> models use `str | None` annotations that Pydantic and SQLAlchemy evaluate at
+> import time. Check with `python3 --version`; if it is below 3.10, install a
+> newer one (`brew install python@3.12`) and use `python3.12` explicitly when
+> creating the virtual environment. Building the venv with the wrong
+> interpreter is the one mistake that is awkward to undo — everything installs
+> cleanly and then fails at startup.
+
+### Backend
+
+<details open>
+<summary><b>macOS / Linux</b></summary>
 
 ```bash
-cd backend && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+cd backend && python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
 ```bash
-cd backend && .venv/Scripts/python -m uvicorn app.main:app --reload --port 8000
+cd backend && .venv/bin/python -m uvicorn app.main:app --reload --port 8000
+```
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+```powershell
+cd backend; python -m venv .venv; .venv\Scripts\pip install -r requirements.txt
 ```
 
-**Frontend**
+```powershell
+cd backend; .venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
+```
+</details>
+
+The difference is only the layout of the virtual environment: POSIX puts
+executables in `.venv/bin`, Windows in `.venv\Scripts`. Everything after that
+is identical. Calling the interpreter through its full path means you never
+have to remember whether the environment is activated.
+
+### Frontend
+
+Same on every platform, in a second terminal:
 
 ```bash
 cd frontend && npm install && npm run dev
@@ -37,15 +70,27 @@ generated from a fixed seed; the UI labels it as such everywhere it appears, so
 a win rate computed on it can never be mistaken for one computed on real prices.
 To use live data, put `MASSIVE_API_KEY=...` in `backend/.env`.
 
-**Tests**
+### Tests
 
 ```bash
-cd backend && .venv/Scripts/python -m pytest tests/ -q
+cd backend && .venv/bin/python -m pytest tests/ -q      # .venv\Scripts\ on Windows
 ```
 
 ```bash
 cd frontend && npm test
 ```
+
+### Housekeeping
+
+Saved backtest runs store their metrics as computed at the time and are never
+recalculated on read, so a change to the metrics leaves old runs inconsistent
+with new ones. To clear them (the candle cache is left alone):
+
+```bash
+cd backend && .venv/bin/python -m scripts.clear_backtests        # dry run
+```
+
+Add `--yes` to delete, or `--before YYYY-MM-DD` to keep recent runs.
 
 ---
 

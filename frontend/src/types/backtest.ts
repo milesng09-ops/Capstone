@@ -162,6 +162,29 @@ export const DEFAULT_TRADE_RULES: TradeRules = {
   atr_period: 14,
 }
 
+/**
+ * How much money stands behind a trade, and how much of it one trade may lose.
+ *
+ * Kept apart from `TradeRules` on purpose: the rules describe the *trade* and
+ * are sent to the engine, which sizes nothing and answers in percentages.
+ * These two numbers never leave the browser -- they only translate what the
+ * engine already said into money.
+ */
+export interface SizingConfig {
+  /** Account equity the risk percentage is taken from. */
+  accountEquity: number
+  /** Share of the account a single stop-out is allowed to cost. */
+  riskPercent: number
+}
+
+export const DEFAULT_SIZING: SizingConfig = {
+  accountEquity: 100_000,
+  riskPercent: 1,
+}
+
+/** Risk sizes offered as one click, the range a risk-of-ruin table lives in. */
+export const RISK_PRESETS = [0.25, 0.5, 1, 2] as const
+
 export interface SearchConfig {
   lookbackDays: number
   maximumMatches: number

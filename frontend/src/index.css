@@ -4,55 +4,61 @@
 
 @layer base {
   /*
-   * Dark-first financial palette: near-black navy canvas, slightly lighter
-   * panels, subtle neutral borders, muted green/red for direction and a single
-   * electric violet accent. Light mode mirrors the same hierarchy.
+   * Dark-first terminal palette, tuned to the conventions of desktop charting
+   * software: a near-black slate canvas, panes one step lighter, hairline
+   * dividers rather than gaps, muted green/red for direction and a single blue
+   * accent. Light mode mirrors the same hierarchy.
+   *
+   * The whole UI is flush -- panes butt up against each other and are told
+   * apart by a 1px border, not by shadow or rounding -- so `--border` is doing
+   * far more work here than in a card layout. It has to read as a division at
+   * a glance without drawing attention to itself.
    */
   :root,
   .dark {
-    --background: 222 47% 5%;
-    --foreground: 213 31% 94%;
+    --background: 225 24% 6%;
+    --foreground: 213 27% 92%;
 
-    --panel: 222 40% 8%;
-    --panel-raised: 222 33% 11%;
+    --panel: 225 24% 10%;
+    --panel-raised: 225 19% 15%;
 
-    --card: 222 40% 8%;
-    --card-foreground: 213 31% 94%;
+    --card: 225 24% 10%;
+    --card-foreground: 213 27% 92%;
 
-    --popover: 222 42% 9%;
-    --popover-foreground: 213 31% 94%;
+    --popover: 225 22% 12%;
+    --popover-foreground: 213 27% 92%;
 
-    --primary: 245 75% 63%;
+    --primary: 223 92% 59%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 222 30% 14%;
+    --secondary: 225 18% 18%;
     --secondary-foreground: 213 25% 88%;
 
-    --muted: 222 28% 13%;
-    --muted-foreground: 215 16% 60%;
+    --muted: 225 18% 16%;
+    --muted-foreground: 217 14% 60%;
 
-    --accent: 245 70% 60%;
+    --accent: 223 92% 59%;
     --accent-foreground: 0 0% 100%;
 
     --destructive: 358 62% 52%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 220 22% 17%;
-    --input: 220 22% 17%;
-    --ring: 245 75% 63%;
+    --border: 223 14% 22%;
+    --input: 223 14% 22%;
+    --ring: 223 92% 59%;
 
     --bull: 152 48% 48%;
     --bear: 358 62% 57%;
 
-    --radius: 0.5rem;
+    --radius: 0.25rem;
   }
 
   .light {
-    --background: 210 30% 97%;
+    --background: 210 25% 94%;
     --foreground: 222 40% 12%;
 
     --panel: 0 0% 100%;
-    --panel-raised: 210 30% 98%;
+    --panel-raised: 210 28% 97%;
 
     --card: 0 0% 100%;
     --card-foreground: 222 40% 12%;
@@ -60,7 +66,7 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 40% 12%;
 
-    --primary: 245 68% 55%;
+    --primary: 223 85% 50%;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 214 25% 92%;
@@ -69,15 +75,15 @@
     --muted: 214 25% 93%;
     --muted-foreground: 215 16% 42%;
 
-    --accent: 245 68% 55%;
+    --accent: 223 85% 50%;
     --accent-foreground: 0 0% 100%;
 
     --destructive: 358 60% 48%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 214 20% 85%;
-    --input: 214 20% 85%;
-    --ring: 245 68% 55%;
+    --border: 214 18% 82%;
+    --input: 214 18% 82%;
+    --ring: 223 85% 50%;
 
     --bull: 152 52% 36%;
     --bear: 358 60% 48%;
@@ -123,12 +129,25 @@
     @apply font-mono tabular-nums;
   }
 
+  /* A surface. Borders are the caller's business: in a flush layout only one
+     of two adjacent panes may draw the line between them. */
   .panel {
-    @apply border border-border bg-[hsl(var(--panel))];
+    @apply bg-[hsl(var(--panel))];
   }
 
   .label-caps {
     @apply text-2xs font-medium uppercase tracking-wider text-muted-foreground;
+  }
+
+  /* A vertical divider inside a toolbar row. */
+  .bar-divider {
+    @apply h-4 w-px shrink-0 bg-border;
+  }
+
+  /* Text laid over the candles: legible against both wicks and empty chart. */
+  .chart-legend {
+    @apply text-2xs leading-tight;
+    text-shadow: 0 1px 3px hsl(var(--panel) / 0.95);
   }
 
   /* Drag-to-select overlay on the Lightweight Charts fallback. */

@@ -12,11 +12,22 @@
  *   5. user drawings (trend lines, levels, zones)
  *   6. the shape currently being dragged
  *
- * **Pointer ownership.** The canvas is `pointer-events: none` while the cursor
- * tool is active, so the chart keeps its own pan and zoom. It only takes the
- * mouse when a drawing tool is held. Selecting and deleting existing drawings
- * happens in the side list rather than by clicking the canvas, which keeps the
- * two input models from fighting over the same clicks.
+ * **Pointer ownership.** Two input models want the same mouse: the chart pans
+ * and zooms with it, and the overlay draws with it. They are separated by
+ * making the canvas `pointer-events: none` by default, so the chart is in
+ * charge, and handing it the pointer only for as long as the overlay has
+ * something to do with it -- while a drawing tool is held, or while the
+ * cursor is actually over a drawing. Hover is tracked by listening on the
+ * *parent* element, which still receives the move events that pass straight
+ * through the transparent canvas.
+ *
+ * That is what makes a drawing directly editable without the chart seizing up
+ * around it: click one to select, drag its body to move it, drag a corner to
+ * reshape it, and everywhere else the chart pans exactly as before.
+ *
+ * **One edit, one undo step.** A drag previews locally and writes to the
+ * store once, on release. Dragging a line across the pane is therefore a
+ * single Ctrl+Z, not a hundred.
  *
  * **Cross-interval survival.** Times that fall on the chart are snapped to the
  * nearest current bar, so a level drawn on the 1-hour chart still lands in the
@@ -35,8 +46,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { nearestBarTime, snapWithinBars } from '@/lib/chart'
+import {
+  handlePositions,
+  hitKey,
+  hitTestDrawings,
+  projectDrawing,
+  resizeDrawing,
+  translateDrawing,
+  type DrawingHit,
+  type ProjectedDrawing,
+} from '@/lib/drawings'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import type { Candle, SelectionRange } from '@/types/market'
+import { isDragTool } from '@/types/drawing'
 import type { Drawing, DrawingDraft, DrawingPoint, ToolMode } from '@/types/drawing'
 import type { FairValueGap, IctAnalysis, IctSettings, SwingPoint } from '@/types/ict'
 
@@ -61,10 +83,13 @@ interface Props {
   /** Only the primary chart defines the backtest selection. */
   allowSelection: boolean
   onCreateDrawing: (drawing: DrawingDraft) => void
+  onUpdateDrawing: (id: string, drawing: Drawing) => void
+  onSelectDrawing: (id: string | null) => void
   onSelectionChange: (selection: SelectionRange | null) => void
   onGestureComplete: () => void
 }
 
+/** A shape being drawn for the first time. */
 interface PendingGesture {
   start: DrawingPoint
   current: DrawingPoint
@@ -72,6 +97,20 @@ interface PendingGesture {
   startY: number
   currentX: number
   currentY: number
+  moved: boolean
+}
+
+/** An existing shape being moved or reshaped. */
+interface ActiveDrag {
+  hit: DrawingHit
+  /** The drawing as it was when grabbed; every frame transforms from this. */
+  original: Drawing
+  /** What to paint until the drag is committed. */
+  preview: Drawing
+  /** Unsnapped market point under the pointer at the moment of the grab. */
+  origin: DrawingPoint
+  startX: number
+  startY: number
   moved: boolean
 }
 
@@ -89,15 +128,46 @@ export function ChartOverlay({
   snapToSwings,
   allowSelection,
   onCreateDrawing,
+  onUpdateDrawing,
+  onSelectDrawing,
   onSelectionChange,
   onGestureComplete,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+
+  // Each gesture is mirrored into a ref so that the imperative redraw -- which
+  // the chart triggers on every pan and zoom -- never paints a stale frame,
+  // and so that cancelling can take effect before React has re-rendered.
   const [pending, setPending] = useState<PendingGesture | null>(null)
   const pendingRef = useRef<PendingGesture | null>(null)
-  pendingRef.current = pending
+  const [drag, setDrag] = useState<ActiveDrag | null>(null)
+  const dragRef = useRef<ActiveDrag | null>(null)
+  const [hover, setHover] = useState<DrawingHit | null>(null)
+  const hoverRef = useRef<DrawingHit | null>(null)
+  /** Set while a drawing is being dragged; see `suppress` below. */
+  const suppressRef = useRef(false)
 
-  const interactive = tool !== 'cursor' && (tool !== 'select' || allowSelection)
+  const updatePending = useCallback((value: PendingGesture | null) => {
+    pendingRef.current = value
+    setPending(value)
+  }, [])
+
+  const updateDrag = useCallback((value: ActiveDrag | null) => {
+    dragRef.current = value
+    setDrag(value)
+  }, [])
+
+  const updateHover = useCallback((value: DrawingHit | null) => {
+    hoverRef.current = value
+    setHover(value)
+  }, [])
+
+  /**
+   * True while a tool is held, i.e. the next press starts a new shape. The
+   * select tool is inert on a comparison chart, which leaves the pointer free
+   * to edit drawings there exactly as the cursor tool would.
+   */
+  const drawingActive = isDragTool(tool) && (tool !== 'select' || allowSelection)
 
   /**
    * Market time -> x for objects that always sit on a bar (ICT detections,
@@ -169,8 +239,17 @@ export function ChartOverlay({
       }
     }
 
+    // An in-flight drag is painted in place of the stored shape, so the store
+    // is written once on release rather than on every frame.
+    const preview = dragRef.current?.preview ?? null
+    const hoveredId = hoverRef.current?.id ?? null
     for (const drawing of drawings) {
-      paintDrawing(ctx, drawing, xOfDrawing, yOf, width, drawing.id === selectedDrawingId)
+      const shown = preview && preview.id === drawing.id ? preview : drawing
+      paintDrawing(ctx, shown, xOfDrawing, yOf, width, {
+        selected: shown.id === selectedDrawingId,
+        hovered: shown.id === hoveredId,
+        background: palette.background,
+      })
     }
 
     const gesture = pendingRef.current
@@ -197,14 +276,30 @@ export function ChartOverlay({
   useEffect(() => handle.subscribe(draw), [handle, draw])
   useEffect(() => {
     draw()
-  }, [draw, pending])
+  }, [draw, pending, drag, hover])
+
+  // ---- hit-testing -----------------------------------------------------
+  const hitTestAt = useCallback(
+    (x: number, y: number): DrawingHit | null => {
+      if (drawings.length === 0) return null
+      const projected: ProjectedDrawing[] = []
+      for (const drawing of drawings) {
+        const item = projectDrawing(drawing, xOfDrawing, handle.priceToY)
+        if (item) projected.push(item)
+      }
+      return hitTestDrawings(projected, x, y, selectedDrawingId)
+    },
+    [drawings, handle, selectedDrawingId, xOfDrawing],
+  )
 
   // ---- pointer handling ------------------------------------------------
-  const pointFromEvent = useCallback(
-    (event: React.PointerEvent<HTMLCanvasElement>) => {
-      const rect = event.currentTarget.getBoundingClientRect()
-      const x = event.clientX - rect.left
-      const y = event.clientY - rect.top
+  const pointAt = useCallback(
+    (clientX: number, clientY: number, useSwingSnap: boolean) => {
+      const canvas = canvasRef.current
+      if (!canvas) return null
+      const rect = canvas.getBoundingClientRect()
+      const x = clientX - rect.left
+      const y = clientY - rect.top
 
       // `xToTime` is null everywhere past the last bar, which used to abort
       // the gesture before it started. The free conversion stays defined.
@@ -219,7 +314,7 @@ export function ChartOverlay({
 
       // Snapping to a swing point is what makes "connect these two highs"
       // land exactly on the highs instead of near them.
-      if (snapToSwings && ict?.swing_points.length && tool !== 'select') {
+      if (useSwingSnap && ict?.swing_points.length) {
         const snapped = findSnapTarget(ict.swing_points, x, y, xOf, handle.priceToY)
         if (snapped) {
           time = snapped.time
@@ -227,25 +322,198 @@ export function ChartOverlay({
         }
       }
 
-      return { point: { time, price }, x, y }
+      return {
+        point: { time, price },
+        raw: { time: rawTime, price: rawPrice },
+        x,
+        y,
+      }
     },
-    [candles, handle, ict, snapToSwings, tool, xOf],
+    [candles, handle, ict, xOf],
   )
 
-  const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!interactive || event.button !== 0) return
-    const resolved = pointFromEvent(event)
-    if (!resolved) return
+  /**
+   * Editing existing drawings, driven from the parent element.
+   *
+   * The overlay canvas stays transparent to the pointer while no tool is
+   * held, so the chart keeps its pan, zoom and wheel exactly as before. That
+   * means the press has to be intercepted on the way *down* to the chart --
+   * hence the capture phase, which runs on this element before the chart's
+   * own listeners run on its children.
+   *
+   * The chart binds `mousedown` and `touchstart` rather than `pointerdown`,
+   * so cancelling the pointer event is not enough on its own: those two are
+   * suppressed separately for as long as a drag is in progress.
+   */
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const parent = canvas?.parentElement
+    if (!canvas || !parent) return
 
-    event.currentTarget.setPointerCapture(event.pointerId)
-
-    if (tool === 'horizontal') {
-      onCreateDrawing({ kind: 'horizontal', symbol, color: drawingColor, price: resolved.point.price })
-      onGestureComplete()
+    if (drawingActive) {
+      // A tool is held. The canvas owns the pointer and shows its own cursor,
+      // and a hover highlight would only compete with the shape being drawn.
+      updateHover(null)
+      parent.style.cursor = ''
       return
     }
 
-    setPending({
+    const locate = (event: PointerEvent): DrawingHit | null => {
+      const rect = canvas.getBoundingClientRect()
+      return hitTestAt(event.clientX - rect.left, event.clientY - rect.top)
+    }
+
+    const handleMove = (event: PointerEvent) => {
+      if (dragRef.current) return
+      const hit = locate(event)
+      if (hitKey(hit) === hitKey(hoverRef.current)) return
+      updateHover(hit)
+    }
+
+    const handleLeave = () => {
+      if (dragRef.current || !hoverRef.current) return
+      updateHover(null)
+    }
+
+    const handleDown = (event: PointerEvent) => {
+      if (event.button !== 0) return
+      // The legend floats in this same element. Pressing a badge or the fit
+      // button is not a press on the chart and should not disturb anything.
+      if (event.target instanceof Element && event.target.closest('button, a, input')) {
+        return
+      }
+
+      // Re-tested rather than read from the last hover, because a touch
+      // arrives with no hover behind it.
+      const hit = locate(event)
+      onSelectDrawing(hit?.id ?? null)
+      if (!hit) return
+
+      const target = drawings.find((drawing) => drawing.id === hit.id)
+      const resolved = pointAt(event.clientX, event.clientY, false)
+      if (!target || !resolved) return
+
+      event.preventDefault()
+      suppressRef.current = true
+      updateHover(hit)
+      updateDrag({
+        hit,
+        original: target,
+        preview: target,
+        origin: resolved.raw,
+        startX: resolved.x,
+        startY: resolved.y,
+        moved: false,
+      })
+    }
+
+    const suppress = (event: Event) => {
+      if (!suppressRef.current) return
+      event.stopPropagation()
+      event.preventDefault()
+    }
+
+    parent.addEventListener('pointermove', handleMove)
+    parent.addEventListener('pointerleave', handleLeave)
+    parent.addEventListener('pointerdown', handleDown, { capture: true })
+    parent.addEventListener('mousedown', suppress, { capture: true })
+    parent.addEventListener('touchstart', suppress, { capture: true, passive: false })
+
+    return () => {
+      parent.removeEventListener('pointermove', handleMove)
+      parent.removeEventListener('pointerleave', handleLeave)
+      parent.removeEventListener('pointerdown', handleDown, { capture: true })
+      parent.removeEventListener('mousedown', suppress, { capture: true })
+      parent.removeEventListener('touchstart', suppress, { capture: true })
+      parent.style.cursor = ''
+    }
+  }, [
+    drawingActive,
+    drawings,
+    hitTestAt,
+    onSelectDrawing,
+    pointAt,
+    updateDrag,
+    updateHover,
+  ])
+
+  /**
+   * A drag continues at the window, so it survives the pointer leaving the
+   * pane and does not depend on any element having captured it. Registered
+   * once and inert unless a drag is actually running.
+   */
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      const active = dragRef.current
+      if (!active) return
+      const resolved = pointAt(event.clientX, event.clientY, snapToSwings)
+      if (!resolved) return
+
+      // Moving the whole shape follows the raw pointer, so it does not jump
+      // between bars under the hand. A grabbed endpoint snaps, because that
+      // is the case where landing exactly on a high is the entire point.
+      const preview =
+        active.hit.part === 'body'
+          ? translateDrawing(
+              active.original,
+              resolved.raw.time - active.origin.time,
+              resolved.raw.price - active.origin.price,
+            )
+          : resizeDrawing(active.original, active.hit, resolved.point)
+
+      updateDrag({
+        ...active,
+        preview,
+        moved:
+          active.moved ||
+          Math.abs(resolved.x - active.startX) > MIN_DRAG_PX ||
+          Math.abs(resolved.y - active.startY) > MIN_DRAG_PX,
+      })
+    }
+
+    const finish = () => {
+      const active = dragRef.current
+      suppressRef.current = false
+      if (!active) return
+      updateDrag(null)
+      // A press that never moved is a plain click. The shape is already
+      // selected, and writing it back unchanged would spend an undo step on
+      // nothing.
+      if (active.moved) onUpdateDrawing(active.original.id, active.preview)
+    }
+
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
+    }
+  }, [onUpdateDrawing, pointAt, snapToSwings, updateDrag])
+
+  /**
+   * Cursor feedback lives on the parent rather than the canvas: the canvas is
+   * transparent to the pointer here, and an element that cannot be hit cannot
+   * set a cursor. The chart leaves its own price pane at `auto`, so this
+   * cascades through cleanly.
+   */
+  useEffect(() => {
+    const parent = canvasRef.current?.parentElement
+    if (!parent || drawingActive) return
+    parent.style.cursor = cursorFor(drag, hover)
+  }, [drag, drawingActive, hover])
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.button !== 0 || !drawingActive) return
+
+    // A selection is a range of bars, not a shape, so it never snaps to a
+    // swing point -- that would move the window off the candles it names.
+    const resolved = pointAt(event.clientX, event.clientY, tool !== 'select' && snapToSwings)
+    if (!resolved) return
+
+    event.currentTarget.setPointerCapture(event.pointerId)
+    updatePending({
       start: resolved.point,
       current: resolved.point,
       startX: resolved.x,
@@ -257,41 +525,48 @@ export function ChartOverlay({
   }
 
   const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!pendingRef.current) return
-    const resolved = pointFromEvent(event)
+    const gesture = pendingRef.current
+    if (!gesture) return
+    const resolved = pointAt(event.clientX, event.clientY, tool !== 'select' && snapToSwings)
     if (!resolved) return
 
-    setPending((previous) => {
-      if (!previous) return previous
-      const movedFar =
-        Math.abs(resolved.x - previous.startX) > MIN_DRAG_PX ||
-        Math.abs(resolved.y - previous.startY) > MIN_DRAG_PX
-      return {
-        ...previous,
-        current: resolved.point,
-        currentX: resolved.x,
-        currentY: resolved.y,
-        moved: previous.moved || movedFar,
-      }
+    updatePending({
+      ...gesture,
+      current: resolved.point,
+      currentX: resolved.x,
+      currentY: resolved.y,
+      moved:
+        gesture.moved ||
+        Math.abs(resolved.x - gesture.startX) > MIN_DRAG_PX ||
+        Math.abs(resolved.y - gesture.startY) > MIN_DRAG_PX,
     })
   }
 
   const handlePointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    const gesture = pendingRef.current
-    setPending(null)
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
+
+    const gesture = pendingRef.current
+    updatePending(null)
     if (!gesture) return
 
     // A click without a drag is almost always a misfire, not a zero-width
-    // shape, so it is discarded rather than committed.
-    if (!gesture.moved) {
+    // shape, so it is discarded. A level is the exception: it has only one
+    // coordinate, so pressing and releasing in place *is* the whole gesture.
+    if (!gesture.moved && tool !== 'horizontal') {
       onGestureComplete()
       return
     }
 
-    if (tool === 'select') {
+    if (tool === 'horizontal') {
+      onCreateDrawing({
+        kind: 'horizontal',
+        symbol,
+        color: drawingColor,
+        price: gesture.current.price,
+      })
+    } else if (tool === 'select') {
       // A backtest window has to be made of real bars, so a drag that runs off
       // the end of the data is pulled back to the edge candle rather than
       // selecting empty space. Drawings keep their free coordinates; this does
@@ -325,13 +600,37 @@ export function ChartOverlay({
     onGestureComplete()
   }
 
+  // ---- escape ----------------------------------------------------------
+  // Abandoning a gesture has to work while the button is still down, which is
+  // the whole reason a mis-click is now recoverable. Listening in the capture
+  // phase and stopping the event keeps the window-level shortcuts from also
+  // reacting to the same keystroke.
+  useEffect(() => {
+    if (!pending && !drag) return
+
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      updatePending(null)
+      updateDrag(null)
+      onGestureComplete()
+    }
+
+    window.addEventListener('keydown', cancel, { capture: true })
+    return () => window.removeEventListener('keydown', cancel, { capture: true })
+  }, [drag, onGestureComplete, pending, updateDrag, updatePending])
+
   return (
     <canvas
       ref={canvasRef}
       className="absolute inset-0 z-10"
       style={{
-        pointerEvents: interactive ? 'auto' : 'none',
-        cursor: interactive ? 'crosshair' : 'default',
+        // Only a held tool takes the pointer. Everything else -- selecting,
+        // moving and reshaping -- is intercepted on the parent, which leaves
+        // the chart's pan, zoom and wheel untouched even over a drawing.
+        pointerEvents: drawingActive ? 'auto' : 'none',
+        cursor: drawingActive ? 'crosshair' : 'default',
       }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -339,6 +638,17 @@ export function ChartOverlay({
       onPointerCancel={handlePointerUp}
     />
   )
+}
+
+/**
+ * What the pointer looks like tells you what the next press will do: a corner
+ * can be grabbed, a body can be moved, and anywhere else the chart pans.
+ * Empty string rather than `default`, so the chart keeps its own cursor.
+ */
+function cursorFor(drag: ActiveDrag | null, hover: DrawingHit | null): string {
+  if (drag) return drag.hit.part === 'point' ? 'grabbing' : 'move'
+  if (hover) return hover.part === 'point' ? 'grab' : 'move'
+  return ''
 }
 
 // --------------------------------------------------------------------------
@@ -485,66 +795,78 @@ function paintSwing(
   ctx.restore()
 }
 
+interface DrawingStyle {
+  selected: boolean
+  hovered: boolean
+  /** Pane colour, used to punch out the middle of a grab handle. */
+  background: string
+}
+
 function paintDrawing(
   ctx: CanvasRenderingContext2D,
   drawing: Drawing,
   xOf: XConverter,
   yOf: YConverter,
   width: number,
-  selected: boolean,
+  { selected, hovered, background }: DrawingStyle,
 ) {
+  // Painted from the same projection the pointer is tested against, so a grip
+  // is never drawn somewhere it cannot actually be grabbed.
+  const projected = projectDrawing(drawing, xOf, yOf)
+  if (!projected) return
+
+  const priceLabel = drawing.kind === 'horizontal' ? drawing.price.toFixed(2) : null
+
   ctx.save()
   ctx.strokeStyle = drawing.color
   ctx.fillStyle = drawing.color
-  ctx.lineWidth = selected ? 2.5 : 1.6
+  ctx.lineWidth = selected ? 2.5 : hovered ? 2.1 : 1.6
   ctx.setLineDash([])
 
-  if (drawing.kind === 'horizontal') {
-    const y = yOf(drawing.price)
-    if (y != null) {
-      ctx.beginPath()
-      ctx.moveTo(0, y + 0.5)
-      ctx.lineTo(width, y + 0.5)
-      ctx.stroke()
+  if (projected.kind === 'horizontal') {
+    const y = projected.y
+    ctx.beginPath()
+    ctx.moveTo(0, y + 0.5)
+    ctx.lineTo(width, y + 0.5)
+    ctx.stroke()
 
+    if (priceLabel) {
       ctx.globalAlpha = 0.85
       ctx.font = '9px ui-monospace, monospace'
       ctx.textBaseline = 'bottom'
-      ctx.fillText(drawing.price.toFixed(2), 4, y - 2)
+      ctx.fillText(priceLabel, 4, y - 2)
     }
+  } else if (projected.kind === 'trendline') {
+    ctx.beginPath()
+    ctx.moveTo(projected.x1, projected.y1)
+    ctx.lineTo(projected.x2, projected.y2)
+    ctx.stroke()
   } else {
-    const x1 = xOf(drawing.from.time)
-    const x2 = xOf(drawing.to.time)
-    const y1 = yOf(drawing.from.price)
-    const y2 = yOf(drawing.to.price)
-    if (x1 != null && x2 != null && y1 != null && y2 != null) {
-      if (drawing.kind === 'trendline') {
-        ctx.beginPath()
-        ctx.moveTo(x1, y1)
-        ctx.lineTo(x2, y2)
-        ctx.stroke()
-        if (selected) {
-          for (const [x, y] of [
-            [x1, y1],
-            [x2, y2],
-          ]) {
-            ctx.beginPath()
-            ctx.arc(x, y, 3.5, 0, Math.PI * 2)
-            ctx.fill()
-          }
-        }
-      } else {
-        const left = Math.min(x1, x2)
-        const top = Math.min(y1, y2)
-        const boxWidth = Math.abs(x2 - x1)
-        const boxHeight = Math.abs(y2 - y1)
-        ctx.globalAlpha = 0.14
-        ctx.fillRect(left, top, boxWidth, boxHeight)
-        ctx.globalAlpha = 1
-        ctx.strokeRect(left + 0.5, top + 0.5, boxWidth, boxHeight)
-      }
+    const left = Math.min(projected.x1, projected.x2)
+    const top = Math.min(projected.y1, projected.y2)
+    const boxWidth = Math.abs(projected.x2 - projected.x1)
+    const boxHeight = Math.abs(projected.y2 - projected.y1)
+    ctx.globalAlpha = hovered || selected ? 0.2 : 0.14
+    ctx.fillRect(left, top, boxWidth, boxHeight)
+    ctx.globalAlpha = 1
+    ctx.strokeRect(left + 0.5, top + 0.5, boxWidth, boxHeight)
+  }
+
+  // Grips appear on selection rather than on hover, so that the shape you
+  // picked is the one advertising what can be dragged.
+  if (selected) {
+    ctx.globalAlpha = 1
+    for (const { x, y } of handlePositions(projected)) {
+      ctx.beginPath()
+      ctx.arc(x, y, 4, 0, Math.PI * 2)
+      ctx.fillStyle = background
+      ctx.fill()
+      ctx.lineWidth = 1.6
+      ctx.strokeStyle = drawing.color
+      ctx.stroke()
     }
   }
+
   ctx.restore()
 }
 
@@ -576,6 +898,21 @@ function paintPending(
     ctx.moveTo(gesture.startX, gesture.startY)
     ctx.lineTo(gesture.currentX, gesture.currentY)
     ctx.stroke()
+  } else if (tool === 'horizontal') {
+    // Previewed under the cursor before it exists: a level is committed on
+    // release, so this is the last look at it before it is real.
+    ctx.strokeStyle = colour
+    ctx.fillStyle = colour
+    ctx.beginPath()
+    ctx.moveTo(0, gesture.currentY + 0.5)
+    ctx.lineTo(width, gesture.currentY + 0.5)
+    ctx.stroke()
+
+    ctx.setLineDash([])
+    ctx.globalAlpha = 0.85
+    ctx.font = '9px ui-monospace, monospace'
+    ctx.textBaseline = 'bottom'
+    ctx.fillText(gesture.current.price.toFixed(2), 4, gesture.currentY - 2)
   } else if (tool === 'rectangle') {
     const left = Math.min(gesture.startX, gesture.currentX)
     const top = Math.min(gesture.startY, gesture.currentY)
@@ -593,7 +930,6 @@ function paintPending(
   }
 
   ctx.restore()
-  void width
 }
 
 // --------------------------------------------------------------------------

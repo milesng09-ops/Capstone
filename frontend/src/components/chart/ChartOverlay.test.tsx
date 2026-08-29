@@ -1,0 +1,232 @@
+/**
+ * Gestures on the overlay.
+ *
+ * The chart itself is replaced by a handle whose conversions are the identity,
+ * so a pointer at (100, 150) is time 100 at price 150 and every assertion can
+ * be read directly. What is being tested is the gesture logic -- what counts
+ * as a shape, what counts as a misfire, and what a drag does to an existing
+ * drawing -- none of which needs real candles to be meaningful.
+ */
+
+import { fireEvent, render } from '@testing-library/react'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+
+import { ChartOverlay } from '@/components/chart/ChartOverlay'
+import type { ChartHandle } from '@/components/chart/useChartInstance'
+import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
+import type { Drawing } from '@/types/drawing'
+import type { Candle } from '@/types/market'
+
+// Far away from the pointer coordinates below, so nothing snaps to a bar and
+// the identity conversions hold end to end.
+const candles: Candle[] = [
+  { symbol: 'NQ', time: 900_000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 },
+  { symbol: 'NQ', time: 903_600, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 },
+]
+
+const handle: ChartHandle = {
+  timeToX: (ms) => ms,
+  priceToY: (price) => price,
+  xToTime: (x) => x,
+  yToPrice: (y) => y,
+  timeToXFree: (ms) => ms,
+  xToTimeFree: (x) => x,
+  subscribe: () => () => {},
+  palette: () => ({
+    background: '#000000',
+    text: '#ffffff',
+    grid: '#111111',
+    border: '#222222',
+    bull: '#00ff00',
+    bear: '#ff0000',
+    accent: '#0000ff',
+    muted: '#888888',
+  }),
+}
+
+const level: Drawing = {
+  id: 'level-1',
+  kind: 'horizontal',
+  symbol: 'NQ',
+  color: '#818cf8',
+  createdAt: 0,
+  price: 150,
+}
+
+function setup(overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {}) {
+  const props = {
+    symbol: 'NQ',
+    handle,
+    candles,
+    ict: undefined,
+    ictSettings: DEFAULT_ICT_SETTINGS,
+    drawings: [] as Drawing[],
+    selection: null,
+    tool: 'cursor' as const,
+    drawingColor: '#818cf8',
+    selectedDrawingId: null,
+    snapToSwings: false,
+    allowSelection: true,
+    onCreateDrawing: vi.fn(),
+    onUpdateDrawing: vi.fn(),
+    onSelectDrawing: vi.fn(),
+    onSelectionChange: vi.fn(),
+    onGestureComplete: vi.fn(),
+    ...overrides,
+  }
+
+  const { container } = render(<ChartOverlay {...props} />)
+  const canvas = container.querySelector('canvas') as HTMLCanvasElement
+  return { ...props, canvas, container }
+}
+
+beforeAll(() => {
+  // jsdom has no pointer capture; the gesture does not depend on it working,
+  // only on it not throwing.
+  Element.prototype.setPointerCapture = vi.fn()
+  Element.prototype.releasePointerCapture = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+})
+
+/**
+ * jsdom implements no `PointerEvent`, and testing-library's fallback drops
+ * `button` and the coordinates -- which are exactly what the handlers read.
+ * A `MouseEvent` carries them and dispatches under the pointer event's name,
+ * which is all React and the native listeners need.
+ */
+function pointer(
+  type: 'pointerdown' | 'pointermove' | 'pointerup',
+  clientX: number,
+  clientY: number,
+): MouseEvent {
+  return new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    clientX,
+    clientY,
+  })
+}
+
+describe('placing a level', () => {
+  it('commits on release, so the line is previewed before it exists', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'horizontal' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 150))
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+
+    fireEvent(canvas, pointer('pointerup', 100, 150))
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'horizontal', price: 150 }),
+    )
+  })
+
+  it('follows the pointer, so the level lands where it is released', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'horizontal' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 150))
+    fireEvent(canvas, pointer('pointermove', 100, 240))
+    fireEvent(canvas, pointer('pointerup', 100, 240))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'horizontal', price: 240 }),
+    )
+  })
+
+  it('is abandoned by Escape while the button is still down', () => {
+    const { canvas, onCreateDrawing, onGestureComplete } = setup({ tool: 'horizontal' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 150))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent(canvas, pointer('pointerup', 100, 150))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+    expect(onGestureComplete).toHaveBeenCalled()
+  })
+})
+
+describe('drawing a shape', () => {
+  it('discards a click that never became a drag', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'trendline' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 101, 101))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('creates a trend line from a real drag', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'trendline' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 200, 160))
+    fireEvent(canvas, pointer('pointerup', 200, 160))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'trendline',
+        from: { time: 100, price: 100 },
+        to: { time: 200, price: 160 },
+      }),
+    )
+  })
+
+  it('is abandoned by Escape mid-drag', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'trendline' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 200, 160))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent(canvas, pointer('pointerup', 200, 160))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+  })
+})
+
+describe('editing an existing drawing', () => {
+  it('selects the drawing under the press', () => {
+    const { container, onSelectDrawing } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    expect(onSelectDrawing).toHaveBeenCalledWith('level-1')
+  })
+
+  it('clears the selection when the press lands on empty chart', () => {
+    const { container, onSelectDrawing } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 400))
+    expect(onSelectDrawing).toHaveBeenCalledWith(null)
+  })
+
+  it('moves the drawing by the pointer delta', () => {
+    const { container, onUpdateDrawing } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    fireEvent(window, pointer('pointermove', 100, 200))
+    fireEvent(window, pointer('pointerup', 100, 200))
+
+    expect(onUpdateDrawing).toHaveBeenCalledWith(
+      'level-1',
+      expect.objectContaining({ price: 200 }),
+    )
+  })
+
+  it('writes nothing when the press never moved, so a click costs no undo step', () => {
+    const { container, onUpdateDrawing } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    fireEvent(window, pointer('pointerup', 100, 150))
+
+    expect(onUpdateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('leaves the press alone when a tool is held, so it starts a new shape', () => {
+    const { container, onSelectDrawing } = setup({
+      drawings: [level],
+      tool: 'trendline',
+    })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    expect(onSelectDrawing).not.toHaveBeenCalled()
+  })
+})

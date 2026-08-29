@@ -82,7 +82,7 @@ export function ResultsPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border py-1.5 pl-3 pr-9">
         <span className="label-caps">Results</span>
         <Badge tone="accent">{result.primary_symbol}</Badge>
         <Badge>{result.interval}</Badge>
@@ -95,6 +95,7 @@ export function ResultsPanel() {
           </Badge>
         )}
         <SegmentedControl<ResultTab>
+          variant="plain"
           value={tab}
           options={TABS}
           onChange={setTab}

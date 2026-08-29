@@ -1,15 +1,17 @@
-/** One instrument's chart: candles, overlays and a compact readout. */
+/** One instrument's chart: candles, overlays and a legend laid over them. */
 
 import { useCallback, useMemo, useState } from 'react'
+import { Maximize2 } from 'lucide-react'
 
 import { ChartOverlay } from '@/components/chart/ChartOverlay'
 import { useChartInstance } from '@/components/chart/useChartInstance'
-import { Badge, Spinner } from '@/components/ui/primitives'
+import { Badge, Button, Spinner } from '@/components/ui/primitives'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars, useIct } from '@/hooks/useMarketData'
 import { useChartedSymbols, useWorkspace } from '@/store/workspace'
 import type { DrawingDraft } from '@/types/drawing'
 import {
+  INTERVAL_LABELS,
   QUALITY_LABELS,
   UNRELIABLE_QUALITIES,
   type Candle,
@@ -37,6 +39,8 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
   const selection = useWorkspace((state) => state.selection)
   const addDrawing = useWorkspace((state) => state.addDrawing)
+  const updateDrawing = useWorkspace((state) => state.updateDrawing)
+  const selectDrawing = useWorkspace((state) => state.selectDrawing)
   const setSelection = useWorkspace((state) => state.setSelection)
   const setTool = useWorkspace((state) => state.setTool)
 
@@ -59,7 +63,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
 
   const [hovered, setHovered] = useState<Candle | null>(null)
 
-  const { containerRef, handle, ready } = useChartInstance({
+  const { containerRef, handle, ready, fitContent } = useChartInstance({
     id: `chart-${symbol}`,
     candles,
     precision,
@@ -92,32 +96,47 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   return (
     <div
       className={cn(
-        'panel relative flex min-h-0 flex-col overflow-hidden rounded-lg',
-        isPrimary && 'ring-1 ring-primary/30',
+        'panel relative min-h-0 overflow-hidden',
+        // The primary chart is the one selections and backtests run against,
+        // so it is marked -- inset, because a flush layout leaves no gap
+        // outside the pane for a ring to sit in.
+        isPrimary && 'ring-1 ring-inset ring-primary/25',
         className,
       )}
     >
-      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-2.5">
-        <span className="text-xs font-semibold tracking-tight">{symbol}</span>
-        {isPrimary && (
-          <Badge tone="accent" title="Selections and backtests run on this chart">
-            Primary
-          </Badge>
-        )}
+      <div ref={containerRef} className="absolute inset-0" />
 
-        {last && (
-          <span className={cn('numeric text-xs', directionClass(changePercent))}>
-            {formatPrice(last.close, precision)}
-            <span className="ml-1.5 text-2xs">{formatPercent(changePercent)}</span>
-          </span>
-        )}
+      {/*
+       * The legend sits over the candles instead of in a title bar above them.
+       * In a stack of three charts, 32px of header each is a tenth of the
+       * screen spent on labels -- and the top-left corner of a price pane is
+       * reliably empty, which is why charting platforms all put it there.
+       */}
+      <div className="chart-legend pointer-events-none absolute left-2 top-1.5 z-20 flex flex-col gap-0.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-semibold tracking-tight">{symbol}</span>
+          <span className="text-muted-foreground">{INTERVAL_LABELS[interval]}</span>
 
-        <div className="ml-auto flex items-center gap-1.5">
-          {(barsQuery.isFetching || ictQuery.isFetching) && (
-            <Spinner className="text-muted-foreground" />
+          {last && (
+            <span className={cn('numeric', directionClass(changePercent))}>
+              {formatPrice(last.close, precision)}
+              <span className="ml-1">{formatPercent(changePercent)}</span>
+            </span>
           )}
+
+          {isPrimary && (
+            <Badge
+              tone="accent"
+              className="pointer-events-auto"
+              title="Selections and backtests run on this chart"
+            >
+              Primary
+            </Badge>
+          )}
+
           <Badge
             tone={UNRELIABLE_QUALITIES.has(quality) ? 'warn' : 'neutral'}
+            className="pointer-events-auto"
             title={
               quality === 'demo'
                 ? 'Synthetic data generated from a fixed seed. Not real market prices.'
@@ -129,80 +148,93 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           >
             {QUALITY_LABELS[quality] ?? quality}
           </Badge>
-          <span className="numeric text-2xs text-muted-foreground">
-            {formatCompact(candles.length)} bars
-          </span>
-        </div>
-      </header>
 
-      {readout && (
-        <div className="pointer-events-none absolute left-2.5 top-10 z-20 flex gap-2.5 text-2xs">
-          {(
-            [
-              ['O', readout.open],
-              ['H', readout.high],
-              ['L', readout.low],
-              ['C', readout.close],
-            ] as const
-          ).map(([key, value]) => (
-            <span key={key} className="numeric text-muted-foreground">
-              {key}
-              <span
-                className={cn(
-                  'ml-1',
-                  readout.close >= readout.open ? 'text-bull' : 'text-bear',
-                )}
-              >
-                {formatPrice(value, precision)}
+          {(barsQuery.isFetching || ictQuery.isFetching) && (
+            <Spinner className="text-muted-foreground" />
+          )}
+
+          <Button
+            size="icon"
+            variant="ghost"
+            className="pointer-events-auto h-5 w-5"
+            onClick={fitContent}
+            title="Fit every candle in view"
+            aria-label={`Fit ${symbol} in view`}
+          >
+            <Maximize2 size={11} />
+          </Button>
+        </div>
+
+        {readout && (
+          <div className="flex gap-2.5">
+            {(
+              [
+                ['O', readout.open],
+                ['H', readout.high],
+                ['L', readout.low],
+                ['C', readout.close],
+              ] as const
+            ).map(([key, value]) => (
+              <span key={key} className="numeric text-muted-foreground">
+                {key}
+                <span
+                  className={cn(
+                    'ml-1',
+                    readout.close >= readout.open ? 'text-bull' : 'text-bear',
+                  )}
+                >
+                  {formatPrice(value, precision)}
+                </span>
               </span>
+            ))}
+            <span className="numeric text-muted-foreground">
+              {formatCompact(candles.length)} bars
             </span>
-          ))}
-        </div>
-      )}
-
-      <div className="relative min-h-0 flex-1">
-        <div ref={containerRef} className="absolute inset-0" />
-
-        {ready && candles.length > 0 && (
-          <ChartOverlay
-            symbol={symbol}
-            handle={handle}
-            candles={candles}
-            ict={ictQuery.data}
-            ictSettings={ictSettings}
-            drawings={drawings}
-            selection={selection?.symbol === symbol ? selection : null}
-            tool={tool}
-            drawingColor={drawingColor}
-            selectedDrawingId={selectedDrawingId}
-            snapToSwings={snapToSwings}
-            allowSelection={isPrimary}
-            onCreateDrawing={handleCreate}
-            onSelectionChange={setSelection}
-            onGestureComplete={handleGestureComplete}
-          />
-        )}
-
-        {barsQuery.isLoading && (
-          <div className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">
-            <span className="flex items-center gap-2">
-              <Spinner /> Loading {symbol}...
-            </span>
-          </div>
-        )}
-
-        {barsQuery.isError && (
-          <div className="absolute inset-0 grid place-items-center p-4 text-center text-xs text-bear">
-            {(barsQuery.error as Error).message}
-          </div>
-        )}
-
-        {!barsQuery.isLoading && !barsQuery.isError && candles.length === 0 && (
-          <div className="absolute inset-0 grid place-items-center p-4 text-center text-xs text-muted-foreground">
-            No candles for {symbol} in this range. Try a longer history or a larger interval.
           </div>
         )}
       </div>
+
+      {ready && candles.length > 0 && (
+        <ChartOverlay
+          symbol={symbol}
+          handle={handle}
+          candles={candles}
+          ict={ictQuery.data}
+          ictSettings={ictSettings}
+          drawings={drawings}
+          selection={selection?.symbol === symbol ? selection : null}
+          tool={tool}
+          drawingColor={drawingColor}
+          selectedDrawingId={selectedDrawingId}
+          snapToSwings={snapToSwings}
+          allowSelection={isPrimary}
+          onCreateDrawing={handleCreate}
+          onUpdateDrawing={updateDrawing}
+          onSelectDrawing={selectDrawing}
+          onSelectionChange={setSelection}
+          onGestureComplete={handleGestureComplete}
+        />
+      )}
+
+      {barsQuery.isLoading && (
+        <div className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">
+          <span className="flex items-center gap-2">
+            <Spinner /> Loading {symbol}...
+          </span>
+        </div>
+      )}
+
+      {barsQuery.isError && (
+        <div className="absolute inset-0 grid place-items-center p-4 text-center text-xs text-bear">
+          {(barsQuery.error as Error).message}
+        </div>
+      )}
+
+      {!barsQuery.isLoading && !barsQuery.isError && candles.length === 0 && (
+        <div className="absolute inset-0 grid place-items-center p-4 text-center text-xs text-muted-foreground">
+          No candles for {symbol} in this range. Try a longer history or a larger interval.
+        </div>
+      )}
     </div>
   )
 }

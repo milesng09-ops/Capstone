@@ -9,6 +9,7 @@
 import { useMemo } from 'react'
 import { BoxSelect, Play, RotateCcw, X } from 'lucide-react'
 
+import { PositionSizing } from '@/components/panels/PositionSizing'
 import { NumberField, SelectField, ToggleField } from '@/components/ui/fields'
 import { Badge, Button, Spinner } from '@/components/ui/primitives'
 import { useChartRange } from '@/hooks/useChartRange'
@@ -78,6 +79,11 @@ export function StrategyPanel() {
     const open = slice[0].open
     const close = slice[slice.length - 1].close
     return {
+      // Kept so the sizing panel prices the same candles, rather than
+      // resolving the selection to indices a second time and possibly
+      // disagreeing about which bars the setup covers.
+      startIndex,
+      endIndex,
       bars: slice.length,
       open,
       close,
@@ -279,6 +285,12 @@ export function StrategyPanel() {
           onChange={(allow_overlapping_trades) => updateRules({ allow_overlapping_trades })}
         />
       </section>
+
+      {/* ---- sizing ---- */}
+      <PositionSizing
+        candles={candles}
+        setup={summary ? { startIndex: summary.startIndex, endIndex: summary.endIndex } : null}
+      />
 
       {/* ---- search ---- */}
       <section className="space-y-2 border-t border-border pt-2.5">

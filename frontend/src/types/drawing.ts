@@ -69,11 +69,11 @@ export const TOOL_LABELS: Record<ToolMode, string> = {
 }
 
 export const TOOL_HINTS: Record<ToolMode, string> = {
-  cursor: 'Pan and zoom the chart.',
-  select: 'Drag across the candles that form the setup you want to test.',
-  trendline: 'Drag from one point to another. Snaps to nearby swing points.',
-  horizontal: 'Click to place a price level across the chart.',
-  rectangle: 'Drag to mark a zone.',
+  cursor: 'Pan and zoom. Click a drawing to select it, then drag it or its handles.',
+  select: 'Drag across the candles that form the setup you want to test. Esc cancels.',
+  trendline: 'Drag from one point to another. Snaps to nearby swing points. Esc cancels.',
+  horizontal: 'Press to preview a level, release to place it. Esc cancels.',
+  rectangle: 'Drag to mark a zone. Esc cancels.',
 }
 
 /** Palette offered when drawing. Kept small so charts stay readable. */
@@ -88,30 +88,14 @@ export const DRAWING_COLORS = [
 
 export const DEFAULT_DRAWING_COLOR = DRAWING_COLORS[0]
 
-/** True for the tools that need a press-drag-release gesture. */
+/**
+ * True for every tool that owns the pointer while it is held.
+ *
+ * A level is included even though it places a single point: it is committed
+ * on *release* rather than on press, so that the line is previewed under the
+ * cursor before it exists and a mis-click can be taken back with Escape
+ * while the button is still down.
+ */
 export function isDragTool(tool: ToolMode): boolean {
-  return tool === 'trendline' || tool === 'rectangle' || tool === 'select'
-}
-
-/** The two corners of a rectangle or the endpoints of a line, normalised. */
-export function drawingBounds(drawing: Drawing): {
-  startTime: number
-  endTime: number
-  low: number
-  high: number
-} {
-  if (drawing.kind === 'horizontal') {
-    return {
-      startTime: Number.NEGATIVE_INFINITY,
-      endTime: Number.POSITIVE_INFINITY,
-      low: drawing.price,
-      high: drawing.price,
-    }
-  }
-  return {
-    startTime: Math.min(drawing.from.time, drawing.to.time),
-    endTime: Math.max(drawing.from.time, drawing.to.time),
-    low: Math.min(drawing.from.price, drawing.to.price),
-    high: Math.max(drawing.from.price, drawing.to.price),
-  }
+  return tool !== 'cursor'
 }

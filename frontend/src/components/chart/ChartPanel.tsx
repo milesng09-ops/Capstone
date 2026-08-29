@@ -37,6 +37,8 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
   const selection = useWorkspace((state) => state.selection)
   const addDrawing = useWorkspace((state) => state.addDrawing)
+  const updateDrawing = useWorkspace((state) => state.updateDrawing)
+  const selectDrawing = useWorkspace((state) => state.selectDrawing)
   const setSelection = useWorkspace((state) => state.setSelection)
   const setTool = useWorkspace((state) => state.setTool)
 
@@ -178,6 +180,8 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
             snapToSwings={snapToSwings}
             allowSelection={isPrimary}
             onCreateDrawing={handleCreate}
+            onUpdateDrawing={updateDrawing}
+            onSelectDrawing={selectDrawing}
             onSelectionChange={setSelection}
             onGestureComplete={handleGestureComplete}
           />

@@ -68,7 +68,15 @@ No API key is needed to start. The backend falls back automatically:
 Massive → Yahoo Finance → bundled demo data. Demo data is synthetic and
 generated from a fixed seed; the UI labels it as such everywhere it appears, so
 a win rate computed on it can never be mistaken for one computed on real prices.
-To use live data, put `MASSIVE_API_KEY=...` in `backend/.env`.
+To use live data, put `MASSIVE_API_KEY=...` in `backend/.env` (see
+`backend/.env.example`; keys come from https://massive.com/dashboard/keys).
+
+Massive serves individual contracts, not continuous series, so `ES`, `NQ` and
+`YM` are stitched from whichever contract was front month at the time, rolling
+on the second Thursday of each quarterly delivery month. The stitched series is
+**not** back-adjusted: prices step at every roll, because those are the prices
+that actually traded. The free Massive tier allows 5 requests per minute; the
+candle cache is what keeps that workable.
 
 ### Tests
 

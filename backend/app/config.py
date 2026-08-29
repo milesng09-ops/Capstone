@@ -34,7 +34,9 @@ class Settings(BaseSettings):
 
     # ---- Providers -------------------------------------------------------
     massive_api_key: str = ""
-    massive_base_url: str = "https://api.massive.dev/v1"
+    #: Massive puts the API version inside each path (``/futures/v1/aggs``),
+    #: so this is the bare host.
+    massive_base_url: str = "https://api.massive.com"
     data_provider: ProviderName = "auto"
 
     #: Seconds a provider stays marked unhealthy after a failure before we

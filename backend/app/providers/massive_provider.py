@@ -1,15 +1,14 @@
-"""Massive Futures API provider.
+"""Massive market-data provider.
 
-This is the only module that knows anything about Massive: its base URL, its
-authentication header, its ticker vocabulary and its response shape.  Swapping
-Massive for another commercial vendor means writing a sibling module -- nothing
-in the charting, caching or backtesting layers changes.
+Massive serves individual futures contracts (``ESU6`` is the September 2026
+E-mini S&P), not the continuous series the rest of the application speaks in.
+This module bridges the two: a request for ``ES`` is split into front-month
+segments by :mod:`app.providers.futures_calendar`, each segment is fetched from
+the contract that was front month at the time, and the pieces are stitched back
+into one ascending series.
 
-The client is intentionally tolerant about the response envelope (``data`` /
-``bars`` / ``results`` / bare list) and about field naming, because vendor
-payloads differ in small ways between plans.  Anything it cannot understand is
-raised as :class:`ProviderDataError` so the fallback chain takes over rather
-than surfacing a broken chart.
+The stitched series is not back-adjusted, so prices step at each quarterly
+roll.  See the calendar module for why.
 
 Requests never leave the backend, so ``MASSIVE_API_KEY`` is never exposed to
 the browser.
@@ -34,31 +33,51 @@ from app.providers.base import (
     ProviderRateLimitError,
     ProviderUnavailableError,
 )
+from app.providers.futures_calendar import ContractMonth, contract_segments
 from app.providers.instruments import get_instrument, list_instruments
-from app.services.normalization import normalize_candles
+from app.services.normalization import clip_to_range, normalize_candles
 from app.utils.timeutils import to_ms
 
 logger = logging.getLogger(__name__)
 
-#: Canonical symbol -> Massive contract code.  Continuous front-month series.
-MASSIVE_SYMBOL_MAP: dict[str, str] = {
-    "ES": "CME:ES1!",
-    "NQ": "CME:NQ1!",
-    "YM": "CBOT:YM1!",
+#: Canonical symbol -> Massive product code.  The delivery month is appended
+#: per segment; see :func:`contract_ticker`.
+MASSIVE_PRODUCT_MAP: dict[str, str] = {
+    "ES": "ES",
+    "NQ": "NQ",
+    "YM": "YM",
 }
 
-#: Canonical interval -> Massive resolution string.
+#: Canonical interval -> Massive resolution string.  Massive wants a count and
+#: a unit separated by a space; ``1h`` is rejected outright.  Only the four
+#: intervals the cache actually stores are listed, so 4h and 6h are aggregated
+#: from 1h by the existing chain rather than requested here.
 MASSIVE_INTERVAL_MAP: dict[str, str] = {
-    "5m": "5m",
-    "15m": "15m",
-    "1h": "1h",
-    "4h": "4h",
-    "6h": "6h",
-    "1d": "1d",
+    "5m": "5 min",
+    "15m": "15 min",
+    "1h": "1 hour",
+    "1d": "1 day",
 }
 
-#: Response envelopes we know how to unwrap.
-_ENVELOPE_KEYS = ("bars", "data", "results", "candles", "ohlcv")
+#: Nanoseconds per millisecond.  Massive timestamps every bar in nanoseconds.
+NS_PER_MS = 1_000_000
+
+#: Rows per page.  The documented maximum, chosen to keep the request count --
+#: and therefore rate-limit pressure -- as low as possible.
+PAGE_LIMIT = 50_000
+
+#: Safety valve on cursor following, far above any real window.
+MAX_PAGES = 40
+
+
+def contract_ticker(product: str, contract: ContractMonth) -> str:
+    """Massive contract ticker, e.g. ``("ES", 2026-09)`` -> ``ESU6``.
+
+    Massive abbreviates the year to its final digit, which is unambiguous over
+    any window shorter than a decade.
+    """
+
+    return f"{product}{contract.month_code}{contract.year % 10}"
 
 
 class MassiveProvider(MarketDataProvider):
@@ -104,8 +123,9 @@ class MassiveProvider(MarketDataProvider):
         instruments = list_instruments()
         for instrument in instruments:
             instrument.contract_note = (
-                "Massive continuous front-contract series. "
-                "Roll handling follows the provider's own methodology."
+                "Front-month series stitched from Massive's individual contracts, "
+                "rolling on the second Thursday of each quarterly delivery month. "
+                "Prices are not back-adjusted, so the series steps at every roll."
             )
         return instruments
 
@@ -125,24 +145,117 @@ class MassiveProvider(MarketDataProvider):
                 f"Massive cannot serve '{interval}' natively", provider=self.name
             )
 
-        params = {
-            "symbol": MASSIVE_SYMBOL_MAP[instrument.symbol],
-            "resolution": MASSIVE_INTERVAL_MAP[interval],
-            "from": to_ms(start_time),
-            "to": to_ms(end_time),
-        }
-        payload = await self._request("/futures/ohlcv", params)
-        rows = self._unwrap(payload)
+        product = MASSIVE_PRODUCT_MAP[instrument.symbol]
+        resolution = MASSIVE_INTERVAL_MAP[interval]
+        start_ms = to_ms(start_time)
+        end_ms = to_ms(end_time)
+
+        rows: list[dict[str, Any]] = []
+        for segment in contract_segments(start_ms, end_ms, tz_name=instrument.timezone):
+            ticker = contract_ticker(product, segment.contract)
+            rows.extend(
+                await self._fetch_contract(
+                    ticker, resolution, segment.start_ms, segment.end_ms
+                )
+            )
+
         candles = normalize_candles(instrument.symbol, rows)
+        candles = clip_to_range(candles, start_ms, end_ms)
         if not candles:
             raise ProviderDataError(
-                f"Massive returned no bars for {params['symbol']} {interval}",
+                f"Massive returned no bars for {product} {interval}",
                 provider=self.name,
             )
         return candles
 
     # ------------------------------------------------------------------
-    async def _request(self, path: str, params: dict[str, Any]) -> Any:
+    async def _fetch_contract(
+        self,
+        ticker: str,
+        resolution: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[dict[str, Any]]:
+        """Every bar one contract has in ``[start_ms, end_ms]``, following pages.
+
+        Bounds go out in nanoseconds rather than as dates so segments cut at a
+        roll cannot overlap and claim each other's bars.
+        """
+
+        params: dict[str, Any] = {
+            "resolution": resolution,
+            "window_start.gte": start_ms * NS_PER_MS,
+            "window_start.lte": end_ms * NS_PER_MS,
+            "limit": PAGE_LIMIT,
+        }
+
+        rows: list[dict[str, Any]] = []
+        path: str | None = f"/futures/v1/aggs/{ticker}"
+        pages = 0
+
+        while path is not None and pages < MAX_PAGES:
+            payload = await self._request(path, params if pages == 0 else None)
+            rows.extend(self._to_rows(payload))
+            pages += 1
+            next_url = payload.get("next_url") if isinstance(payload, dict) else None
+            path = next_url if isinstance(next_url, str) and next_url else None
+
+        if path is not None:
+            logger.warning(
+                "Massive paging stopped at %s pages for %s; window may be incomplete",
+                MAX_PAGES,
+                ticker,
+            )
+        return rows
+
+    @staticmethod
+    def _to_rows(payload: Any) -> list[dict[str, Any]]:
+        """Convert a Massive page into records :func:`normalize_candles` reads.
+
+        Timestamps arrive as nanoseconds, which normalisation would otherwise
+        read as milliseconds and place tens of thousands of years from now.
+        """
+
+        if isinstance(payload, dict):
+            results = payload.get("results")
+        elif isinstance(payload, list):
+            results = payload
+        else:
+            results = None
+
+        if results is None:
+            raise ProviderDataError(
+                "Massive response shape was not recognised", provider="massive"
+            )
+        if not isinstance(results, list):
+            raise ProviderDataError(
+                "Massive returned a non-list result set", provider="massive"
+            )
+
+        rows: list[dict[str, Any]] = []
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            window_start = row.get("window_start")
+            if window_start is None:
+                continue
+            try:
+                timestamp_ms = int(window_start) // NS_PER_MS
+            except (TypeError, ValueError):
+                continue
+            rows.append(
+                {
+                    "time": timestamp_ms,
+                    "open": row.get("open"),
+                    "high": row.get("high"),
+                    "low": row.get("low"),
+                    "close": row.get("close"),
+                    "volume": row.get("volume"),
+                }
+            )
+        return rows
+
+    async def _request(self, path: str, params: dict[str, Any] | None) -> Any:
         """GET with exponential backoff on transient failures."""
 
         client = await self._get_client()
@@ -211,31 +324,3 @@ class MassiveProvider(MarketDataProvider):
             except ValueError:
                 pass
         return min(fallback * 2, 30.0)
-
-    @staticmethod
-    def _unwrap(payload: Any) -> list[Any]:
-        """Pull the bar array out of whichever envelope the vendor used."""
-
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            for key in _ENVELOPE_KEYS:
-                value = payload.get(key)
-                if isinstance(value, list):
-                    return value
-            # Column-oriented ("t"/"o"/"h"/"l"/"c"/"v") responses.
-            if all(key in payload for key in ("t", "o", "h", "l", "c")):
-                times = payload["t"]
-                volumes = payload.get("v") or [0] * len(times)
-                return [
-                    {
-                        "time": times[index],
-                        "open": payload["o"][index],
-                        "high": payload["h"][index],
-                        "low": payload["l"][index],
-                        "close": payload["c"][index],
-                        "volume": volumes[index],
-                    }
-                    for index in range(len(times))
-                ]
-        raise ProviderDataError("Massive response shape was not recognised", provider="massive")

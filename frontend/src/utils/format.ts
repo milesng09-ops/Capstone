@@ -65,6 +65,23 @@ export function formatNumber(value: number, digits = 2): string {
   })
 }
 
+/**
+ * Money, to the cent.
+ *
+ * Fixed to USD because every instrument in the catalogue settles in it. The
+ * day that stops being true, the currency belongs in the instrument metadata
+ * rather than hard-coded here.
+ */
+export function formatCurrency(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) return '--'
+  return value.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+}
+
 export function formatCompact(value: number): string {
   if (!Number.isFinite(value)) return '--'
   return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(

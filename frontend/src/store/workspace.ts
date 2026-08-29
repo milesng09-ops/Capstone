@@ -20,8 +20,10 @@ import {
 import { DEFAULT_ICT_SETTINGS, type IctSettings } from '@/types/ict'
 import {
   DEFAULT_SEARCH_CONFIG,
+  DEFAULT_SIZING,
   DEFAULT_TRADE_RULES,
   type SearchConfig,
+  type SizingConfig,
   type TradeRules,
 } from '@/types/backtest'
 import type { Interval, SelectionRange, SymbolKey } from '@/types/market'
@@ -29,6 +31,19 @@ import type { Interval, SelectionRange, SymbolKey } from '@/types/market'
 /** History loaded into the chart, in days. */
 export const RANGE_PRESETS = [30, 60, 90, 180, 365, 730] as const
 export type RangeDays = (typeof RANGE_PRESETS)[number]
+
+/**
+ * How the charted markets are arranged on screen.
+ *
+ * `stacked` is the default because SMT divergence is read straight down a
+ * vertical line -- the same candle on NQ and on ES, one above the other --
+ * and only stacking puts them on a shared time axis you can sight along.
+ * `columns` trades that away for height, which is what you want when the
+ * question is about the shape of one market rather than two. `grid` is for
+ * three charts on a wide screen.
+ */
+export const CHART_LAYOUTS = ['stacked', 'columns', 'grid'] as const
+export type ChartLayout = (typeof CHART_LAYOUTS)[number]
 
 /**
  * Undo steps kept for drawings.
@@ -45,6 +60,8 @@ interface WorkspaceState {
   compareSymbols: SymbolKey[]
   interval: Interval
   rangeDays: RangeDays
+  /** How the charted markets are arranged against each other. */
+  chartLayout: ChartLayout
 
   // ---- analysis -------------------------------------------------------
   ict: IctSettings
@@ -63,6 +80,8 @@ interface WorkspaceState {
   selection: SelectionRange | null
   rules: TradeRules
   search: SearchConfig
+  /** Client-side only: the engine answers in percentages and sizes nothing. */
+  sizing: SizingConfig
 
   // ---- results --------------------------------------------------------
   /** Which stored run the results panel is showing. Server state, so it is
@@ -74,6 +93,7 @@ interface WorkspaceState {
   toggleCompareSymbol: (symbol: SymbolKey) => void
   setInterval: (interval: Interval) => void
   setRangeDays: (days: RangeDays) => void
+  setChartLayout: (layout: ChartLayout) => void
 
   updateIct: (patch: Partial<IctSettings>) => void
 
@@ -91,6 +111,7 @@ interface WorkspaceState {
   setSelection: (selection: SelectionRange | null) => void
   updateRules: (patch: Partial<TradeRules>) => void
   updateSearch: (patch: Partial<SearchConfig>) => void
+  updateSizing: (patch: Partial<SizingConfig>) => void
   resetStrategy: () => void
   setActiveBacktestId: (id: string | null) => void
 }
@@ -126,6 +147,7 @@ export const useWorkspace = create<WorkspaceState>()(
       compareSymbols: ['ES'],
       interval: '1h',
       rangeDays: 180,
+      chartLayout: 'stacked',
 
       ict: DEFAULT_ICT_SETTINGS,
 
@@ -140,6 +162,7 @@ export const useWorkspace = create<WorkspaceState>()(
       selection: null,
       rules: DEFAULT_TRADE_RULES,
       search: DEFAULT_SEARCH_CONFIG,
+      sizing: DEFAULT_SIZING,
       activeBacktestId: null,
 
       setPrimarySymbol: (symbol) =>
@@ -174,6 +197,8 @@ export const useWorkspace = create<WorkspaceState>()(
         }),
 
       setRangeDays: (rangeDays) => set({ rangeDays }),
+
+      setChartLayout: (chartLayout) => set({ chartLayout }),
 
       updateIct: (patch) => set((state) => ({ ict: { ...state.ict, ...patch } })),
 
@@ -254,6 +279,7 @@ export const useWorkspace = create<WorkspaceState>()(
 
       updateRules: (patch) => set((state) => ({ rules: { ...state.rules, ...patch } })),
       updateSearch: (patch) => set((state) => ({ search: { ...state.search, ...patch } })),
+      updateSizing: (patch) => set((state) => ({ sizing: { ...state.sizing, ...patch } })),
 
       resetStrategy: () =>
         set({ rules: DEFAULT_TRADE_RULES, search: DEFAULT_SEARCH_CONFIG }),
@@ -272,12 +298,14 @@ export const useWorkspace = create<WorkspaceState>()(
         compareSymbols: state.compareSymbols,
         interval: state.interval,
         rangeDays: state.rangeDays,
+        chartLayout: state.chartLayout,
         ict: state.ict,
         drawings: state.drawings,
         drawingColor: state.drawingColor,
         snapToSwings: state.snapToSwings,
         rules: state.rules,
         search: state.search,
+        sizing: state.sizing,
       }),
     },
   ),

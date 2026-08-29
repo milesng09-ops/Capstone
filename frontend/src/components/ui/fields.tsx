@@ -219,25 +219,39 @@ export function ToggleField({
   )
 }
 
-/** Segmented control: a row of mutually exclusive choices. */
+/**
+ * Segmented control: a row of mutually exclusive choices.
+ *
+ * `boxed` is the settings-panel form -- a bordered well, so the group reads as
+ * one control among other fields. `plain` is the toolbar form: bare text
+ * buttons with no container, the way an interval strip is drawn in charting
+ * software, where a dozen of these sit side by side and the boxes would be all
+ * you could see.
+ */
 export function SegmentedControl<T extends string>({
   value,
   options,
   onChange,
   className,
   size = 'sm',
+  variant = 'boxed',
 }: {
   value: T
   options: readonly { value: T; label: string; title?: string }[]
   onChange: (value: T) => void
   className?: string
   size?: 'sm' | 'md'
+  variant?: 'boxed' | 'plain'
 }) {
+  const plain = variant === 'plain'
   return (
     <div
       role="group"
       className={cn(
-        'inline-flex items-center gap-0.5 rounded-md border border-border bg-[hsl(var(--panel-raised))] p-0.5',
+        'inline-flex items-center',
+        plain
+          ? 'gap-px'
+          : 'gap-0.5 rounded-md border border-border bg-[hsl(var(--panel-raised))] p-0.5',
         className,
       )}
     >
@@ -252,7 +266,9 @@ export function SegmentedControl<T extends string>({
             'rounded font-medium transition-colors',
             size === 'sm' ? 'px-2 py-1 text-2xs' : 'px-2.5 py-1.5 text-xs',
             option.value === value
-              ? 'bg-primary/20 text-foreground'
+              ? plain
+                ? 'bg-secondary text-foreground'
+                : 'bg-primary/20 text-foreground'
               : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
           )}
         >

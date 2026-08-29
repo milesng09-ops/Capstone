@@ -37,7 +37,7 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children
 
     return (
-      <div className="panel flex h-full flex-col items-center justify-center gap-2 rounded-lg p-4 text-center">
+      <div className="panel flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
         <p className="text-xs font-medium">
           {this.props.label ? `${this.props.label} failed to render` : 'Something broke here'}
         </p>

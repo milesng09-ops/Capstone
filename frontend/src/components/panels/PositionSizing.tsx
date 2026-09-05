@@ -52,6 +52,10 @@ export function PositionSizing({ candles, setup, precision = 2 }: Props) {
     return plan.ok ? { plan: plan.plan } : { problem: plan.problem }
   }, [candles, setup, rules, sizing.accountEquity, sizing.riskPercent])
 
+  // The risk budget stands on its own: it needs no setup, no levels and no
+  // plan, only the two fields beside it.
+  const riskAmount = (sizing.accountEquity * sizing.riskPercent) / 100
+
   // A stop drawn from the pattern's own high or low, or from its ATR, is a
   // different distance for every match the search finds. A percentage stop is
   // the same distance every time. That difference decides whether these
@@ -84,7 +88,25 @@ export function PositionSizing({ candles, setup, precision = 2 }: Props) {
       </div>
 
       <div className="flex items-center justify-between gap-2">
-        <span className="label-caps">Risk</span>
+        <span className="flex items-baseline gap-1.5">
+          <span className="label-caps">Risk</span>
+          {/*
+           * The budget in money, beside the percentage that sets it. Both are
+           * the same fact, and "2%" is the one nobody reads as an amount --
+           * it is the figure the estimated loss above has to match, so it is
+           * shown rather than left to be multiplied out. Derived from the two
+           * fields directly, so it stands with no setup selected too.
+           */}
+          <span
+            className="numeric text-2xs text-muted-foreground"
+            title={`${formatNumber(sizing.riskPercent, 2)}% of ${formatCurrency(
+              sizing.accountEquity,
+              0,
+            )} — what one stop-out is allowed to cost`}
+          >
+            {formatCurrency(riskAmount, 0)}
+          </span>
+        </span>
         <SegmentedControl<string>
           variant="plain"
           value={String(sizing.riskPercent)}

@@ -34,6 +34,7 @@ from app.providers.base import (
     ProviderUnavailableError,
 )
 from app.providers.futures_calendar import ContractMonth, contract_segments
+from app.providers.trading_hours import has_trading_session
 from app.providers.instruments import get_instrument, list_instruments
 from app.services.normalization import clip_to_range, normalize_candles
 from app.utils.timeutils import to_ms
@@ -161,7 +162,11 @@ class MassiveProvider(MarketDataProvider):
 
         candles = normalize_candles(instrument.symbol, rows)
         candles = clip_to_range(candles, start_ms, end_ms)
-        if not candles:
+        if not candles and has_trading_session(start_ms, end_ms, tz_name=instrument.timezone):
+            # Empty *while the market was open* is a failure worth falling back
+            # over. Empty over a weekend or the daily halt is the right answer,
+            # and treating it as a failure is what used to demote a working
+            # provider every Saturday and relabel real prices as demo data.
             raise ProviderDataError(
                 f"Massive returned no bars for {product} {interval}",
                 provider=self.name,

@@ -30,6 +30,7 @@ import numpy as np
 
 from app.models.domain import Candle
 from app.providers.instruments import CANONICAL_INSTRUMENTS
+from app.providers.trading_hours import is_trading_minute
 
 logger = logging.getLogger(__name__)
 
@@ -89,19 +90,10 @@ REGIME_CYCLE: list[Regime] = [
 # --------------------------------------------------------------------------
 # Session calendar
 # --------------------------------------------------------------------------
-def _is_trading_minute(local: datetime) -> bool:
-    """CME equity-index session: Sun 17:00 CT to Fri 16:00 CT, 16:00-17:00 halt."""
-
-    weekday = local.weekday()  # Monday = 0
-    if weekday == 5:  # Saturday
-        return False
-    if weekday == 6:  # Sunday, only the evening reopen
-        return local.hour >= 17
-    if weekday == 4 and local.hour >= 16:  # Friday close
-        return False
-    if local.hour == 16:  # daily maintenance window
-        return False
-    return True
+# The session rule lives in `app.providers.trading_hours`, because the
+# providers need the same answer: generated bars and fetched bars have to
+# agree about when the market was open, or a weekend looks like a data gap in
+# one series and a provider failure in the other.
 
 
 def _session_timestamps(start: datetime, end: datetime) -> list[int]:
@@ -111,7 +103,7 @@ def _session_timestamps(start: datetime, end: datetime) -> list[int]:
     cursor = start
     step = timedelta(minutes=5)
     while cursor < end:
-        if _is_trading_minute(cursor.astimezone(CHICAGO)):
+        if is_trading_minute(cursor.astimezone(CHICAGO)):
             timestamps.append(int(cursor.timestamp() * 1000))
         cursor += step
     return timestamps

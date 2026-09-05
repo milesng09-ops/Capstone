@@ -30,6 +30,7 @@ from app.providers.base import (
     ProviderUnavailableError,
 )
 from app.providers.instruments import get_instrument, list_instruments
+from app.providers.trading_hours import has_trading_session
 from app.services.normalization import normalize_candles
 
 logger = logging.getLogger(__name__)
@@ -112,12 +113,17 @@ class YahooProvider(MarketDataProvider):
         raw_rows: list[dict] = []
         for chunk_start, chunk_end in self._chunk_window(interval, start, end):
             rows = await anyio.to_thread.run_sync(
-                self._fetch_chunk, ticker, interval, chunk_start, chunk_end
+                self._fetch_chunk,
+                ticker,
+                interval,
+                chunk_start,
+                chunk_end,
+                instrument.timezone,
             )
             raw_rows.extend(rows)
 
         candles = normalize_candles(instrument.symbol, raw_rows)
-        if not candles:
+        if not candles and _window_is_open(start, end, instrument.timezone):
             raise ProviderDataError(
                 f"Yahoo returned no bars for {ticker} {interval}", provider=self.name
             )
@@ -152,7 +158,7 @@ class YahooProvider(MarketDataProvider):
         return chunks
 
     def _fetch_chunk(
-        self, ticker: str, interval: str, start: datetime, end: datetime
+        self, ticker: str, interval: str, start: datetime, end: datetime, tz_name: str
     ) -> list[dict]:
         yfinance = self._load_yfinance()
         try:
@@ -177,6 +183,12 @@ class YahooProvider(MarketDataProvider):
                 raise ProviderUnavailableError(
                     f"Yahoo request timed out: {message}", provider=self.name
                 ) from exc
+            # With `raise_errors=True`, yfinance reports an empty window as a
+            # failure -- "possibly delisted; no price data found" -- which is
+            # exactly what a request over a closed market looks like. Over a
+            # window with no trading in it, nothing is the correct answer.
+            if "no price data found" in lowered and not _window_is_open(start, end, tz_name):
+                return []
             raise ProviderUnavailableError(
                 f"Yahoo request failed: {message}", provider=self.name
             ) from exc
@@ -200,3 +212,11 @@ class YahooProvider(MarketDataProvider):
                 }
             )
         return rows
+
+
+def _window_is_open(start: datetime, end: datetime, tz_name: str) -> bool:
+    """Whether the market traded at any point in ``[start, end)``."""
+
+    return has_trading_session(
+        int(start.timestamp() * 1000), int(end.timestamp() * 1000), tz_name=tz_name
+    )

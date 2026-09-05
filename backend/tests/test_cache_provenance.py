@@ -224,7 +224,7 @@ class TestWhatTheServiceStores:
     def test_real_bars_evict_the_generated_ones_they_replace(self, session):
         save_candles(session, "1h", candles("NQ", 4), DEMO_PROVIDER)
 
-        stored = self._persist("NQ", candles("NQ", 2, start=T0 + 50 * HOUR), "massive")
+        stored = self._persist("NQ", candles("NQ", 2), "massive")
 
         assert stored is _PersistOutcome.STORED
         assert providers_in_range(session, "NQ", "1h", T0, T0 + 100 * HOUR) == {"massive"}
@@ -263,7 +263,13 @@ class TestWhatTheServiceStores:
         # it never sent as covered -- the same permanent hole by the other
         # door.
         span = TimeRange(T0 - 50 * HOUR, T0 + 100 * HOUR)
-        assert self._persist("ES", candles("ES", 3), "yahoo", span) is _PersistOutcome.STORED
+
+        # Real bars, kept -- but the series is shorter than the window asked
+        # for, and saying so is the difference between a chart that starts
+        # late and a chart that lies about where the data begins.
+        assert self._persist("ES", candles("ES", 3), "yahoo", span) is (
+            _PersistOutcome.STORED_SHORT
+        )
 
         covered = load_coverage(session, "ES", "1h")
         assert min(entry.start for entry in covered) == T0

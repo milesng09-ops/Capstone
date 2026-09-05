@@ -69,6 +69,12 @@ class _PersistOutcome(str, Enum):
     """
 
     STORED = "stored"
+    #: Stored, but the provider answered for less of the window than was
+    #: asked for while the market was open in the part it skipped. Yahoo does
+    #: this by design: it trims an intraday request to its own retention limit
+    #: and says nothing. The bars that did arrive are real and worth keeping;
+    #: the series is simply shorter than requested, and has to say so.
+    STORED_SHORT = "stored_short"
     #: Generated bars offered for a series that already holds real prices.
     DECLINED_GENERATED = "declined_generated"
     #: The market was open and nothing came back.
@@ -321,6 +327,20 @@ class CandleService:
             outcome = await anyio.to_thread.run_sync(
                 self._persist, symbol, store_interval, bars, result.provider, gap
             )
+            if outcome is _PersistOutcome.STORED_SHORT:
+                # The bars we did get are real and are kept; the response
+                # simply has to admit it is shorter than the window asked for.
+                failed_gaps += 1
+                fallback_reason = fallback_reason or (
+                    "The provider does not hold the whole of this window, so the "
+                    "chart starts later than the range you asked for. Try a shorter "
+                    "history, or a larger interval that reaches further back."
+                )
+                provider_name = result.provider
+                quality = result.quality
+                fetched_any = True
+                continue
+
             if outcome is not _PersistOutcome.STORED:
                 # The range stays unfilled either way, which the response
                 # reports as incomplete -- a gap in the chart is honest. But
@@ -442,6 +462,19 @@ class CandleService:
                 record_coverage(
                     session, symbol, store_interval, served_start, coverage_end, provider
                 )
+
+        # A window answered only in part is not a clean fetch. Without this a
+        # two-year daily chart served the provider's last 720 days came back
+        # labelled "live", with nothing on screen to say the earlier years
+        # were missing rather than empty -- which is the same lie as demo data
+        # wearing a real provider's name, told about the length of the series
+        # instead of its contents. The tail is exempt: it is trimmed on
+        # purpose, because the forming bar is refetched every time.
+        instrument = get_instrument(symbol)
+        if bars and has_trading_session(
+            gap.start, served_start, tz_name=instrument.timezone
+        ):
+            return _PersistOutcome.STORED_SHORT
         return _PersistOutcome.STORED
 
     @staticmethod

@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import { formatClock, formatDateTime } from '@/utils/format'
-import { isKnownTimeZone, offsetLabel, offsetMinutes } from '@/utils/timezone'
+import {
+  DEFAULT_EXCHANGE_ZONE,
+  EXCHANGE_TIME_ZONE,
+  isKnownTimeZone,
+  offsetLabel,
+  offsetMinutes,
+  resolveTimeZone,
+} from '@/utils/timezone'
 
 const JANUARY = Date.UTC(2026, 0, 15, 12, 0, 0)
 const JULY = Date.UTC(2026, 6, 15, 12, 0, 0)
@@ -53,5 +60,19 @@ describe('formatting in a zone', () => {
     expect(formatDateTime(justAfterMidnightUtc, 'America/New_York')).toContain(
       '15 Jan 2026',
     )
+  })
+})
+
+describe('resolveTimeZone', () => {
+  it('sends `exchange` to wherever the instrument trades', () => {
+    expect(resolveTimeZone(EXCHANGE_TIME_ZONE, 'Europe/London')).toBe('Europe/London')
+  })
+
+  it('falls back to CME when the symbol list has not answered yet', () => {
+    expect(resolveTimeZone(EXCHANGE_TIME_ZONE)).toBe(DEFAULT_EXCHANGE_ZONE)
+  })
+
+  it('passes a plain IANA zone through untouched', () => {
+    expect(resolveTimeZone('Asia/Tokyo', 'Europe/London')).toBe('Asia/Tokyo')
   })
 })

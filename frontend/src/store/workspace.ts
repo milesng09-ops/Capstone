@@ -28,7 +28,13 @@ import {
 } from '@/types/backtest'
 import type { Interval, SelectionRange, SymbolKey, TimeWindow } from '@/types/market'
 import { setFormattingTimeZone } from '@/utils/format'
-import { isKnownTimeZone, LOCAL_TIME_ZONE, type TimeZoneId } from '@/utils/timezone'
+import {
+  DEFAULT_EXCHANGE_ZONE,
+  EXCHANGE_TIME_ZONE,
+  isKnownTimeZone,
+  resolveTimeZone,
+  type TimeZoneId,
+} from '@/utils/timezone'
 
 /** History loaded into the chart, in days. */
 export const RANGE_PRESETS = [30, 60, 90, 180, 365, 730] as const
@@ -66,6 +72,12 @@ interface WorkspaceState {
   chartLayout: ChartLayout
   /** The clock every timestamp in the app is drawn against. */
   timeZone: TimeZoneId
+  /**
+   * Where the primary instrument trades. Not persisted and not chosen: it
+   * comes from the symbol list, and only matters when `timeZone` is
+   * `exchange`.
+   */
+  exchangeZone: string
 
   // ---- analysis -------------------------------------------------------
   ict: IctSettings
@@ -113,6 +125,7 @@ interface WorkspaceState {
   setRangeDays: (days: RangeDays) => void
   setChartLayout: (layout: ChartLayout) => void
   setTimeZone: (zone: TimeZoneId) => void
+  setExchangeZone: (zone: string) => void
 
   updateIct: (patch: Partial<IctSettings>) => void
 
@@ -170,7 +183,8 @@ export const useWorkspace = create<WorkspaceState>()(
       interval: '1h',
       rangeDays: 180,
       chartLayout: 'stacked',
-      timeZone: LOCAL_TIME_ZONE,
+      timeZone: EXCHANGE_TIME_ZONE,
+      exchangeZone: DEFAULT_EXCHANGE_ZONE,
 
       ict: DEFAULT_ICT_SETTINGS,
 
@@ -229,12 +243,20 @@ export const useWorkspace = create<WorkspaceState>()(
 
       setChartLayout: (chartLayout) => set({ chartLayout }),
 
-      setTimeZone: (timeZone) => {
-        // The formatters read a module variable rather than the store, so it
-        // has to move in the same breath as the state components watch.
-        setFormattingTimeZone(timeZone)
-        set({ timeZone })
-      },
+      setTimeZone: (timeZone) =>
+        set((state) => {
+          // The formatters read a module variable rather than the store, so it
+          // has to move in the same breath as the state components watch.
+          setFormattingTimeZone(resolveTimeZone(timeZone, state.exchangeZone))
+          return { timeZone }
+        }),
+
+      setExchangeZone: (exchangeZone) =>
+        set((state) => {
+          if (exchangeZone === state.exchangeZone) return state
+          setFormattingTimeZone(resolveTimeZone(state.timeZone, exchangeZone))
+          return { exchangeZone }
+        }),
 
       updateIct: (patch) => set((state) => ({ ict: { ...state.ict, ...patch } })),
 
@@ -402,20 +424,24 @@ export const useWorkspace = create<WorkspaceState>()(
 // the list -- or a hand-edited one -- falls back to the machine clock rather
 // than throwing inside `Intl` on every timestamp.
 if (!isKnownTimeZone(useWorkspace.getState().timeZone)) {
-  useWorkspace.setState({ timeZone: LOCAL_TIME_ZONE })
+  useWorkspace.setState({ timeZone: EXCHANGE_TIME_ZONE })
 }
-setFormattingTimeZone(useWorkspace.getState().timeZone)
+setFormattingTimeZone(
+  resolveTimeZone(useWorkspace.getState().timeZone, useWorkspace.getState().exchangeZone),
+)
 
 /**
- * Subscribe to the active time zone.
+ * Subscribe to the active time zone, already resolved to an IANA name.
  *
  * Components that print timestamps call this even where they ignore the value:
  * the formatters read a module variable, so without a store subscription a
  * change of zone would leave yesterday's labels on screen until something else
  * happened to re-render them.
  */
-export function useTimeZone(): TimeZoneId {
-  return useWorkspace((state) => state.timeZone)
+export function useTimeZone(): string {
+  const zone = useWorkspace((state) => state.timeZone)
+  const exchangeZone = useWorkspace((state) => state.exchangeZone)
+  return resolveTimeZone(zone, exchangeZone)
 }
 
 /** Every symbol the workspace currently charts, primary first. */

@@ -23,7 +23,7 @@ import type {
 
 import type { Candle } from '@/types/market'
 import { formatDateTime } from '@/utils/format'
-import { resolveTimeZone, type TimeZoneId } from '@/utils/timezone'
+import { resolveTimeZone } from '@/utils/timezone'
 
 /** Milliseconds -> the seconds-based timestamp the chart library expects. */
 export function toChartTime(ms: number): UTCTimestamp {
@@ -170,7 +170,7 @@ export function readChartPalette(): ChartPalette {
  * and with every date printed in the panels. Formatting the ticks ourselves is
  * the whole fix -- the data stays in UTC seconds, only the labels move.
  */
-export function timeAxisOptions(zone: TimeZoneId): DeepPartial<ChartOptions> {
+export function timeAxisOptions(zone: string): DeepPartial<ChartOptions> {
   const timeZone = resolveTimeZone(zone)
   const shape = (options: Intl.DateTimeFormatOptions) =>
     new Intl.DateTimeFormat('en-GB', { timeZone, ...options })
@@ -209,6 +209,29 @@ export function timeAxisOptions(zone: TimeZoneId): DeepPartial<ChartOptions> {
       timeFormatter: (chartTime: UTCTimestamp) =>
         formatDateTime(fromChartTime(chartTime), zone),
     },
+  }
+}
+
+/**
+ * Everything a chart is created with: appearance, precision and time zone.
+ *
+ * Composed here rather than spread by the caller because these two halves both
+ * describe `timeScale` and `localization`, and a top-level spread would drop
+ * whichever half came first -- taking `timeVisible` with it, which is what
+ * tells the library to label an intraday axis in hours rather than dates.
+ */
+export function chartOptions(
+  palette: ChartPalette,
+  precision: number,
+  zone: string,
+): DeepPartial<ChartOptions> {
+  const base = baseChartOptions(palette, precision)
+  const axis = timeAxisOptions(zone)
+  return {
+    ...base,
+    ...axis,
+    timeScale: { ...base.timeScale, ...axis.timeScale },
+    localization: { ...base.localization, ...axis.localization },
   }
 }
 

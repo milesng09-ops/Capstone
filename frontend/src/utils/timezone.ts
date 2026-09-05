@@ -12,12 +12,27 @@
  * be several hundred entries of scrolling to reach the four that matter.
  */
 
-/** IANA zone name, or `local` for "whatever this machine is set to". */
+/**
+ * An IANA zone name, or one of the two that resolve at read time: `local` is
+ * whatever this machine is set to, `exchange` is wherever the instrument
+ * trades.
+ */
 export type TimeZoneId = string
 
 export const LOCAL_TIME_ZONE = 'local'
+export const EXCHANGE_TIME_ZONE = 'exchange'
+
+/**
+ * Where the charted instruments trade, until the symbol list says otherwise.
+ *
+ * Every instrument here is a CME future, so this is the answer rather than a
+ * placeholder -- but it is the answer for today's three symbols, not a fact
+ * about the app, which is why the live value comes from the backend.
+ */
+export const DEFAULT_EXCHANGE_ZONE = 'America/Chicago'
 
 export const TIME_ZONES: readonly { value: TimeZoneId; label: string }[] = [
+  { value: EXCHANGE_TIME_ZONE, label: 'Exchange' },
   { value: LOCAL_TIME_ZONE, label: 'Local' },
   { value: 'UTC', label: 'UTC' },
   { value: 'America/New_York', label: 'New York' },
@@ -38,9 +53,14 @@ export function machineTimeZone(): string {
   }
 }
 
-/** The IANA name to hand to `Intl`, resolving `local`. */
-export function resolveTimeZone(zone: TimeZoneId): string {
-  return zone === LOCAL_TIME_ZONE ? machineTimeZone() : zone
+/** The IANA name to hand to `Intl`, resolving `local` and `exchange`. */
+export function resolveTimeZone(
+  zone: TimeZoneId,
+  exchangeZone: string = DEFAULT_EXCHANGE_ZONE,
+): string {
+  if (zone === LOCAL_TIME_ZONE) return machineTimeZone()
+  if (zone === EXCHANGE_TIME_ZONE) return exchangeZone
+  return zone
 }
 
 export function isKnownTimeZone(zone: unknown): zone is TimeZoneId {

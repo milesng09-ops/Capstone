@@ -1,15 +1,25 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  chartOptions,
   indexOfBar,
   logicalFromTime,
   medianBarSpacingMs,
   nearestBarTime,
   readChartPalette,
   snapWithinBars,
+  timeAxisOptions,
   timeFromLogical,
   withAlpha,
 } from '@/lib/chart'
+import type {
+  BarPrice,
+  PriceFormatterFn,
+  TickMarkFormatter,
+  TickMarkType,
+  UTCTimestamp,
+} from 'lightweight-charts'
+
 import type { Candle } from '@/types/market'
 
 function candle(time: number): Candle {
@@ -160,5 +170,72 @@ describe('indexOfBar', () => {
 
   it('reports -1 when the time is not a bar', () => {
     expect(indexOfBar(candles, 2500)).toBe(-1)
+  })
+})
+
+describe('chartOptions', () => {
+  const palette = {
+    background: '#000000',
+    text: '#ffffff',
+    grid: '#111111',
+    border: '#222222',
+    bull: '#00ff00',
+    bear: '#ff0000',
+    accent: '#0000ff',
+    muted: '#888888',
+  }
+
+  /**
+   * The zone half and the appearance half both describe `timeScale`, so a
+   * top-level spread of one over the other silently drops `timeVisible` --
+   * and without it the library labels an intraday axis with repeated dates
+   * instead of hours. Composition is what this asserts.
+   */
+  it('keeps the appearance options the time zone options sit beside', () => {
+    const options = chartOptions(palette, 2, 'UTC')
+
+    expect(options.timeScale?.timeVisible).toBe(true)
+    expect(options.timeScale?.borderColor).toBe(palette.border)
+    expect(typeof options.timeScale?.tickMarkFormatter).toBe('function')
+    expect(typeof options.localization?.priceFormatter).toBe('function')
+    expect(typeof options.localization?.timeFormatter).toBe('function')
+  })
+
+  it('formats price with the instrument precision', () => {
+    const options = chartOptions(palette, 2, 'UTC')
+    const priceFormatter = options.localization?.priceFormatter as PriceFormatterFn
+    expect(priceFormatter(1.239 as BarPrice)).toBe('1.24')
+  })
+})
+
+describe('timeAxisOptions', () => {
+  const noon = Date.UTC(2026, 0, 15, 12, 0, 0) / 1000
+
+  // `DeepPartial` erases the call signatures, so the formatters come back out
+  // through their real types.
+  const tickFormatter = (zone: string) =>
+    timeAxisOptions(zone).timeScale?.tickMarkFormatter as TickMarkFormatter
+
+  const format = (zone: string, type: number) =>
+    tickFormatter(zone)(noon as UTCTimestamp, type as TickMarkType, 'en-GB')
+
+  it('labels an hour tick in the chosen zone', () => {
+    expect(format('UTC', 3)).toBe('12:00')
+    expect(format('America/New_York', 3)).toBe('07:00')
+  })
+
+  it('labels a day tick with the date in that zone', () => {
+    expect(format('UTC', 2)).toBe('15 Jan')
+    expect(format('Asia/Tokyo', 2)).toBe('15 Jan')
+  })
+
+  it('rolls the date when the zone is behind the instant', () => {
+    const justAfterMidnight = Date.UTC(2026, 0, 16, 0, 30, 0) / 1000
+    const label = tickFormatter('America/New_York')(
+      justAfterMidnight as UTCTimestamp,
+      2 as TickMarkType,
+      'en-GB',
+    )
+    expect(label).toBe('15 Jan')
   })
 })

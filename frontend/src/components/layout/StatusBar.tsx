@@ -15,7 +15,8 @@
 import { useEffect, useState } from 'react'
 
 import { SegmentedControl } from '@/components/ui/fields'
-import { RANGE_PRESETS, useWorkspace, type RangeDays } from '@/store/workspace'
+import { useSymbols } from '@/hooks/useMarketData'
+import { RANGE_PRESETS, useTimeZone, useWorkspace, type RangeDays } from '@/store/workspace'
 import { TOOL_HINTS, TOOL_LABELS } from '@/types/drawing'
 import { formatClock } from '@/utils/format'
 import { offsetLabel, TIME_ZONES, timeZoneLabel } from '@/utils/timezone'
@@ -37,9 +38,25 @@ const SHORT_DISCLAIMER = 'Educational use only — past results are not future p
  * label would get wrong for weeks at a time.
  */
 function Clock() {
-  const timeZone = useWorkspace((state) => state.timeZone)
+  // The choice drives the picker; the resolved zone drives the clock, since
+  // `Exchange` and `Local` are answers rather than zones.
+  const choice = useWorkspace((state) => state.timeZone)
+  const zone = useTimeZone()
   const setTimeZone = useWorkspace((state) => state.setTimeZone)
+
+  const primarySymbol = useWorkspace((state) => state.primarySymbol)
+  const setExchangeZone = useWorkspace((state) => state.setExchangeZone)
+  const symbols = useSymbols()
+
   const [now, setNow] = useState(() => Date.now())
+
+  // Where the instrument trades is the backend's answer, not ours: it travels
+  // with the symbol, so charting something that is not a CME future later
+  // moves the clock without any change here.
+  useEffect(() => {
+    const instrument = symbols.data?.find((item) => item.symbol === primarySymbol)
+    if (instrument?.timezone) setExchangeZone(instrument.timezone)
+  }, [symbols.data, primarySymbol, setExchangeZone])
 
   useEffect(() => {
     // Tick on the second boundary rather than every 1000ms from mount, so the
@@ -58,14 +75,14 @@ function Clock() {
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
       <span className="numeric text-2xs tabular-nums text-foreground">
-        {formatClock(now, timeZone)}
+        {formatClock(now, zone)}
       </span>
-      <span className="text-2xs text-muted-foreground">{offsetLabel(timeZone, now)}</span>
+      <span className="text-2xs text-muted-foreground">{offsetLabel(zone, now)}</span>
       <select
         aria-label="Time zone"
-        title={`Charts and timestamps are shown in ${timeZoneLabel(timeZone)}`}
+        title={`Charts and timestamps are shown in ${timeZoneLabel(choice)} time (${zone})`}
         className="cursor-pointer rounded bg-transparent px-1 py-0.5 text-2xs text-muted-foreground outline-none hover:bg-secondary hover:text-foreground"
-        value={timeZone}
+        value={choice}
         onChange={(event) => setTimeZone(event.target.value)}
       >
         {TIME_ZONES.map((zone) => (

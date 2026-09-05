@@ -21,12 +21,12 @@ import {
 } from 'lightweight-charts'
 
 import {
-  baseChartOptions,
   candlesToSeries,
   candlesToVolume,
   fromChartTime,
   logicalFromTime,
   readChartPalette,
+  chartOptions,
   timeAxisOptions,
   timeFromLogical,
   toChartTime,
@@ -99,11 +99,11 @@ export function useChartInstance({ id, candles, precision, onHoverBar }: Options
     const palette = readChartPalette()
     paletteRef.current = palette
 
+    const options = chartOptions(palette, precision, zoneRef.current)
     const chart = createChart(container, {
-      ...baseChartOptions(palette, precision),
-      ...timeAxisOptions(zoneRef.current),
+      ...options,
       layout: {
-        ...baseChartOptions(palette, precision).layout,
+        ...options.layout,
         background: { type: ColorType.Solid, color: 'transparent' },
       },
     })

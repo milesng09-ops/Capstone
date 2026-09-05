@@ -305,7 +305,17 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
 
       {!barsQuery.isLoading && !barsQuery.isError && candles.length === 0 && (
         <div className="absolute inset-0 grid place-items-center p-4 text-center text-xs text-muted-foreground">
-          No candles for {symbol} in this range. Try a longer history or a larger interval.
+          {/*
+            An empty pane has two causes that want opposite responses. A quota
+            clears by itself and the range is fine; saying "try a longer
+            history" there sends the user to change a setting that was never
+            the problem, which is most of what the 2026-09-05 review spent its
+            time on.
+          */}
+          {barsQuery.data?.rate_limited
+            ? `The data provider's request limit is reached, so this range has not been
+               fetched yet. It clears on its own -- no setting needs changing.`
+            : `No candles for ${symbol} in this range. Try a longer history or a larger interval.`}
         </div>
       )}
     </div>

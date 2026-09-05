@@ -70,36 +70,51 @@ export function Disclosure({
   label,
   summary,
   defaultOpen = false,
+  action,
+  divided = true,
   children,
 }: {
   label: string
   /** What is inside, in a few words, so the fold is not a mystery box. */
   summary?: string
   defaultOpen?: boolean
+  /**
+   * A control that belongs to the section rather than to its contents -- the
+   * button that clears a selection, say. It sits beside the label as a
+   * sibling of the toggle, never inside it: a button within a button is
+   * invalid, and nesting one would make clearing the setup also fold the
+   * section away.
+   */
+  action?: ReactNode
+  /** The rule above the header. Off for the first section in a panel. */
+  divided?: boolean
   children: ReactNode
 }) {
   const [open, setOpen] = useState(defaultOpen)
 
   return (
-    <section className="border-t border-border pt-2.5">
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-1.5 text-left"
-      >
-        <ChevronRight
-          size={12}
-          className={cn(
-            'shrink-0 text-muted-foreground transition-transform',
-            open && 'rotate-90',
+    <section className={cn(divided && 'border-t border-border pt-2.5')}>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+        >
+          <ChevronRight
+            size={12}
+            className={cn(
+              'shrink-0 text-muted-foreground transition-transform',
+              open && 'rotate-90',
+            )}
+          />
+          <span className="label-caps">{label}</span>
+          {summary && !open && (
+            <span className="truncate text-2xs text-muted-foreground">{summary}</span>
           )}
-        />
-        <span className="label-caps">{label}</span>
-        {summary && !open && (
-          <span className="truncate text-2xs text-muted-foreground">{summary}</span>
-        )}
-      </button>
+        </button>
+        {action}
+      </div>
 
       {open && <div className="space-y-2 pt-2">{children}</div>}
     </section>

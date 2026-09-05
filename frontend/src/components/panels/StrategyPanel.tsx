@@ -111,6 +111,18 @@ export function StrategyPanel() {
     }
   }, [candles, selection])
 
+  /**
+   * What the setup is, in the few words the header has room for once the
+   * section is folded. Collapsing the setup away must not cost you the
+   * knowledge of *which* setup you are about to test, so the summary always
+   * names it.
+   */
+  const setupSummary = useMemo(() => {
+    if (!selection) return 'nothing selected'
+    if (!summary) return selection.symbol
+    return `${selection.symbol} · ${formatInteger(summary.bars)} candles`
+  }, [selection, summary])
+
   /** How much of the loaded history the window actually covers. */
   const windowBars = useMemo(() => {
     if (!testWindow || candles.length === 0) return null
@@ -146,10 +158,13 @@ export function StrategyPanel() {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
       {/* ---- the setup ---- */}
-      <section>
-        <div className="mb-1.5 flex items-center justify-between">
-          <span className="label-caps">Selected setup</span>
-          {selection && (
+      <Disclosure
+        label="Selected setup"
+        defaultOpen
+        divided={false}
+        summary={setupSummary}
+        action={
+          selection && (
             <Button
               size="icon"
               variant="ghost"
@@ -160,9 +175,9 @@ export function StrategyPanel() {
             >
               <X size={12} />
             </Button>
-          )}
-        </div>
-
+          )
+        }
+      >
         {!selection ? (
           <div className="rounded-md border border-dashed border-border p-3">
             <p className="text-2xs leading-relaxed text-muted-foreground">
@@ -208,7 +223,7 @@ export function StrategyPanel() {
             )}
           </div>
         )}
-      </section>
+      </Disclosure>
 
       {/* ---- where to test ---- */}
       <section className="space-y-2 border-t border-border pt-2.5">

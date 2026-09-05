@@ -77,12 +77,25 @@ export function useIct(
   })
 }
 
+/**
+ * Which provider is actually serving candles, polled once a minute.
+ *
+ * A backend that is briefly down at mount used to pin the whole UI to demo
+ * mode for a full minute, silently: the badges read from this one response,
+ * so a strategy tested in that window would be scored on synthetic prices
+ * while looking exactly like a live run. Hence the retries -- a hiccup at
+ * load should not be mistaken for an answer -- and the refetch on focus, so
+ * coming back to the tab re-asks instead of trusting a minute-old verdict.
+ */
 export function useProviderStatus() {
   return useQuery({
     queryKey: ['provider-status'],
     queryFn: () => api.providerStatus(),
     refetchInterval: 60_000,
     staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 8_000),
   })
 }
 

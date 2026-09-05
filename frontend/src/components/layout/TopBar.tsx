@@ -50,6 +50,14 @@ export function TopBar() {
   const provider = status?.active_provider
   const isDemo = provider === 'demo'
 
+  // When this verdict was last confirmed with the backend. A badge reading
+  // "Demo mode" because the data really is synthetic looks exactly like one
+  // reading "Demo mode" because the backend was unreachable at load, so the
+  // badge carries its own age and lets you tell the two apart.
+  const checkedAt = statusQuery.dataUpdatedAt
+    ? `Last confirmed with the backend at ${formatDateTime(statusQuery.dataUpdatedAt)}.`
+    : ''
+
   return (
     <header className="panel flex h-9 shrink-0 items-center gap-2 overflow-x-auto border-b border-border px-2">
       <div className="flex shrink-0 items-center gap-1.5" title="Market Replay Lab">
@@ -142,11 +150,14 @@ export function TopBar() {
           <>
             <Badge
               tone={isDemo ? 'warn' : 'bull'}
-              title={
+              title={[
                 isDemo
                   ? 'Bundled synthetic data generated from a fixed seed. Not real market prices.'
-                  : status.fallback_reason ?? `Serving data from ${provider}`
-              }
+                  : status.fallback_reason ?? `Serving data from ${provider}`,
+                checkedAt,
+              ]
+                .filter(Boolean)
+                .join(' ')}
             >
               <Database size={10} />
               {PROVIDER_LABELS[provider ?? ''] ?? provider}
@@ -163,7 +174,7 @@ export function TopBar() {
               <Badge
                 tone="neutral"
                 className="hidden lg:inline-flex"
-                title="Set MASSIVE_API_KEY in the backend .env to use live market data."
+                title={`Set MASSIVE_API_KEY in the backend .env to use live market data. ${checkedAt}`.trim()}
               >
                 no API key
               </Badge>

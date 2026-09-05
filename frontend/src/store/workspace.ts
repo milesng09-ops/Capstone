@@ -26,6 +26,7 @@ import {
   type SizingConfig,
   type TradeRules,
 } from '@/types/backtest'
+import { MAX_RANGE_DAYS } from '@/types/market'
 import type { Interval, SelectionRange, SymbolKey, TimeWindow } from '@/types/market'
 import { setFormattingTimeZone } from '@/utils/format'
 import {
@@ -36,9 +37,27 @@ import {
   type TimeZoneId,
 } from '@/utils/timezone'
 
+/** Which panel is docked in the right-hand column. */
+export type SidePanel = 'analysis' | 'strategy'
+
 /** History loaded into the chart, in days. */
 export const RANGE_PRESETS = [30, 60, 90, 180, 365, 730] as const
 export type RangeDays = (typeof RANGE_PRESETS)[number]
+
+/**
+ * The longest preset an interval can actually serve.
+ *
+ * Finer intervals hold more bars in the same wall-clock window, and past a
+ * point the backend refuses the request outright. Clamping here is what keeps
+ * the workspace in a state that can be loaded: switching to 5m while 180 days
+ * are selected used to leave every chart showing an error until the user
+ * worked out that the range, not the interval, was the problem.
+ */
+export function longestRange(interval: Interval): RangeDays {
+  const cap = MAX_RANGE_DAYS[interval]
+  const usable = RANGE_PRESETS.filter((days) => days <= cap)
+  return usable[usable.length - 1] ?? RANGE_PRESETS[0]
+}
 
 /**
  * How the charted markets are arranged on screen.
@@ -68,6 +87,15 @@ interface WorkspaceState {
   compareSymbols: SymbolKey[]
   interval: Interval
   rangeDays: RangeDays
+
+  // ---- layout ---------------------------------------------------------
+  /** Which side panel is docked, or `null` when the column is closed. */
+  sidePanel: SidePanel | null
+  resultsOpen: boolean
+  /** Fraction of the row the charts take, against the side panel. */
+  sidebarRatio: number
+  /** Fraction of the column the charts take, against the results. */
+  chartRatio: number
   /** How the charted markets are arranged against each other. */
   chartLayout: ChartLayout
   /** The clock every timestamp in the app is drawn against. */
@@ -122,6 +150,10 @@ interface WorkspaceState {
   setPrimarySymbol: (symbol: SymbolKey) => void
   toggleCompareSymbol: (symbol: SymbolKey) => void
   setInterval: (interval: Interval) => void
+  setSidePanel: (panel: SidePanel | null) => void
+  setResultsOpen: (open: boolean) => void
+  setSidebarRatio: (ratio: number) => void
+  setChartRatio: (ratio: number) => void
   setRangeDays: (days: RangeDays) => void
   setChartLayout: (layout: ChartLayout) => void
   setTimeZone: (zone: TimeZoneId) => void
@@ -182,6 +214,11 @@ export const useWorkspace = create<WorkspaceState>()(
       compareSymbols: ['ES'],
       interval: '1h',
       rangeDays: 180,
+
+      sidePanel: 'strategy',
+      resultsOpen: true,
+      sidebarRatio: 0.78,
+      chartRatio: 0.58,
       chartLayout: 'stacked',
       timeZone: EXCHANGE_TIME_ZONE,
       exchangeZone: DEFAULT_EXCHANGE_ZONE,
@@ -230,18 +267,34 @@ export const useWorkspace = create<WorkspaceState>()(
         }),
 
       setInterval: (interval) =>
-        set({
+        set((state) => ({
           interval,
+          // A finer interval cannot hold as much history, so the range comes
+          // down with it rather than being left somewhere the backend will
+          // refuse. Visibly: the preset that ends up selected is the one that
+          // loaded, never a silent substitution for the one that was pressed.
+          rangeDays: Math.min(state.rangeDays, longestRange(interval)) as RangeDays,
           // The same wall-clock range means a different number of candles on a
           // different interval, so the pattern would no longer be the one the
           // user picked. The test window is wall-clock either way, so it
           // survives: "test August" means the same thing at any resolution.
           selection: null,
-        }),
+        })),
 
-      setRangeDays: (rangeDays) => set({ rangeDays }),
+      setRangeDays: (rangeDays) =>
+        set((state) => ({
+          rangeDays: Math.min(rangeDays, longestRange(state.interval)) as RangeDays,
+        })),
 
       setChartLayout: (chartLayout) => set({ chartLayout }),
+
+      // Layout is a working preference, not session state: a workspace closed
+      // down to the candles should still be closed down to the candles after
+      // a reload, or the panel you dismissed is back every morning.
+      setSidePanel: (sidePanel) => set({ sidePanel }),
+      setResultsOpen: (resultsOpen) => set({ resultsOpen }),
+      setSidebarRatio: (sidebarRatio) => set({ sidebarRatio }),
+      setChartRatio: (chartRatio) => set({ chartRatio }),
 
       setTimeZone: (timeZone) =>
         set((state) => {
@@ -405,6 +458,10 @@ export const useWorkspace = create<WorkspaceState>()(
         interval: state.interval,
         rangeDays: state.rangeDays,
         chartLayout: state.chartLayout,
+        sidePanel: state.sidePanel,
+        resultsOpen: state.resultsOpen,
+        sidebarRatio: state.sidebarRatio,
+        chartRatio: state.chartRatio,
         timeZone: state.timeZone,
         ict: state.ict,
         drawings: state.drawings,

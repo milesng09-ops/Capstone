@@ -237,7 +237,7 @@ export function SegmentedControl<T extends string>({
   variant = 'boxed',
 }: {
   value: T
-  options: readonly { value: T; label: string; title?: string }[]
+  options: readonly { value: T; label: string; title?: string; disabled?: boolean }[]
   onChange: (value: T) => void
   className?: string
   size?: 'sm' | 'md'
@@ -261,6 +261,10 @@ export function SegmentedControl<T extends string>({
           type="button"
           title={option.title}
           aria-pressed={option.value === value}
+          // An option that cannot be chosen keeps its place in the row and
+          // says why on hover, rather than disappearing and leaving a control
+          // whose length changes underneath the pointer.
+          disabled={option.disabled}
           onClick={() => onChange(option.value)}
           className={cn(
             'rounded font-medium transition-colors',
@@ -270,6 +274,8 @@ export function SegmentedControl<T extends string>({
                 ? 'bg-secondary text-foreground'
                 : 'bg-primary/20 text-foreground'
               : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+            option.disabled &&
+              'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground',
           )}
         >
           {option.label}

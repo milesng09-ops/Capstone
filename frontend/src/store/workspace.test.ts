@@ -7,7 +7,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { useWorkspace } from '@/store/workspace'
+import { longestRange, useWorkspace } from '@/store/workspace'
 import type { Drawing } from '@/types/drawing'
 import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
 
@@ -179,5 +179,71 @@ describe('overlay defaults', () => {
 
   it('keeps the evidence for a selected trade on', () => {
     expect(DEFAULT_ICT_SETTINGS.showTradeEvidence).toBe(true)
+  })
+})
+
+describe('how much history an interval can carry', () => {
+  it('brings the range down when the interval can no longer hold it', () => {
+    // 180 days of 5-minute bars is more than one request can carry, and the
+    // backend refuses it outright. Before this, switching to 5m left every
+    // chart showing an error until you worked out that the range -- not the
+    // interval you had just pressed -- was the problem.
+    useWorkspace.setState({ interval: '1h', rangeDays: 180 })
+    useWorkspace.getState().setInterval('5m')
+
+    expect(useWorkspace.getState().rangeDays).toBe(90)
+  })
+
+  it('leaves a range the new interval can carry alone', () => {
+    useWorkspace.setState({ interval: '1h', rangeDays: 60 })
+    useWorkspace.getState().setInterval('5m')
+
+    expect(useWorkspace.getState().rangeDays).toBe(60)
+  })
+
+  it('does not widen the range again on the way back up', () => {
+    // Coming back to 1h should not silently load six months the user never
+    // asked for; widening is their call, and the presets are right there.
+    useWorkspace.setState({ interval: '5m', rangeDays: 90 })
+    useWorkspace.getState().setInterval('1h')
+
+    expect(useWorkspace.getState().rangeDays).toBe(90)
+  })
+
+  it('refuses a preset the current interval cannot serve', () => {
+    useWorkspace.setState({ interval: '5m', rangeDays: 30 })
+    useWorkspace.getState().setRangeDays(365)
+
+    expect(useWorkspace.getState().rangeDays).toBe(90)
+  })
+
+  it('names the longest preset each interval can serve', () => {
+    expect(longestRange('5m')).toBe(90)
+    expect(longestRange('15m')).toBe(180)
+    expect(longestRange('1h')).toBe(730)
+    expect(longestRange('1d')).toBe(730)
+  })
+})
+
+describe('layout', () => {
+  it('remembers a collapsed panel, so it is not back next session', () => {
+    useWorkspace.getState().setSidePanel(null)
+    expect(useWorkspace.getState().sidePanel).toBeNull()
+
+    useWorkspace.getState().setSidePanel('analysis')
+    expect(useWorkspace.getState().sidePanel).toBe('analysis')
+  })
+
+  it('remembers a collapsed results pane', () => {
+    useWorkspace.getState().setResultsOpen(false)
+    expect(useWorkspace.getState().resultsOpen).toBe(false)
+  })
+
+  it('remembers where the dividers were left', () => {
+    useWorkspace.getState().setSidebarRatio(0.9)
+    useWorkspace.getState().setChartRatio(0.7)
+
+    expect(useWorkspace.getState().sidebarRatio).toBe(0.9)
+    expect(useWorkspace.getState().chartRatio).toBe(0.7)
   })
 })

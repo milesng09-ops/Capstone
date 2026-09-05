@@ -26,6 +26,27 @@ export const INTERVAL_MS: Record<Interval, number> = {
   '1d': 24 * 60 * 60_000,
 }
 
+/**
+ * The longest history each interval can be asked for in one request.
+ *
+ * The backend refuses a window holding more than 20,000 bars, counted against
+ * the trading calendar -- roughly 115 open hours in every 168. These are the
+ * presets that fit under that, with headroom for where in the week a window
+ * happens to start. Offering more than this is offering a button that returns
+ * an error: during the 2026-09-05 review, 90 days of 5-minute bars was
+ * selected, failed, and cost twenty minutes of working out why.
+ *
+ * Keep in step with `max_bars_per_request` in the backend settings.
+ */
+export const MAX_RANGE_DAYS: Record<Interval, number> = {
+  '5m': 90,
+  '15m': 180,
+  '1h': 730,
+  '4h': 730,
+  '6h': 730,
+  '1d': 730,
+}
+
 export interface Instrument {
   symbol: string
   display_name: string

@@ -67,9 +67,9 @@ export function PositionSizing({ candles, setup, precision = 2 }: Props) {
   const plan = outcome && 'plan' in outcome ? outcome.plan : null
 
   return (
-    <section className="space-y-2 border-t border-border pt-2.5">
-      <span className="label-caps">Position sizing</span>
-
+    // The rule above and the heading both belong to the fold this now sits
+    // inside; repeating them here would draw the section twice.
+    <div className="space-y-2">
       <div className="grid grid-cols-2 gap-2">
         <Estimate
           label="Estimated loss"
@@ -169,7 +169,7 @@ export function PositionSizing({ candles, setup, precision = 2 }: Props) {
           </p>
         </>
       ) : null}
-    </section>
+    </div>
   )
 }
 

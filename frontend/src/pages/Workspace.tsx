@@ -18,8 +18,8 @@
  * fixed here.
  */
 
-import { useEffect, useRef, useState } from 'react'
-import { ChevronUp, SlidersHorizontal, Radar, X } from 'lucide-react'
+import { useEffect, useRef } from 'react'
+import { ChevronUp, PanelRightClose, SlidersHorizontal, Radar, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 import { ChartGrid } from '@/components/chart/ChartGrid'
@@ -33,11 +33,12 @@ import { ResultsPanel } from '@/components/panels/ResultsPanel'
 import { StrategyPanel } from '@/components/panels/StrategyPanel'
 import { Button } from '@/components/ui/primitives'
 import { CRAMPED_QUERY, NARROW_QUERY, useMediaQuery } from '@/hooks/useMediaQuery'
+import { useBacktestResult } from '@/hooks/useBacktest'
+import { useWorkspace, type SidePanel } from '@/store/workspace'
+import { directionClass, formatInteger, formatNumber, formatPercent } from '@/utils/format'
 import { cn } from '@/utils/cn'
 
-type SidebarTab = 'analysis' | 'strategy'
-
-const SIDEBAR_TABS: { value: SidebarTab; label: string; icon: LucideIcon; hint: string }[] = [
+const SIDEBAR_TABS: { value: SidePanel; label: string; icon: LucideIcon; hint: string }[] = [
   {
     value: 'strategy',
     label: 'Strategy',
@@ -53,10 +54,18 @@ const SIDEBAR_TABS: { value: SidebarTab; label: string; icon: LucideIcon; hint: 
 ]
 
 export function Workspace() {
-  const [tab, setTab] = useState<SidebarTab | null>('strategy')
-  const [resultsOpen, setResultsOpen] = useState(true)
-  const [sidebarRatio, setSidebarRatio] = useState(0.78)
-  const [chartRatio, setChartRatio] = useState(0.58)
+  // Held in the store rather than in component state so that a workspace
+  // trimmed down to the candles is still trimmed down after a reload. Closing
+  // a panel you do not want, every session, is not a preference the app
+  // should keep forgetting.
+  const tab = useWorkspace((state) => state.sidePanel)
+  const setTab = useWorkspace((state) => state.setSidePanel)
+  const resultsOpen = useWorkspace((state) => state.resultsOpen)
+  const setResultsOpen = useWorkspace((state) => state.setResultsOpen)
+  const sidebarRatio = useWorkspace((state) => state.sidebarRatio)
+  const setSidebarRatio = useWorkspace((state) => state.setSidebarRatio)
+  const chartRatio = useWorkspace((state) => state.chartRatio)
+  const setChartRatio = useWorkspace((state) => state.setChartRatio)
 
   /**
    * Below this width the panel cannot share the row with a chart -- a split
@@ -76,7 +85,7 @@ export function Workspace() {
   // What was open when the window got too narrow for it, so that widening
   // the window again puts back the panel it took away rather than leaving
   // the user to work out where it went.
-  const displaced = useRef<SidebarTab | null>(null)
+  const displaced = useRef<SidePanel | null>(null)
   // The latest tab, readable from an effect that must not re-run when it
   // changes. Recording it inside the `setTab` updater instead would be a
   // side effect in a function React is free to call twice -- and does, in
@@ -160,15 +169,7 @@ export function Workspace() {
                 </section>
               </>
             ) : (
-              <button
-                type="button"
-                onClick={() => setResultsOpen(true)}
-                className="panel flex h-7 shrink-0 items-center gap-2 border-t border-border px-2 text-left hover:bg-[hsl(var(--panel-raised))]"
-                title="Show the results"
-              >
-                <span className="label-caps">Results</span>
-                <ChevronUp size={13} className="ml-auto text-muted-foreground" />
-              </button>
+              <CollapsedResults onOpen={() => setResultsOpen(true)} />
             )}
           </main>
 
@@ -190,9 +191,26 @@ export function Workspace() {
                * and the rail beside it is how you close it.
                */}
               <aside
-                className="panel min-h-0 w-full min-w-[15rem] overflow-hidden"
+                className="panel relative min-h-0 w-full min-w-[15rem] overflow-hidden"
                 style={{ flex: `${1 - sidebarRatio} 1 0%` }}
               >
+                {/*
+                  The column could always be dismissed by pressing its own lit
+                  rail icon, which is not an affordance anyone finds. The
+                  results pane has had a chevron on it all along; this is the
+                  same control in the same place, so "give the chart the whole
+                  width" is one visible click on either.
+                */}
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="absolute right-1.5 top-1.5 z-20 h-6 w-6"
+                  onClick={() => setTab(null)}
+                  title="Collapse the panel"
+                  aria-label="Collapse the panel"
+                >
+                  <PanelRightClose size={14} />
+                </Button>
                 {tab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
               </aside>
             </>
@@ -252,6 +270,54 @@ export function Workspace() {
 }
 
 /**
+ * The results pane, shut, still answering the only question that matters.
+ *
+ * Collapsing it used to leave a strip reading "Results" and nothing else, so
+ * the one number the whole exercise exists to produce -- the win rate --
+ * was the thing you gave up to see more chart. It fits on one line, so it
+ * stays: how many trades, how they split, what fraction won. The detail is a
+ * click away; the headline never is.
+ */
+function CollapsedResults({ onOpen }: { onOpen: () => void }) {
+  const activeId = useWorkspace((state) => state.activeBacktestId)
+  const { data } = useBacktestResult(activeId)
+  const summary = data?.summary
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="panel flex h-7 shrink-0 items-center gap-2 border-t border-border px-2 text-left hover:bg-[hsl(var(--panel-raised))]"
+      title={summary ? 'Show every trade and the equity curve' : 'Show the results'}
+    >
+      <span className="label-caps">Results</span>
+
+      {summary && (
+        <>
+          <span className="numeric text-2xs font-semibold text-foreground">
+            {formatNumber(summary.win_rate, 1)}%
+          </span>
+          <span className="numeric text-2xs text-muted-foreground">
+            {formatInteger(summary.trades_executed)} trades
+          </span>
+          <span className="numeric text-2xs text-muted-foreground">
+            {formatInteger(summary.wins)}W / {formatInteger(summary.losses)}L
+          </span>
+          <span
+            className={cn('numeric text-2xs', directionClass(summary.net_return))}
+            title="Every trade's return after fees and slippage, compounded"
+          >
+            {formatPercent(summary.net_return)}
+          </span>
+        </>
+      )}
+
+      <ChevronUp size={13} className="ml-auto shrink-0 text-muted-foreground" />
+    </button>
+  )
+}
+
+/**
  * The way into the side panels: one button per panel, pressed when its panel
  * is showing and pressed again to send it away.
  *
@@ -264,8 +330,8 @@ function PanelTabs({
   tab,
   onPick,
 }: {
-  tab: SidebarTab | null
-  onPick: (next: SidebarTab | null) => void
+  tab: SidePanel | null
+  onPick: (next: SidePanel | null) => void
 }) {
   return (
     <>

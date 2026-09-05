@@ -32,6 +32,7 @@ import type {
 } from '@/types/backtest'
 import { indexOfBar } from '@/lib/chart'
 import {
+  formatCurrency,
   formatDate,
   formatDateTime,
   formatInteger,
@@ -76,6 +77,7 @@ export function StrategyPanel() {
   const testWindow = useWorkspace((state) => state.testWindow)
   const rules = useWorkspace((state) => state.rules)
   const search = useWorkspace((state) => state.search)
+  const sizing = useWorkspace((state) => state.sizing)
 
   const setSelection = useWorkspace((state) => state.setSelection)
   const setTestWindow = useWorkspace((state) => state.setTestWindow)
@@ -84,6 +86,10 @@ export function StrategyPanel() {
   const updateSearch = useWorkspace((state) => state.updateSearch)
   const resetStrategy = useWorkspace((state) => state.resetStrategy)
   const setActiveBacktestId = useWorkspace((state) => state.setActiveBacktestId)
+
+  // What the fold is worth knowing without opening it. Stands on its own:
+  // it needs no setup, no levels and no plan, only the two fields inside.
+  const riskBudget = (sizing.accountEquity * sizing.riskPercent) / 100
 
   const symbols = useChartedSymbols()
   const barsQuery = useBars(primary, interval, range.from, range.to)
@@ -342,11 +348,26 @@ export function StrategyPanel() {
         </div>
       </section>
 
-      {/* ---- sizing ---- */}
-      <PositionSizing
-        candles={candles}
-        setup={summary ? { startIndex: summary.startIndex, endIndex: summary.endIndex } : null}
-      />
+      {/*
+        ---- sizing ----
+        Folded, and opened by the thing that makes it answerable. What a setup
+        risks in money is worth knowing when there is a setup; with nothing
+        selected it is a third of the panel spent on two empty cards, and the
+        rules that actually drive a run are pushed below the fold instead. The
+        budget stays on the header so the section is never a mystery box.
+      */}
+      <Disclosure
+        label="Sizing"
+        summary={`${formatCurrency(riskBudget, 0)} at risk`}
+        defaultOpen={selection != null}
+      >
+        <PositionSizing
+          candles={candles}
+          setup={
+            summary ? { startIndex: summary.startIndex, endIndex: summary.endIndex } : null
+          }
+        />
+      </Disclosure>
 
       {/* ---- everything set once ---- */}
       <Disclosure

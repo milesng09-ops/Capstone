@@ -16,8 +16,15 @@ import { useEffect, useState } from 'react'
 
 import { SegmentedControl } from '@/components/ui/fields'
 import { useSymbols } from '@/hooks/useMarketData'
-import { RANGE_PRESETS, useTimeZone, useWorkspace, type RangeDays } from '@/store/workspace'
+import {
+  longestRange,
+  RANGE_PRESETS,
+  useTimeZone,
+  useWorkspace,
+  type RangeDays,
+} from '@/store/workspace'
 import { TOOL_HINTS, TOOL_LABELS } from '@/types/drawing'
+import { INTERVAL_LABELS } from '@/types/market'
 import { formatClock } from '@/utils/format'
 import { offsetLabel, TIME_ZONES, timeZoneLabel } from '@/utils/timezone'
 
@@ -97,6 +104,7 @@ function Clock() {
 
 export function StatusBar() {
   const rangeDays = useWorkspace((state) => state.rangeDays)
+  const interval = useWorkspace((state) => state.interval)
   const setRangeDays = useWorkspace((state) => state.setRangeDays)
   const tool = useWorkspace((state) => state.tool)
 
@@ -106,11 +114,21 @@ export function StatusBar() {
       <SegmentedControl<string>
         variant="plain"
         value={String(rangeDays)}
-        options={RANGE_PRESETS.map((days) => ({
-          value: String(days),
-          label: days >= 365 ? `${days / 365}y` : `${days}d`,
-          title: `Load ${days} days of candles`,
-        }))}
+        options={RANGE_PRESETS.map((days) => {
+          // Shown but disabled rather than hidden: a row of presets that
+          // changes length as you switch interval is harder to read than one
+          // that stays put and says why a button is out of reach.
+          const tooMuch = days > longestRange(interval)
+          return {
+            value: String(days),
+            label: days >= 365 ? `${days / 365}y` : `${days}d`,
+            disabled: tooMuch,
+            title: tooMuch
+              ? `${days} days of ${INTERVAL_LABELS[interval]} candles is more than one ` +
+                'request can carry. Load less history, or use a larger interval.'
+              : `Load ${days} days of candles`,
+          }
+        })}
         onChange={(value) => setRangeDays(Number(value) as RangeDays)}
       />
 

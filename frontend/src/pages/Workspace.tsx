@@ -18,8 +18,8 @@
  * fixed here.
  */
 
-import { useState } from 'react'
-import { ChevronUp, SlidersHorizontal, Radar } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronUp, SlidersHorizontal, Radar, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 import { ChartGrid } from '@/components/chart/ChartGrid'
@@ -31,6 +31,7 @@ import { AnalysisPanel } from '@/components/panels/AnalysisPanel'
 import { ResultsPanel } from '@/components/panels/ResultsPanel'
 import { StrategyPanel } from '@/components/panels/StrategyPanel'
 import { Button } from '@/components/ui/primitives'
+import { NARROW_QUERY, useMediaQuery } from '@/hooks/useMediaQuery'
 import { cn } from '@/utils/cn'
 
 type SidebarTab = 'analysis' | 'strategy'
@@ -56,17 +57,56 @@ export function Workspace() {
   const [sidebarRatio, setSidebarRatio] = useState(0.78)
   const [chartRatio, setChartRatio] = useState(0.58)
 
+  /**
+   * Below this width the panel cannot share the row with a chart -- a split
+   * that reads as 78/22 on a laptop leaves the candles about fifty pixels on
+   * a phone. So it stops being a column and becomes a sheet over the chart,
+   * closed until asked for. The rail that opens it never moves either way.
+   */
+  const narrow = useMediaQuery(NARROW_QUERY)
+  // What was open when the window got too narrow for it, so that widening
+  // the window again puts back the panel it took away rather than leaving
+  // the user to work out where it went.
+  const displaced = useRef<SidebarTab | null>(null)
+  // The latest tab, readable from an effect that must not re-run when it
+  // changes. Recording it inside the `setTab` updater instead would be a
+  // side effect in a function React is free to call twice -- and does, in
+  // development, which is how it came to be read back as null.
+  const tabRef = useRef(tab)
+  tabRef.current = tab
+
+  useEffect(() => {
+    if (narrow) {
+      displaced.current = tabRef.current
+      setTab(null)
+      return
+    }
+    const restore = displaced.current
+    displaced.current = null
+    if (restore) setTab(restore)
+  }, [narrow])
+
+  const dockedPanel = tab != null && !narrow
+  const sheetPanel = tab != null && narrow
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
       <TopBar />
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 min-w-0 flex-1">
         <ToolRail />
 
-        <div className="flex min-h-0 flex-1">
+        {/*
+         * `min-w-0` is what keeps the rail on the right of the screen.
+         * A flex item's automatic minimum is its *content's* minimum, and a
+         * chart pane's is wide -- legend, price axis, the lot -- so without
+         * this the row refuses to shrink below about 840px, overflows a
+         * narrower window and pushes the panel rail out past its edge.
+         */}
+        <div className="flex min-h-0 min-w-0 flex-1">
           <main
             className="flex min-h-0 min-w-0 flex-1 flex-col"
-            style={tab ? { flex: `${sidebarRatio} 1 0%` } : undefined}
+            style={dockedPanel ? { flex: `${sidebarRatio} 1 0%` } : undefined}
           >
             <div
               className="flex min-h-0 flex-1"
@@ -115,7 +155,7 @@ export function Workspace() {
             )}
           </main>
 
-          {tab && (
+          {dockedPanel && (
             <>
               <Splitter
                 direction="row"
@@ -125,8 +165,15 @@ export function Workspace() {
                 max={0.9}
                 label="Resize the side panel"
               />
+              {/*
+               * A floor under the panel width, because the split is a
+               * *ratio*: on a laptop 22% is a comfortable column, on a
+               * tablet it is 170px and every row in it is clipped mid-word.
+               * Below the floor the panel is worth closing, not shrinking --
+               * and the rail beside it is how you close it.
+               */}
               <aside
-                className="panel min-h-0 min-w-0 overflow-hidden"
+                className="panel min-h-0 w-full min-w-[15rem] overflow-hidden"
                 style={{ flex: `${1 - sidebarRatio} 1 0%` }}
               >
                 {tab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
@@ -134,6 +181,31 @@ export function Workspace() {
             </>
           )}
         </div>
+
+        {/* The same panel, over the chart rather than beside it. */}
+        {sheetPanel && (
+          <aside
+            className="panel absolute inset-y-0 right-10 z-40 flex w-[min(22rem,calc(100%-5rem))] flex-col overflow-hidden border-l border-border shadow-2xl"
+            aria-label={tab === 'analysis' ? 'Analysis' : 'Strategy'}
+          >
+            <div className="flex h-7 shrink-0 items-center justify-between border-b border-border px-2">
+              <span className="label-caps">{tab === 'analysis' ? 'Analysis' : 'Strategy'}</span>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-5 w-5"
+                onClick={() => setTab(null)}
+                title="Close the panel"
+                aria-label="Close the panel"
+              >
+                <X size={12} />
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1">
+              {tab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
+            </div>
+          </aside>
+        )}
 
         {/*
          * The rail stays put whether the panel beside it is open or shut, so
@@ -143,7 +215,7 @@ export function Workspace() {
          */}
         <nav
           aria-label="Side panels"
-          className="panel flex w-10 shrink-0 flex-col items-center gap-1 border-l border-border py-1.5"
+          className="panel flex w-10 shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-border py-1.5"
         >
           {SIDEBAR_TABS.map((item) => {
             const active = tab === item.value

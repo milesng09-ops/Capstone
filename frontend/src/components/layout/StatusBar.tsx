@@ -25,7 +25,7 @@ export function StatusBar() {
   const tool = useWorkspace((state) => state.tool)
 
   return (
-    <footer className="panel flex h-7 shrink-0 items-center gap-2 border-t border-border px-2">
+    <footer className="panel flex h-7 shrink-0 items-center gap-2 overflow-x-auto border-t border-border px-2">
       <span className="label-caps hidden sm:block">History</span>
       <SegmentedControl<string>
         variant="plain"

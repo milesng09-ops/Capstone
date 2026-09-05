@@ -51,7 +51,7 @@ export function TopBar() {
   const isDemo = provider === 'demo'
 
   return (
-    <header className="panel flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
+    <header className="panel flex h-9 shrink-0 items-center gap-2 overflow-x-auto border-b border-border px-2">
       <div className="flex shrink-0 items-center gap-1.5" title="Market Replay Lab">
         <Activity size={15} className="text-primary" />
         <span className="hidden text-xs font-semibold tracking-tight lg:block">

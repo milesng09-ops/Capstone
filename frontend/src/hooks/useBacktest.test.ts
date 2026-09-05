@@ -113,12 +113,22 @@ describe('buildRange', () => {
     expect(range.to - range.from).toBe(90 * DAY_MS)
   })
 
-  it('gives every interval the same window, so changing timeframe hits the cache', () => {
-    // The window used to be snapped to the interval's own bucket, so moving
-    // from 1h to 4h shifted both ends and missed the cache -- three provider
-    // calls per symbol against a quota of five a minute.
-    const now = Date.UTC(2026, 8, 4, 7, 30)
-    expect(buildRange(30, now)).toEqual(buildRange(30, now))
+  it('ends on an hour boundary, whatever minute it is asked at', () => {
+    // The property the shared window rests on: every interval computes the
+    // same range from the same clock, so switching timeframe asks for a
+    // window the cache already holds.
+    for (let minute = 0; minute < 60; minute += 7) {
+      const { to } = buildRange(30, Date.UTC(2026, 8, 4, 7, minute, 30))
+      expect(to).toBe(Date.UTC(2026, 8, 4, 8))
+    }
+  })
+
+  it('does not snap the end to the old 02:00 UTC anchor', () => {
+    // What replaced the interval-specific snapping. 4h bars are anchored to
+    // the exchange session now, and the backend owns that; the client window
+    // is deliberately interval-agnostic.
+    const to = buildRange(30, Date.UTC(2026, 8, 4, 7, 30)).to
+    expect(new Date(to).getUTCHours()).toBe(8)
   })
 
   it('keeps the bar currently forming inside the window', () => {

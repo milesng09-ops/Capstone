@@ -44,7 +44,7 @@ from collections import OrderedDict
 
 from app.models.domain import Candle
 from app.providers.trading_hours import SESSION_OPEN_HOUR
-from app.utils.intervals import get_interval
+from app.utils.intervals import DAY_MS, get_interval
 from app.utils.timeutils import session_day_start_ms
 
 logger = logging.getLogger(__name__)
@@ -63,9 +63,45 @@ def bucket_start(timestamp_ms: int, interval: str, timezone: str = "America/Chic
         # correct for pre-epoch timestamps.
         return timestamp_ms - (timestamp_ms % spec.milliseconds)
 
-    opening = session_day_start_ms(timestamp_ms, timezone, SESSION_OPEN_HOUR)
+    opening = _session_open_cached(timestamp_ms, timezone)
     elapsed = timestamp_ms - opening
     return opening + (elapsed // spec.milliseconds) * spec.milliseconds
+
+
+#: The session open last computed, as (timezone, opening, next opening).
+#: Aggregation walks bars in ascending order, so consecutive bars almost
+#: always share a session and the answer can be reused.
+_LAST_SESSION: tuple[str, int, int] | None = None
+
+
+def _session_open_cached(timestamp_ms: int, timezone: str) -> int:
+    """:func:`session_day_start_ms`, memoised across one session day.
+
+    The conversion into the exchange's zone is the expensive part of
+    bucketing, and doing it per *bar* meant a two-year daily chart spent most
+    of its time in :mod:`zoneinfo` -- on the event loop, since aggregation is
+    called directly rather than on a worker. One conversion per session day
+    is a couple of hundred instead of tens of thousands.
+
+    The cached span is bounded by the *next* open rather than by a fixed 24
+    hours, so the 23- and 25-hour days either side of a daylight-saving change
+    are still answered exactly.
+    """
+
+    global _LAST_SESSION
+
+    cached = _LAST_SESSION
+    if cached is not None:
+        zone, opening, next_opening = cached
+        if zone == timezone and opening <= timestamp_ms < next_opening:
+            return opening
+
+    opening = session_day_start_ms(timestamp_ms, timezone, SESSION_OPEN_HOUR)
+    # A day past the open lands inside the following session whatever the
+    # transition did, so this finds the next boundary without assuming 24h.
+    next_opening = session_day_start_ms(opening + DAY_MS, timezone, SESSION_OPEN_HOUR)
+    _LAST_SESSION = (timezone, opening, next_opening)
+    return opening
 
 
 def aggregate_candles(

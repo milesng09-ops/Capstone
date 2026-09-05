@@ -260,6 +260,10 @@ export function SegmentedControl<T extends string>({
           key={option.value}
           type="button"
           title={option.title}
+          // The reason an option is out of reach lives in `title`, which a
+          // keyboard or screen-reader user never sees. Naming the button with
+          // it puts the explanation on the same footing as the tooltip.
+          aria-label={option.disabled && option.title ? option.title : undefined}
           aria-pressed={option.value === value}
           // An option that cannot be chosen keeps its place in the row and
           // says why on hover, rather than disappearing and leaving a control

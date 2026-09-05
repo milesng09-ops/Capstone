@@ -47,6 +47,7 @@ from app.services.aggregation_service import aggregate_candles
 from app.services.cache_service import (
     align_range,
     cacheable_end,
+    edge_padding_ms,
     estimate_bar_count,
     merge_adjacent,
     storage_interval,
@@ -170,12 +171,12 @@ class CandleService:
 
         store_interval = storage_interval(interval)
         # Load a little extra on each side so aggregated buckets at the window
-        # edges are built from complete data.
+        # edges are built from complete data. The amount is a property of the
+        # stored series rather than of the interval on screen, so that every
+        # view of one range asks for exactly the same window.
+        padding = edge_padding_ms(interval)
         padded = align_range(
-            TimeRange(
-                requested.start - interval_ms(interval),
-                requested.end + interval_ms(interval),
-            ),
+            TimeRange(requested.start - padding, requested.end + padding),
             store_interval,
         )
 

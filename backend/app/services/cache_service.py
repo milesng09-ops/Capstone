@@ -46,6 +46,27 @@ def storage_interval(interval: str) -> str:
     return STORAGE_INTERVAL[interval]
 
 
+def edge_padding_ms(interval: str) -> int:
+    """How far either side of a window to fetch, so edge buckets are whole.
+
+    Sized by the **longest** interval that shares this stored series, not by
+    the one being viewed. That difference is the whole point: padding by the
+    viewed interval makes 1h ask for a window an hour wider and 4h one four
+    hours wider, so two views of the same range are two different fetches and
+    the shared window never lands on the cache. One padding for the family
+    means switching between 1h, 4h, 6h and 1d is answered from what is already
+    stored -- which, against a quota of five calls a minute, is the difference
+    between changing timeframe being free and it costing most of a minute.
+    """
+
+    store = storage_interval(interval)
+    return max(
+        interval_ms(candidate)
+        for candidate, target in STORAGE_INTERVAL.items()
+        if target == store
+    )
+
+
 def align_down(timestamp_ms: int, interval: str) -> int:
     step = interval_ms(interval)
     return timestamp_ms - (timestamp_ms % step)

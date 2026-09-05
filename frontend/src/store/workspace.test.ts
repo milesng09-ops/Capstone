@@ -226,24 +226,34 @@ describe('how much history an interval can carry', () => {
 })
 
 describe('layout', () => {
-  it('remembers a collapsed panel, so it is not back next session', () => {
+  /**
+   * Read what actually reached storage, not what the setter left in memory.
+   *
+   * An in-memory round-trip passes whether or not the field is persisted, so
+   * it cannot tell "remembered across sessions" from "remembered until
+   * reload" -- which is the entire claim these make.
+   */
+  const stored = () => JSON.parse(localStorage.getItem('mrl.workspace') ?? '{}').state ?? {}
+
+  it('writes a collapsed panel to storage, so it is not back next session', () => {
     useWorkspace.getState().setSidePanel(null)
     expect(useWorkspace.getState().sidePanel).toBeNull()
+    expect(stored()).toHaveProperty('sidePanel', null)
 
     useWorkspace.getState().setSidePanel('analysis')
-    expect(useWorkspace.getState().sidePanel).toBe('analysis')
+    expect(stored()).toHaveProperty('sidePanel', 'analysis')
   })
 
-  it('remembers a collapsed results pane', () => {
+  it('writes a collapsed results pane to storage', () => {
     useWorkspace.getState().setResultsOpen(false)
-    expect(useWorkspace.getState().resultsOpen).toBe(false)
+    expect(stored()).toHaveProperty('resultsOpen', false)
   })
 
-  it('remembers where the dividers were left', () => {
+  it('writes where the dividers were left to storage', () => {
     useWorkspace.getState().setSidebarRatio(0.9)
     useWorkspace.getState().setChartRatio(0.7)
 
-    expect(useWorkspace.getState().sidebarRatio).toBe(0.9)
-    expect(useWorkspace.getState().chartRatio).toBe(0.7)
+    expect(stored()).toHaveProperty('sidebarRatio', 0.9)
+    expect(stored()).toHaveProperty('chartRatio', 0.7)
   })
 })

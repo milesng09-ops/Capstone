@@ -81,7 +81,9 @@ export const TOOL_HINTS: Record<ToolMode, string> = {
   window:
     'Drag across the stretch of history to test in. Candles outside it stay on the ' +
     'chart, they are simply not searched. Esc cancels.',
-  trendline: 'Drag from one point to another. Snaps to nearby swing points. Esc cancels.',
+  trendline:
+    'Drag from one point to another. Snaps to swing points while they are shown. ' +
+    'Esc cancels.',
   horizontal: 'Press to preview a level, release to place it. Esc cancels.',
   rectangle: 'Drag to mark a zone. Esc cancels.',
 }

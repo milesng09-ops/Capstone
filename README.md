@@ -100,6 +100,16 @@ cd backend && .venv/bin/python -m scripts.clear_backtests        # dry run
 
 Add `--yes` to delete, or `--before YYYY-MM-DD` to keep recent runs.
 
+**Real and generated bars are never stored in the same series.** Demo data is a
+stand-in for a provider that could not answer, and a chart draws every candle
+the same way — nothing on screen would say which ones were invented, and a win
+rate measured across the join would be neither measured nor simulated. So a
+demo fetch into a series that holds real prices is declined and reported as a
+range that could not be filled, real bars arriving for a demo series evict the
+placeholders, and the backend removes any leftover mixture on startup, naming
+what it dropped in the log. Whatever remains, a window is labelled by what it
+actually contains rather than by whichever provider wrote to it last.
+
 ---
 
 ## How it fits together

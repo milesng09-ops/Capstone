@@ -162,6 +162,111 @@ def candle_provider(session: Session, symbol: str, interval: str) -> str | None:
     )
 
 
+#: Provider name whose bars are generated rather than observed.  The whole
+#: point of the checks below is that these must never be mixed into a series
+#: of real prices: a chart cannot show you which candles were invented, and a
+#: win rate computed across both is neither one thing nor the other.
+DEMO_PROVIDER = "demo"
+
+
+def providers_in_range(
+    session: Session, symbol: str, interval: str, start: int, end: int
+) -> set[str]:
+    """Providers the stored bars in ``[start, end]`` actually came from.
+
+    The response's provider name says who served the *fetch*; this says what
+    the window is made of, which is the only one of the two a warning about
+    synthetic data can be based on.
+    """
+
+    rows = session.execute(
+        select(CandleRow.provider)
+        .where(
+            CandleRow.symbol == symbol,
+            CandleRow.interval == interval,
+            CandleRow.timestamp >= start,
+            CandleRow.timestamp <= end,
+        )
+        .group_by(CandleRow.provider)
+    ).all()
+    return {row[0] for row in rows if row[0]}
+
+
+def has_real_candles(session: Session, symbol: str, interval: str) -> bool:
+    """Whether this series holds any bar that came from a live provider."""
+
+    found = session.scalar(
+        select(CandleRow.timestamp)
+        .where(
+            CandleRow.symbol == symbol,
+            CandleRow.interval == interval,
+            CandleRow.provider != DEMO_PROVIDER,
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
+def drop_demo_candles(session: Session, symbol: str, interval: str) -> int:
+    """Delete every generated bar in a series, and its coverage bookkeeping.
+
+    Coverage goes wholesale rather than by provider: ranges are merged as they
+    are recorded, so a row labelled with one provider can vouch for bars from
+    another, and a coverage row that outlived its candles is worse than none --
+    it says "already fetched" about a stretch that is now empty.  Dropping it
+    costs one refetch and restores the invariant.
+    """
+
+    removed = (
+        session.execute(
+            delete(CandleRow).where(
+                CandleRow.symbol == symbol,
+                CandleRow.interval == interval,
+                CandleRow.provider == DEMO_PROVIDER,
+            )
+        ).rowcount
+        or 0
+    )
+    if removed:
+        session.execute(
+            delete(CacheCoverageRow).where(
+                CacheCoverageRow.symbol == symbol,
+                CacheCoverageRow.interval == interval,
+            )
+        )
+    return int(removed)
+
+
+def repair_mixed_series(session: Session) -> dict[tuple[str, str], int]:
+    """Evict generated bars from any series that also holds real ones.
+
+    A series is legitimately all demo -- that is the no-API-key path, and it is
+    left alone.  What cannot stand is a series that is *part* generated, where
+    the two are drawn as one continuous price line and only the provider column
+    of each row can tell them apart.
+
+    Returns the number of bars removed per ``(symbol, interval)`` it touched.
+    """
+
+    grouped = session.execute(
+        select(CandleRow.symbol, CandleRow.interval, CandleRow.provider)
+        .group_by(CandleRow.symbol, CandleRow.interval, CandleRow.provider)
+    ).all()
+
+    series: dict[tuple[str, str], set[str]] = {}
+    for symbol, interval, provider in grouped:
+        series.setdefault((symbol, interval), set()).add(provider)
+
+    removed: dict[tuple[str, str], int] = {}
+    for (symbol, interval), providers in series.items():
+        if DEMO_PROVIDER not in providers or providers == {DEMO_PROVIDER}:
+            continue
+        count = drop_demo_candles(session, symbol, interval)
+        if count:
+            removed[(symbol, interval)] = count
+    return removed
+
+
 def candle_bounds(session: Session, symbol: str, interval: str) -> tuple[int | None, int | None]:
     row = session.execute(
         select(func.min(CandleRow.timestamp), func.max(CandleRow.timestamp)).where(

@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from app import __version__
 from app.api.routes import api_router
 from app.config import get_settings
-from app.database.repository import upsert_instruments
+from app.database.repository import repair_mixed_series, upsert_instruments
 from app.database.session import init_database, session_scope
 from app.providers.instruments import list_instruments
 from app.services.candle_service import shutdown_candle_service
@@ -56,6 +56,21 @@ async def lifespan(_app: FastAPI):
                 }
                 for instrument in list_instruments()
             ],
+        )
+
+    # A series that holds both real and generated bars draws them as one
+    # continuous price line, and its coverage says the range is already
+    # fetched, so nothing would ever go back for the real prices. Evicting the
+    # generated half at startup is what lets the next request repair it.
+    with session_scope() as session:
+        repaired = repair_mixed_series(session)
+    for (symbol, interval), removed in repaired.items():
+        logger.warning(
+            "Removed %d generated bars from %s %s, which also held real prices. "
+            "That range will be refetched on the next request.",
+            removed,
+            symbol,
+            interval,
         )
 
     logger.info(

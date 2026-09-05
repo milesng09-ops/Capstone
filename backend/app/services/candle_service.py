@@ -24,11 +24,15 @@ import anyio
 
 from app.config import get_settings
 from app.database.repository import (
+    DEMO_PROVIDER,
     TimeRange,
     candle_provider,
+    drop_demo_candles,
+    has_real_candles,
     load_candles,
     load_coverage,
     missing_ranges,
+    providers_in_range,
     record_coverage,
     save_candles,
 )
@@ -160,6 +164,26 @@ class CandleService:
 
         bars = [candle for candle in bars if requested.start <= candle.time <= requested.end]
 
+        # What the window is *made of*, which is not the same question as who
+        # served the last fetch. A cache written before generated bars were
+        # kept out of real series can still hold both, and the label has to
+        # describe the candles on screen rather than the most recent write.
+        contents = await anyio.to_thread.run_sync(
+            self._window_providers, instrument.symbol, store_interval, padded
+        )
+        quality = outcome.resolved_quality()
+        fallback_reason = outcome.fallback_reason
+        mixed = DEMO_PROVIDER in contents and contents != {DEMO_PROVIDER}
+        if DEMO_PROVIDER in contents:
+            # One generated candle makes the whole window unsafe to read as
+            # market data, so it is labelled by its weakest part.
+            quality = "demo"
+        if mixed:
+            fallback_reason = fallback_reason or (
+                "This range mixes real prices with generated bars left by an earlier "
+                "provider outage. Clear the cache for this symbol to refetch it."
+            )
+
         return BarsResult(
             symbol=instrument.symbol,
             interval=interval,
@@ -168,10 +192,10 @@ class CandleService:
             # A failed fetch is a degraded serve even when the provider name
             # still reads as the preferred one, so it counts as a fallback.
             fallback_active=(
-                outcome.incomplete or outcome.provider != self._preferred_provider()
+                outcome.incomplete or mixed or outcome.provider != self._preferred_provider()
             ),
-            fallback_reason=outcome.fallback_reason,
-            quality=outcome.resolved_quality(),
+            fallback_reason=fallback_reason,
+            quality=quality,
             bars=bars,
         )
 
@@ -231,10 +255,6 @@ class CandleService:
                 failed_gaps += 1
                 continue
 
-            provider_name = result.provider
-            quality = result.quality
-            fallback_reason = result.fallback_reason or fallback_reason
-
             bars = result.bars
             if result.interval != store_interval:
                 instrument = get_instrument(symbol)
@@ -242,9 +262,26 @@ class CandleService:
                     bars, store_interval, timezone=instrument.timezone
                 )
 
-            await anyio.to_thread.run_sync(
+            stored = await anyio.to_thread.run_sync(
                 self._persist, symbol, store_interval, bars, result.provider, gap
             )
+            if not stored:
+                # Generated bars offered for a series of real prices. The range
+                # stays unfilled, which the response reports as incomplete --
+                # a gap in the chart is honest, and a stretch of invented
+                # candles drawn as though it were the market is not.
+                failed_gaps += 1
+                fallback_reason = fallback_reason or (
+                    "This range could not be fetched from a market-data provider, and "
+                    "generated data is not mixed into a series of real prices."
+                )
+                continue
+
+            # Only a range that was actually stored may name the provider and
+            # the quality of the response.
+            provider_name = result.provider
+            quality = result.quality
+            fallback_reason = result.fallback_reason or fallback_reason
             fetched_any = True
 
         if failed_gaps:
@@ -281,8 +318,44 @@ class CandleService:
         bars: list[Candle],
         provider: str,
         gap: TimeRange,
-    ) -> None:
+    ) -> bool:
+        """Store a fetched range, unless storing it would mix two kinds of data.
+
+        A series is either real or generated, never both. Demo bars are a
+        stand-in for a provider that could not answer, and writing them beside
+        real prices makes a chart that cannot be read honestly -- nothing on
+        screen distinguishes the invented candles, and a backtest run across
+        the join reports a win rate that is neither measured nor simulated.
+
+        So a demo fetch into a series that holds real bars is declined, and the
+        caller reports the range as one it could not fill. The reverse -- real
+        bars arriving for a series that still holds generated ones -- evicts
+        them, because that is the moment the stand-in stops being needed.
+
+        Returns whether the range was stored.
+        """
+
         with session_scope() as session:
+            if provider == DEMO_PROVIDER:
+                if has_real_candles(session, symbol, store_interval):
+                    logger.warning(
+                        "Declined %d generated bars for %s %s: the series holds real prices",
+                        len(bars),
+                        symbol,
+                        store_interval,
+                    )
+                    return False
+            elif bars:
+                evicted = drop_demo_candles(session, symbol, store_interval)
+                if evicted:
+                    logger.info(
+                        "Evicted %d generated bars from %s %s now that %s can serve it",
+                        evicted,
+                        symbol,
+                        store_interval,
+                        provider,
+                    )
+
             if bars:
                 save_candles(session, store_interval, bars, provider)
             # Only mark the settled part of the window as covered so the
@@ -292,11 +365,19 @@ class CandleService:
                 record_coverage(
                     session, symbol, store_interval, gap.start, coverage_end, provider
                 )
+        return True
 
     @staticmethod
     def _load_from_cache(symbol: str, store_interval: str, window: TimeRange) -> list[Candle]:
         with session_scope() as session:
             return load_candles(session, symbol, store_interval, window.start, window.end)
+
+    @staticmethod
+    def _window_providers(symbol: str, store_interval: str, window: TimeRange) -> set[str]:
+        with session_scope() as session:
+            return providers_in_range(
+                session, symbol, store_interval, window.start, window.end
+            )
 
     @staticmethod
     def _cached_provider(symbol: str, store_interval: str) -> str | None:

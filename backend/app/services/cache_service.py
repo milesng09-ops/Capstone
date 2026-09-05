@@ -21,13 +21,20 @@ from app.utils.intervals import DAY_MS, HOUR_MS, get_interval, interval_ms
 from app.utils.timeutils import now_ms
 
 #: Requested interval -> interval actually persisted.
+#:
+#: ``1d`` is built from hourly bars rather than fetched as dailies. A vendor's
+#: daily bar is stamped at *calendar* midnight, which for an instrument whose
+#: day opens at 17:00 the previous evening cuts the session in half and puts
+#: the open six hours into the bar. Aggregating from hours is what lets the
+#: daily candle start where the trading day starts -- and it costs nothing,
+#: because 1h, 4h and 6h already share that same stored series.
 STORAGE_INTERVAL: dict[str, str] = {
     "5m": "5m",
     "15m": "15m",
     "1h": "1h",
     "4h": "1h",
     "6h": "1h",
-    "1d": "1d",
+    "1d": "1h",
 }
 
 #: Number of trailing bars that are always considered stale.

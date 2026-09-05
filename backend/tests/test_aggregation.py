@@ -24,7 +24,7 @@ from app.providers.trading_hours import (
     trading_hours_between,
 )
 from app.services.aggregation_service import aggregate_candles, bucket_start
-from app.services.cache_service import estimate_bar_count
+from app.services.cache_service import estimate_bar_count, storage_interval
 
 NEW_YORK = ZoneInfo("America/New_York")
 CHICAGO = ZoneInfo("America/Chicago")
@@ -230,3 +230,24 @@ class TestSizingARequestHonestly:
 
     def test_an_empty_window_holds_no_bars(self) -> None:
         assert estimate_bar_count(TimeRange(5_000, 5_000), "5m") == 0
+
+class TestWhatGetsStored:
+    def test_daily_bars_are_built_from_hours_rather_than_fetched(self) -> None:
+        """Otherwise the session anchoring above never runs for ``1d``.
+
+        A vendor's daily bar is stamped at calendar midnight. Persisting that
+        verbatim put the daily candle's open six hours into the session --
+        20:00 New York on a day that began at 18:00 -- and no bucketing code
+        ever touched it, because a natively stored interval is never
+        aggregated.
+        """
+
+        assert storage_interval("1d") == "1h"
+
+    def test_the_long_intervals_share_one_stored_series(self) -> None:
+        # Which is why building dailies from hours costs no extra fetching.
+        assert {storage_interval(interval) for interval in ("1h", "4h", "6h", "1d")} == {"1h"}
+
+    @pytest.mark.parametrize("interval", ["5m", "15m"])
+    def test_short_intervals_are_stored_as_themselves(self, interval: str) -> None:
+        assert storage_interval(interval) == interval

@@ -55,3 +55,13 @@ export function useMediaQuery(query: string): boolean {
  * over the chart instead of next to it.
  */
 export const NARROW_QUERY = '(max-width: 899px)'
+
+/**
+ * Too narrow to put two charts side by side.
+ *
+ * A chart needs width the way a paragraph needs it: below roughly 300px a pane
+ * is a legend, a price axis and about eight candles, which answers no question
+ * worth asking. Two of those across a phone is worse than one of them, so
+ * below this the arrangement stops being a choice and everything stacks.
+ */
+export const CRAMPED_QUERY = '(max-width: 599px)'

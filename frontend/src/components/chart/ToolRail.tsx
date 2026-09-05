@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   BoxSelect,
   CalendarRange,
@@ -62,7 +63,7 @@ const TOOL_ORDER: ToolMode[] = [
   'rectangle',
 ]
 
-export function ToolRail() {
+export function ToolRail({ footer }: { footer?: ReactNode }) {
   const tool = useWorkspace((state) => state.tool)
   const drawingColor = useWorkspace((state) => state.drawingColor)
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
@@ -126,6 +127,19 @@ export function ToolRail() {
       </Button>
 
       <HistoryButtons />
+
+      {/*
+       * On a phone this rail is the only one, so it also carries the way into
+       * the side panels. They go at the bottom, behind a divider: the tools
+       * above are what the rail is *for*, and pushing them down to make room
+       * for navigation would cost the drawing buttons their muscle memory.
+       */}
+      {footer && (
+        <>
+          <RailDivider />
+          {footer}
+        </>
+      )}
     </nav>
   )
 }

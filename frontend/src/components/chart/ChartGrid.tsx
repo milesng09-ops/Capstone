@@ -23,6 +23,7 @@ import { useState } from 'react'
 import { ChartPanel } from '@/components/chart/ChartPanel'
 import { Splitter } from '@/components/layout/Splitter'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { CRAMPED_QUERY, useMediaQuery } from '@/hooks/useMediaQuery'
 import { useChartedSymbols, useWorkspace } from '@/store/workspace'
 import type { SymbolKey } from '@/types/market'
 import { cn } from '@/utils/cn'
@@ -36,7 +37,17 @@ const DEFAULT_PRIMARY_RATIO = 0.6
 export function ChartGrid() {
   const symbols = useChartedSymbols()
   const primary = useWorkspace((state) => state.primarySymbol)
-  const layout = useWorkspace((state) => state.chartLayout)
+  const chosenLayout = useWorkspace((state) => state.chartLayout)
+
+  /**
+   * Side by side stops being an arrangement and starts being a pair of
+   * slivers, so below the breakpoint everything stacks whatever the toolbar
+   * says. Derived rather than written back to the store: the choice is still
+   * the user's, it simply cannot be honoured at this width, and widening the
+   * window is enough to have it again.
+   */
+  const cramped = useMediaQuery(CRAMPED_QUERY)
+  const layout = cramped ? 'stacked' : chosenLayout
 
   // Held here rather than in the store: the split is a per-session adjustment
   // to the layout preset, not a preference worth restoring on a cold start.

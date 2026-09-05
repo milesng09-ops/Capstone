@@ -31,7 +31,7 @@ import { AnalysisPanel } from '@/components/panels/AnalysisPanel'
 import { ResultsPanel } from '@/components/panels/ResultsPanel'
 import { StrategyPanel } from '@/components/panels/StrategyPanel'
 import { Button } from '@/components/ui/primitives'
-import { NARROW_QUERY, useMediaQuery } from '@/hooks/useMediaQuery'
+import { CRAMPED_QUERY, NARROW_QUERY, useMediaQuery } from '@/hooks/useMediaQuery'
 import { cn } from '@/utils/cn'
 
 type SidebarTab = 'analysis' | 'strategy'
@@ -64,6 +64,14 @@ export function Workspace() {
    * closed until asked for. The rail that opens it never moves either way.
    */
   const narrow = useMediaQuery(NARROW_QUERY)
+  /**
+   * Narrower still, and two 40px rails are a fifth of the screen spent before
+   * a single candle is drawn. So the right-hand rail stops being a column and
+   * folds into the left one, which is already there for the drawing tools.
+   * One rail, both jobs, forty pixels back for the chart -- and nothing
+   * floating over the candles to buy them.
+   */
+  const cramped = useMediaQuery(CRAMPED_QUERY)
   // What was open when the window got too narrow for it, so that widening
   // the window again puts back the panel it took away rather than leaving
   // the user to work out where it went.
@@ -94,7 +102,9 @@ export function Workspace() {
       <TopBar />
 
       <div className="relative flex min-h-0 min-w-0 flex-1">
-        <ToolRail />
+        <ToolRail
+          footer={cramped ? <PanelTabs tab={tab} onPick={setTab} /> : undefined}
+        />
 
         {/*
          * `min-w-0` is what keeps the rail on the right of the screen.
@@ -185,7 +195,13 @@ export function Workspace() {
         {/* The same panel, over the chart rather than beside it. */}
         {sheetPanel && (
           <aside
-            className="panel absolute inset-y-0 right-10 z-40 flex w-[min(22rem,calc(100%-5rem))] flex-col overflow-hidden border-l border-border shadow-2xl"
+            className={cn(
+              'panel absolute inset-y-0 z-40 flex w-[min(22rem,calc(100%-5rem))] flex-col overflow-hidden border-l border-border shadow-2xl',
+              // Clear of the rail that opens it, so the way back out is never
+              // underneath the sheet. Once that rail folds into the left one
+              // there is nothing on this edge to clear.
+              cramped ? 'right-0' : 'right-10',
+            )}
             aria-label={tab === 'analysis' ? 'Analysis' : 'Strategy'}
           >
             <div className="flex h-7 shrink-0 items-center justify-between border-b border-border px-2">
@@ -213,38 +229,63 @@ export function Workspace() {
          * reason a rail exists rather than a row of tabs that vanishes with
          * the panel it labels.
          */}
-        <nav
-          aria-label="Side panels"
-          className="panel flex w-10 shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-border py-1.5"
-        >
-          {SIDEBAR_TABS.map((item) => {
-            const active = tab === item.value
-            const Icon = item.icon
-            return (
-              <button
-                key={item.value}
-                type="button"
-                onClick={() => setTab(active ? null : item.value)}
-                title={active ? `Hide ${item.label} — ${item.hint}` : item.hint}
-                aria-pressed={active}
-                className={cn(
-                  'flex w-8 flex-col items-center gap-1.5 rounded py-2 transition-colors',
-                  active
-                    ? 'bg-primary/15 text-foreground'
-                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-                )}
-              >
-                <Icon size={15} />
-                <span className="text-2xs tracking-wide [writing-mode:vertical-rl]">
-                  {item.label}
-                </span>
-              </button>
-            )
-          })}
-        </nav>
+        {!cramped && (
+          <nav
+            aria-label="Side panels"
+            className="panel flex w-10 shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-border py-1.5"
+          >
+            <PanelTabs tab={tab} onPick={setTab} />
+          </nav>
+        )}
       </div>
 
       <StatusBar />
     </div>
+  )
+}
+
+/**
+ * The way into the side panels: one button per panel, pressed when its panel
+ * is showing and pressed again to send it away.
+ *
+ * Lives in its own component because at a laptop width these sit in the rail
+ * on the right, and on a phone the same buttons sit at the foot of the rail
+ * on the left. Same control, same behaviour, two homes -- which only works if
+ * there is one of it.
+ */
+function PanelTabs({
+  tab,
+  onPick,
+}: {
+  tab: SidebarTab | null
+  onPick: (next: SidebarTab | null) => void
+}) {
+  return (
+    <>
+      {SIDEBAR_TABS.map((item) => {
+        const active = tab === item.value
+        const Icon = item.icon
+        return (
+          <button
+            key={item.value}
+            type="button"
+            onClick={() => onPick(active ? null : item.value)}
+            title={active ? `Hide ${item.label} — ${item.hint}` : item.hint}
+            aria-pressed={active}
+            className={cn(
+              'flex w-8 shrink-0 flex-col items-center gap-1.5 rounded py-2 transition-colors',
+              active
+                ? 'bg-primary/15 text-foreground'
+                : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+            )}
+          >
+            <Icon size={15} />
+            <span className="text-2xs tracking-wide [writing-mode:vertical-rl]">
+              {item.label}
+            </span>
+          </button>
+        )
+      })}
+    </>
   )
 }

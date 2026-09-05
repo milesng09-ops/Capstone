@@ -34,6 +34,7 @@ from app.providers.base import (
     ProviderError,
     ProviderNotConfiguredError,
     ProviderRateLimitError,
+    ProviderThrottledError,
 )
 from app.providers.demo_provider import DemoProvider
 from app.providers.health import ProviderHealthRegistry, get_health_registry
@@ -195,9 +196,18 @@ class AutomaticFallbackProvider(MarketDataProvider):
                 is_rate_limit = isinstance(exc, ProviderRateLimitError)
                 if is_rate_limit:
                     rate_limit_error = rate_limit_error or exc
-                self._registry.mark_failure(
-                    name, str(exc), permanent=exc.permanent, rate_limited=is_rate_limit
-                )
+                if isinstance(exc, ProviderThrottledError):
+                    # Our own pacing, not the provider's verdict. Blacklisting
+                    # it for two minutes would turn a few seconds of waiting
+                    # into exactly the outage the pacing is meant to prevent,
+                    # so the next request is free to try again immediately.
+                    self._registry.note_throttled(
+                        name, exc.retry_after_seconds or 0.0
+                    )
+                else:
+                    self._registry.mark_failure(
+                        name, str(exc), permanent=exc.permanent, rate_limited=is_rate_limit
+                    )
                 if position + 1 < len(chain):
                     next_provider = self._providers[chain[position + 1]]
                     self._registry.record_fallback(name, chain[position + 1], str(exc))

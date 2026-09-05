@@ -79,14 +79,20 @@ export function RateLimitNotice() {
     >
       <Clock size={12} className="shrink-0" />
 
-      <span className="min-w-0 truncate">
-        <span className="font-semibold">{name} is rate limiting us.</span>{' '}
+      {/*
+        Worded to be true of both halves of this condition: the provider
+        rejecting us with a 429, and the backend pacing itself to avoid one.
+        They differ in blame and not in consequence, and the consequence is
+        the only part that changes what the user should do.
+      */}
+      <span className="min-w-0 truncate" title={limited.last_error ?? undefined}>
+        <span className="font-semibold">{name}&apos;s request limit is reached.</span>{' '}
         {/*
           Naming the missing candles matters more than naming the error. The
           user's question is not "what went wrong" but "why is the chart
           short", and the answer is that the gap is deliberate.
         */}
-        Ranges that are not cached yet stay blank until it reopens -- generated
+        Ranges that are not cached yet stay blank until it clears -- generated
         bars are never drawn in place of real prices.
       </span>
 

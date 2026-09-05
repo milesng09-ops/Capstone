@@ -107,6 +107,27 @@ class ProviderHealthRegistry:
             "Provider '%s' marked unhealthy for %ss: %s", provider, ttl, reason
         )
 
+    def note_throttled(self, provider: str, retry_after_seconds: float) -> None:
+        """Record that *we* paced a provider, rather than it rejecting us.
+
+        Deliberately leaves ``healthy`` alone. Marking a provider unhealthy
+        here would be self-defeating: the throttle exists to avoid the
+        two-minute cool-off a 429 costs, and imposing that cool-off ourselves
+        would buy the whole penalty while skipping the request that at least
+        might have worked. The deadline is still published so the UI can show
+        a countdown -- a short one, measured in seconds rather than minutes.
+        """
+
+        with self._lock:
+            entry = self._entries.setdefault(provider, HealthEntry())
+            entry.rate_limited = True
+            entry.last_error = (
+                f"Pacing requests to stay under the quota; next slot in "
+                f"{retry_after_seconds:.0f}s"
+            )
+            entry.last_checked_ms = now_ms()
+            entry.cooldown_until_ms = now_ms() + int(max(0.0, retry_after_seconds) * 1000)
+
     def record_fallback(self, from_provider: str, to_provider: str, reason: str) -> None:
         with self._lock:
             self._history.append(

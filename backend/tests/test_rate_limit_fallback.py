@@ -21,6 +21,7 @@ from app.models.domain import Candle, ProviderFetchResult
 from app.providers.base import (
     MarketDataProvider,
     ProviderRateLimitError,
+    ProviderThrottledError,
     ProviderUnavailableError,
 )
 from app.providers.fallback_provider import CHAINS, AutomaticFallbackProvider
@@ -180,3 +181,98 @@ class TestRateLimit:
         entry = registry.entry("massive")
         assert entry.rate_limited is False
         assert entry.cooldown_until_ms is None
+
+
+# --------------------------------------------------------------------------
+# Our own pacing, as opposed to the provider's verdict
+# --------------------------------------------------------------------------
+class TestClientSideThrottle:
+    """The throttle must not cause the outage it exists to prevent.
+
+    A 429 costs a two-minute cool-off. If declining to send a call imposed the
+    same cool-off, the limiter would buy the entire penalty while skipping the
+    request that might have succeeded -- strictly worse than not having it.
+    """
+
+    @pytest.mark.anyio
+    async def test_being_paced_does_not_mark_the_provider_unhealthy(self):
+        registry = ProviderHealthRegistry()
+        paced = StubProvider(
+            "massive",
+            error=ProviderThrottledError(
+                "budget spent", provider="massive", retry_after_seconds=4
+            ),
+        )
+        provider = AutomaticFallbackProvider(
+            providers={"massive": paced, "yahoo": StubProvider("yahoo")},
+            registry=registry,
+        )
+
+        await provider.fetch("ES", "1h", START, END)
+
+        entry = registry.entry("massive")
+        assert entry.healthy is True, "we paced it; it did not fail"
+        assert registry.is_available("massive") is True
+
+    @pytest.mark.anyio
+    async def test_the_next_request_may_try_massive_again_immediately(self):
+        registry = ProviderHealthRegistry()
+        # Spent budget on the first call, a free slot by the second.
+        paced = StubProvider(
+            "massive",
+            error=ProviderThrottledError(
+                "budget spent", provider="massive", retry_after_seconds=4
+            ),
+        )
+        provider = AutomaticFallbackProvider(
+            providers={"massive": paced, "yahoo": StubProvider("yahoo")},
+            registry=registry,
+        )
+        await provider.fetch("ES", "1h", START, END)
+
+        paced._error = None
+        result = await provider.fetch("ES", "1h", START, END)
+
+        # A cool-off would have skipped Massive without calling it at all.
+        assert result.provider == "massive"
+        assert paced.calls == 2
+
+    @pytest.mark.anyio
+    async def test_the_countdown_is_still_published_for_the_ui(self):
+        registry = ProviderHealthRegistry()
+        provider = AutomaticFallbackProvider(
+            providers={
+                "massive": StubProvider(
+                    "massive",
+                    error=ProviderThrottledError(
+                        "budget spent", provider="massive", retry_after_seconds=4
+                    ),
+                ),
+                "yahoo": StubProvider("yahoo"),
+            },
+            registry=registry,
+        )
+
+        await provider.fetch("ES", "1h", START, END)
+
+        entry = registry.entry("massive")
+        assert entry.rate_limited is True
+        assert entry.cooldown_until_ms is not None
+
+    @pytest.mark.anyio
+    async def test_a_throttle_still_reads_as_a_rate_limit_further_up(self):
+        # Subclassing ProviderRateLimitError is what lets the route answer 429
+        # with a Retry-After instead of a bare 503.
+        throttled = StubProvider(
+            "massive",
+            error=ProviderThrottledError(
+                "budget spent", provider="massive", retry_after_seconds=4
+            ),
+        )
+        broken = StubProvider("yahoo", error=ProviderUnavailableError("down"))
+        provider = build({"massive": throttled, "yahoo": broken})
+
+        with pytest.raises(ProviderRateLimitError) as caught:
+            await provider.fetch("ES", "1h", START, END)
+
+        assert caught.value.retry_after_seconds == 4

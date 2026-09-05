@@ -62,7 +62,7 @@ describe('RateLimitNotice', () => {
     renderNotice()
 
     await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
-    expect(screen.getByRole('status')).toHaveTextContent('Massive is rate limiting us')
+    expect(screen.getByRole('status')).toHaveTextContent("Massive's request limit is reached")
     expect(screen.getByRole('status')).toHaveTextContent(/retrying in \d+s/)
   })
 

@@ -11,8 +11,10 @@ the common case).  Aggregation rules:
 
 Bucketing conventions (documented in the UI under "Assumptions"):
 
-* Intraday buckets are anchored to the UTC epoch, so a 6h bar starts at
-  00:00 / 06:00 / 12:00 / 18:00 UTC.
+* Intraday buckets are anchored to the UTC epoch, offset by the interval's
+  ``anchor_offset_ms``, so a 6h bar (offset 0) starts at 00:00 / 06:00 /
+  12:00 / 18:00 UTC while a 4h bar (offset 2h) starts at 02:00 / 06:00 /
+  10:00 / 14:00 / 18:00 / 22:00 UTC.
 * Daily buckets are anchored to local midnight in the instrument's exchange
   timezone (``America/Chicago`` for CME index futures).
 """
@@ -33,7 +35,8 @@ def bucket_start(timestamp_ms: int, interval: str, timezone: str = "America/Chic
     spec = get_interval(interval)
     if spec.milliseconds >= DAY_MS:
         return local_day_start_ms(timestamp_ms, timezone)
-    return timestamp_ms - (timestamp_ms % spec.milliseconds)
+    shifted = timestamp_ms - spec.anchor_offset_ms
+    return shifted - (shifted % spec.milliseconds) + spec.anchor_offset_ms
 
 
 def aggregate_candles(

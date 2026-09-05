@@ -112,4 +112,21 @@ describe('buildRange', () => {
     const range = buildRange('1d', 90, 1_790_000_000_000)
     expect(range.to - range.from).toBe(90 * DAY_MS)
   })
+
+  it('snaps 4h to the 02:00 UTC anchor, not to a plain multiple', () => {
+    // 4h bars open at 02:00/06:00/... UTC, so the end of the window has to
+    // land on one of those and never on 00:00/04:00.
+    const now = Date.UTC(2026, 8, 4, 7, 30)
+    const to = buildRange('4h', 30, now).to
+    expect(new Date(to).toISOString()).toBe('2026-09-04T10:00:00.000Z')
+  })
+
+  it('keeps the forming 4h bar inside the window', () => {
+    for (let hour = 0; hour < 24; hour += 1) {
+      const now = Date.UTC(2026, 8, 4, hour, 15)
+      const { to } = buildRange('4h', 30, now)
+      expect(to).toBeGreaterThan(now)
+      expect(new Date(to).getUTCHours() % 4).toBe(2)
+    }
+  })
 })

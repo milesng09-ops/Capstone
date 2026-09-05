@@ -95,38 +95,37 @@ describe('buildBacktestRequest', () => {
 })
 
 describe('buildRange', () => {
-  it('snaps the end to the interval bucket so the query key is stable', () => {
+  it('snaps the end to the hour so the query key is stable', () => {
     const now = 1_790_000_123_456
-    const first = buildRange('1h', 30, now)
-    const second = buildRange('1h', 30, now + 60_000)
+    const first = buildRange(30, now)
+    const second = buildRange(30, now + 60_000)
     expect(first).toEqual(second)
   })
 
-  it('starts a new window once the bucket rolls over', () => {
+  it('starts a new window once the hour rolls over', () => {
     const now = 1_790_000_123_456
-    const later = buildRange('1h', 30, now + 3_600_000)
-    expect(later.to).toBeGreaterThan(buildRange('1h', 30, now).to)
+    const later = buildRange(30, now + 3_600_000)
+    expect(later.to).toBeGreaterThan(buildRange(30, now).to)
   })
 
   it('spans the requested number of days', () => {
-    const range = buildRange('1d', 90, 1_790_000_000_000)
+    const range = buildRange(90, 1_790_000_000_000)
     expect(range.to - range.from).toBe(90 * DAY_MS)
   })
 
-  it('snaps 4h to the 02:00 UTC anchor, not to a plain multiple', () => {
-    // 4h bars open at 02:00/06:00/... UTC, so the end of the window has to
-    // land on one of those and never on 00:00/04:00.
+  it('gives every interval the same window, so changing timeframe hits the cache', () => {
+    // The window used to be snapped to the interval's own bucket, so moving
+    // from 1h to 4h shifted both ends and missed the cache -- three provider
+    // calls per symbol against a quota of five a minute.
     const now = Date.UTC(2026, 8, 4, 7, 30)
-    const to = buildRange('4h', 30, now).to
-    expect(new Date(to).toISOString()).toBe('2026-09-04T10:00:00.000Z')
+    expect(buildRange(30, now)).toEqual(buildRange(30, now))
   })
 
-  it('keeps the forming 4h bar inside the window', () => {
+  it('keeps the bar currently forming inside the window', () => {
     for (let hour = 0; hour < 24; hour += 1) {
       const now = Date.UTC(2026, 8, 4, hour, 15)
-      const { to } = buildRange('4h', 30, now)
+      const { to } = buildRange(30, now)
       expect(to).toBeGreaterThan(now)
-      expect(new Date(to).getUTCHours() % 4).toBe(2)
     }
   })
 })

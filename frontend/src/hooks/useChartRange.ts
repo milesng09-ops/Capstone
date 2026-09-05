@@ -1,40 +1,45 @@
 /**
  * The time window every chart and detector request shares.
  *
- * The end of the window is snapped **down to the current interval bucket**
- * rather than being `Date.now()`. Without that, the range changes on every
- * render, every query key changes with it, and the app refetches the entire
- * history several times a second. Snapped, the key only changes when a new
- * bar actually opens.
+ * The end of the window is snapped **down to the hour** rather than being
+ * `Date.now()`. Without that, the range changes on every render, every query
+ * key changes with it, and the app refetches the entire history several times
+ * a second. Snapped, the key only changes once an hour.
+ *
+ * **Why the hour, and not the interval's own bucket.** The window used to be
+ * snapped to whichever interval was on screen, which meant switching from 1h
+ * to 4h moved both ends of the range and so missed the cache -- three fresh
+ * provider calls per symbol for bars the backend already held, against a quota
+ * of five a minute. Every interval the app offers divides an hour evenly or is
+ * built by aggregating hours, so one shared hourly window serves all of them
+ * and a change of interval is answered from the cache. That is the difference
+ * between changing timeframe being free and it costing most of a minute's
+ * quota.
+ *
+ * The window runs to the *next* hour boundary so the bar currently forming is
+ * always inside it. Asking for a little more than exists costs nothing: there
+ * are no bars in the future to return.
  */
 
 import { useMemo } from 'react'
 
-import { INTERVAL_ANCHOR_OFFSET_MS, INTERVAL_MS, type Interval } from '@/types/market'
 import { useWorkspace } from '@/store/workspace'
 
-const DAY_MS = 24 * 60 * 60 * 1000
+const HOUR_MS = 60 * 60 * 1000
+const DAY_MS = 24 * HOUR_MS
 
 export interface ChartRange {
   from: number
   to: number
 }
 
-export function buildRange(interval: Interval, rangeDays: number, now = Date.now()): ChartRange {
-  const bucket = INTERVAL_MS[interval]
-  // Buckets are anchored to the epoch plus an offset, not to the epoch
-  // itself, so shift before snapping and shift back after. 4h bars open at
-  // 02:00 UTC; snapping on a plain multiple would name a boundary no bar
-  // actually starts on.
-  const anchor = INTERVAL_ANCHOR_OFFSET_MS[interval]
-  // One bucket past the current one, so the forming bar is still included.
-  const to = Math.floor((now - anchor) / bucket) * bucket + anchor + bucket
+export function buildRange(rangeDays: number, now = Date.now()): ChartRange {
+  const to = Math.floor(now / HOUR_MS) * HOUR_MS + HOUR_MS
   return { from: to - rangeDays * DAY_MS, to }
 }
 
 export function useChartRange(): ChartRange {
-  const interval = useWorkspace((state) => state.interval)
   const rangeDays = useWorkspace((state) => state.rangeDays)
 
-  return useMemo(() => buildRange(interval, rangeDays), [interval, rangeDays])
+  return useMemo(() => buildRange(rangeDays), [rangeDays])
 }

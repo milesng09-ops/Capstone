@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   collectEvidence,
+  cumulativeReturns,
   evidenceWindow,
   findMatch,
   hasEvidence,
@@ -19,7 +20,7 @@ import {
   tradesForSymbol,
   withinWindow,
 } from '@/lib/trades'
-import type { PatternMatch, Trade } from '@/types/backtest'
+import type { EquityPoint, PatternMatch, Trade } from '@/types/backtest'
 import type { FairValueGap, IctAnalysis, SmtDivergence, SwingPoint } from '@/types/ict'
 
 const HOUR = 3_600_000
@@ -285,5 +286,40 @@ describe('withinWindow', () => {
     expect(withinWindow(window, T0)).toBe(true)
     expect(withinWindow(window, T0 + HOUR)).toBe(true)
     expect(withinWindow(window, T0 - 1)).toBe(false)
+  })
+})
+
+describe('cumulativeReturns', () => {
+  const point = (trade_number: number, equity: number): EquityPoint => ({
+    trade_number,
+    time: trade_number * 1_000,
+    equity,
+    drawdown: 0,
+  })
+
+  it('rebases the equity level onto zero', () => {
+    // The backend compounds from a notional 100, so a run that made 0.35%
+    // ends at 100.35. Plotted raw against a percentage axis it read
+    // "+100.35%" and the curve leapt to 100 on the very first trade.
+    const result = cumulativeReturns([point(1, 100.2), point(2, 100.35)])
+
+    expect(result[0].equity).toBeCloseTo(0.2, 10)
+    expect(result[1].equity).toBeCloseTo(0.35, 10)
+  })
+
+  it('carries a losing run below the line', () => {
+    expect(cumulativeReturns([point(1, 97.5)])[0].equity).toBeCloseTo(-2.5, 10)
+  })
+
+  it('leaves everything but the equity alone', () => {
+    const [result] = cumulativeReturns([{ ...point(3, 101), drawdown: -4.2 }])
+
+    expect(result.trade_number).toBe(3)
+    expect(result.time).toBe(3_000)
+    expect(result.drawdown).toBe(-4.2)
+  })
+
+  it('has nothing to do for a run with no trades', () => {
+    expect(cumulativeReturns([])).toEqual([])
   })
 })

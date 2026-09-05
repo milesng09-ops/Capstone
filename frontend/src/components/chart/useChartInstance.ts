@@ -63,12 +63,14 @@ interface Options {
   /** Unique per panel; identifies the source of a sync broadcast. */
   id: string
   candles: Candle[]
+  /** Refit when this changes: a new interval reframes the whole pane. */
+  interval: string
   precision: number
   /** Notified as the pointer moves over bars, for the OHLC readout. */
   onHoverBar?: (candle: Candle | null) => void
 }
 
-export function useChartInstance({ id, candles, precision, onHoverBar }: Options) {
+export function useChartInstance({ id, candles, interval, precision, onHoverBar }: Options) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -82,6 +84,7 @@ export function useChartInstance({ id, candles, precision, onHoverBar }: Options
   const zoneRef = useRef(timeZone)
 
   const [ready, setReady] = useState(false)
+  const resetViewRef = useRef<() => void>(() => {})
 
   candlesRef.current = candles
   hoverRef.current = onHoverBar
@@ -170,6 +173,11 @@ export function useChartInstance({ id, candles, precision, onHoverBar }: Options
       applyLogicalRange: (range) => {
         timeScale.setVisibleLogicalRange(range)
       },
+      // Through a ref because `resetView` is defined below this effect and
+      // must not become one of its dependencies -- naming it here directly
+      // would rebuild the chart, and with it the user's zoom, on every
+      // render that changed the callback's identity.
+      resetView: () => resetViewRef.current(),
     })
 
     const observer = new ResizeObserver(() => notify())
@@ -279,9 +287,36 @@ export function useChartInstance({ id, candles, precision, onHoverBar }: Options
     palette: () => paletteRef.current,
   })
 
-  const fitContent = useCallback(() => {
+  /**
+   * Put the whole series back in view, on both axes.
+   *
+   * `fitContent` alone is only half a reset, and the missing half is the one
+   * that strands a chart. Dragging the price axis latches `autoScale: false`
+   * on the price scale, and from then on every `setData` leaves the range
+   * where the drag left it -- so switching to a coarser interval draws the
+   * new candles against a scale fitted to the old ones, and there is nothing
+   * on screen. Re-enabling autoscale is what makes this the button the user
+   * asked for rather than one that fixes the axis they were not complaining
+   * about.
+   */
+  const resetView = useCallback(() => {
+    seriesRef.current?.priceScale().applyOptions({ autoScale: true })
     chartRef.current?.timeScale().fitContent()
   }, [])
+  resetViewRef.current = resetView
 
-  return { containerRef, handle: handleRef.current, ready, fitContent }
+  /**
+   * Bar spacing belongs to the chart, not to the data, so it survives a change
+   * of interval: the same pixels-per-bar that framed 500 hourly candles frames
+   * 30 four-hour ones as a handful of giant bars off the edge of the pane.
+   * Refitting on the changes that invalidate the view -- and not on a refetch,
+   * which would throw away a zoom the user chose -- is what stops every
+   * timeframe click needing a manual reset.
+   */
+  useEffect(() => {
+    if (!ready) return
+    resetView()
+  }, [interval, ready, resetView])
+
+  return { containerRef, handle: handleRef.current, ready, resetView }
 }

@@ -25,6 +25,16 @@ const candles: Candle[] = [
   { symbol: 'NQ', time: 903_600, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 },
 ]
 
+/**
+ * Bars sitting under the pointer coordinates, so that snapping is in play.
+ * The default `candles` above are deliberately far away; these are for the
+ * cases that are *about* the snap.
+ */
+const nearbyBars: Candle[] = [
+  { symbol: 'NQ', time: 100, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 },
+  { symbol: 'NQ', time: 500, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 },
+]
+
 const handle: ChartHandle = {
   timeToX: (ms) => ms,
   priceToY: (price) => price,
@@ -59,6 +69,7 @@ function setup(overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {}) {
     symbol: 'NQ',
     handle,
     candles,
+    interval: '1h' as const,
     ict: undefined,
     ictSettings: DEFAULT_ICT_SETTINGS,
     drawings: [] as Drawing[],
@@ -187,6 +198,58 @@ describe('drawing a shape', () => {
     fireEvent(canvas, pointer('pointerup', 200, 160))
 
     expect(onCreateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('creates a zone from a drag with area', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 240, 180))
+    fireEvent(canvas, pointer('pointerup', 240, 180))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'rectangle',
+        from: { time: 100, price: 100 },
+        to: { time: 240, price: 180 },
+      }),
+    )
+  })
+
+  it('refuses a zone whose sides collapse onto one bar once snapped', () => {
+    // The bug from the 2026-09-05 review. The drag threshold is measured in
+    // raw pixels *before* snapping, so a tall, narrow drag passes it and is
+    // then stored with both sides on the same bar: no width, nothing painted,
+    // yet still selected, still clickable and still listed. "This rectangular
+    // shape is not showing... but this is able to be deleted."
+    const { canvas, onCreateDrawing } = setup({ tool: 'rectangle', candles: nearbyBars })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 103, 300))
+    fireEvent(canvas, pointer('pointerup', 103, 300))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('keeps the tool held when a gesture places nothing', () => {
+    // Losing the tool on a misfire makes a mis-click cost two things: the
+    // shape, and the tool you have to go and pick again.
+    const { canvas, onGestureComplete } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 101, 101))
+
+    expect(onGestureComplete).toHaveBeenCalledWith(false)
+  })
+
+  it('releases the tool once a shape is actually placed', () => {
+    const { canvas, onGestureComplete } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 240, 180))
+    fireEvent(canvas, pointer('pointerup', 240, 180))
+
+    expect(onGestureComplete).toHaveBeenCalledWith(true)
   })
 })
 

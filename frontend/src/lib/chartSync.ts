@@ -23,6 +23,8 @@ export interface SyncedChart {
   applyCrosshair: (time: number | null) => void
   /** Match another chart's horizontal scroll and zoom. */
   applyLogicalRange: (range: LogicalRange) => void
+  /** Put the whole series back in view, on both axes. */
+  resetView: () => void
 }
 
 const charts = new Map<string, SyncedChart>()
@@ -58,6 +60,23 @@ export function broadcastLogicalRange(sourceId: string, range: LogicalRange): vo
       if (id === sourceId) continue
       chart.applyLogicalRange(range)
     }
+  } finally {
+    applying = false
+  }
+}
+
+/**
+ * Refit every chart.
+ *
+ * Unlike the two broadcasts above there is no source to exclude: a reset is
+ * asked for once, by keyboard, and means all of the panes -- they are locked
+ * to one another anyway, so refitting one and leaving the rest would only
+ * pull them apart.
+ */
+export function resetAllCharts(): void {
+  applying = true
+  try {
+    for (const chart of charts.values()) chart.resetView()
   } finally {
     applying = false
   }

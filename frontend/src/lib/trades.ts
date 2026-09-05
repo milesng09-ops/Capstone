@@ -11,7 +11,7 @@
  * milliseconds, prices as prices. Pixels belong to the overlay.
  */
 
-import type { PatternMatch, Trade } from '@/types/backtest'
+import type { EquityPoint, PatternMatch, Trade } from '@/types/backtest'
 import type { FairValueGap, IctAnalysis, SmtDivergence, SwingPoint } from '@/types/ict'
 import type { TimeWindow } from '@/types/market'
 
@@ -187,4 +187,27 @@ export function hitTestPositions(
 export function withinWindow(window: TimeWindow | null, time: number): boolean {
   if (!window) return true
   return time >= window.start_time && time <= window.end_time
+}
+
+/**
+ * Where the backend's equity curve starts.
+ *
+ * `EquityPoint.equity` is an equity *level*, compounded from a notional 100 --
+ * so a run that made 0.35% ends at 100.35, not at 0.35. The backend derives
+ * `net_return` by subtracting this exact constant, which is what fixes the
+ * unit; mirroring it here is the other half of that contract.
+ */
+export const STARTING_EQUITY = 100
+
+/**
+ * The curve as a cumulative return, which is what the chart draws.
+ *
+ * Without this the level was plotted against a percentage axis: the line
+ * leapt from 0 to ~100 on the first trade and then looked flat for the rest
+ * of the run, and the tooltip read "+100.35%" for a run that made a third of
+ * a percent. Converting on the way in rather than changing the wire format
+ * means runs already saved under the old convention read correctly too.
+ */
+export function cumulativeReturns(points: EquityPoint[]): EquityPoint[] {
+  return points.map((point) => ({ ...point, equity: point.equity - STARTING_EQUITY }))
 }

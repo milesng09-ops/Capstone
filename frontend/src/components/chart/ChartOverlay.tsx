@@ -75,7 +75,7 @@ import {
 } from '@/lib/trades'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import type { Trade } from '@/types/backtest'
-import type { Candle, SelectionRange, TimeWindow } from '@/types/market'
+import type { Candle, Interval, SelectionRange, TimeWindow } from '@/types/market'
 import { isDragTool, isRangeTool } from '@/types/drawing'
 import type { Drawing, DrawingDraft, DrawingPoint, ToolMode } from '@/types/drawing'
 import type { FairValueGap, IctAnalysis, IctSettings, SwingPoint } from '@/types/ict'
@@ -87,13 +87,49 @@ const SNAP_RADIUS = 14
 /** Minimum drag distance before a gesture counts as a shape, not a stray click. */
 const MIN_DRAG_PX = 4
 
+/**
+ * Would a shape spanning these two points be big enough to see?
+ *
+ * Asked in pixels, of the coordinates that will actually be stored, because
+ * that is the thing the user has to be able to find again. A trend line needs
+ * length in either direction; a zone needs both, since one collapsed side
+ * leaves a shape with no area to paint.
+ */
+function isVisiblySized(
+  kind: 'trendline' | 'rectangle',
+  from: DrawingPoint,
+  to: DrawingPoint,
+  xOf: (ms: number) => number | null,
+  yOf: (price: number) => number | null,
+): boolean {
+  const x1 = xOf(from.time)
+  const x2 = xOf(to.time)
+  const y1 = yOf(from.price)
+  const y2 = yOf(to.price)
+  if (x1 == null || x2 == null || y1 == null || y2 == null) return false
+
+  const width = Math.abs(x2 - x1)
+  const height = Math.abs(y2 - y1)
+  // A line only needs length, in whichever direction it runs. A zone needs
+  // both: collapsed on one side it has no area, and a zone with no area is
+  // not a zone the user can find again.
+  return kind === 'trendline'
+    ? Math.hypot(width, height) > MIN_DRAG_PX
+    : width > MIN_DRAG_PX && height > MIN_DRAG_PX
+}
+
 /** Narrowest a position box may be drawn, so a one-bar trade is still visible. */
 const MIN_POSITION_WIDTH_PX = 5
+
+/** Smallest a user-drawn shape is ever painted, so none is invisible. */
+const MIN_SHAPE_PX = 2
 
 interface Props {
   symbol: string
   handle: ChartHandle
   candles: Candle[]
+  /** The interval on screen. A selection is defined in terms of these bars. */
+  interval: Interval
   ict?: IctAnalysis
   ictSettings: IctSettings
   drawings: Drawing[]
@@ -117,7 +153,13 @@ interface Props {
   onSelectionChange: (selection: SelectionRange | null) => void
   onTestWindowChange: (window: TimeWindow | null) => void
   onSelectTrade: (id: string | null) => void
-  onGestureComplete: () => void
+  /**
+   * A gesture ended. `committed` is false when nothing was placed -- a
+   * misfire, an Escape, or a drag that collapsed onto a single bar -- so the
+   * caller can keep the tool held rather than making the user pick it again
+   * for a shape they never got.
+   */
+  onGestureComplete: (committed: boolean) => void
 }
 
 /** A shape being drawn for the first time. */
@@ -149,6 +191,7 @@ export function ChartOverlay({
   symbol,
   handle,
   candles,
+  interval,
   ict,
   ictSettings,
   drawings,
@@ -418,7 +461,11 @@ export function ChartOverlay({
 
       // Snapping to a swing point is what makes "connect these two highs"
       // land exactly on the highs instead of near them.
-      if (useSwingSnap && ict?.swing_points.length) {
+      // Only snap to markers the chart is actually showing. Detectors run on
+      // every bar whether or not their overlay is on, so with swings hidden
+      // this pulled endpoints up to 14px towards targets the user could not
+      // see -- indistinguishable from the tool being inaccurate.
+      if (useSwingSnap && ictSettings.showSwings && ict?.swing_points.length) {
         const snapped = findSnapTarget(ict.swing_points, x, y, xOf, handle.priceToY)
         if (snapped) {
           time = snapped.time
@@ -700,7 +747,7 @@ export function ChartOverlay({
     // shape, so it is discarded. A level is the exception: it has only one
     // coordinate, so pressing and releasing in place *is* the whole gesture.
     if (!gesture.moved && tool !== 'horizontal') {
-      onGestureComplete()
+      onGestureComplete(false)
       return
     }
 
@@ -723,19 +770,35 @@ export function ChartOverlay({
         candles,
         Math.max(gesture.start.time, gesture.current.time),
       )
-      if (start != null && end != null && start !== end) {
-        if (tool === 'select') {
-          onSelectionChange({
-            symbol,
-            start_time: start,
-            end_time: end,
-            source_interval: (ict?.interval ?? '1h') as SelectionRange['source_interval'],
-          })
-        } else {
-          onTestWindowChange({ start_time: start, end_time: end })
-        }
+      // A range narrower than one bar names nothing, so it is dropped -- and
+      // the tool stays held, because the user was mid-gesture rather than
+      // finished.
+      if (start == null || end == null || start === end) {
+        onGestureComplete(false)
+        return
+      }
+      if (tool === 'select') {
+        onSelectionChange({
+          symbol,
+          start_time: start,
+          end_time: end,
+          source_interval: interval,
+        })
+      } else {
+        onTestWindowChange({ start_time: start, end_time: end })
       }
     } else if (tool === 'trendline' || tool === 'rectangle') {
+      // Measured on the *snapped* endpoints, not on the raw pointer path.
+      // `moved` above is a pixel test taken before snapping, and snapping can
+      // pull two distinct positions onto one market point -- the bar snap
+      // always, the swing snap within 14px, which is more than three times
+      // the drag threshold. The shape was then stored with `from === to`: it
+      // painted nothing, yet stayed selected, clickable and listed, which is
+      // exactly "the zone is not showing, but I can delete it".
+      if (!isVisiblySized(tool, gesture.start, gesture.current, xOfDrawing, handle.priceToY)) {
+        onGestureComplete(false)
+        return
+      }
       onCreateDrawing({
         kind: tool,
         symbol,
@@ -743,9 +806,11 @@ export function ChartOverlay({
         from: gesture.start,
         to: gesture.current,
       })
+      onGestureComplete(true)
+      return
     }
 
-    onGestureComplete()
+    onGestureComplete(true)
   }
 
   // ---- escape ----------------------------------------------------------
@@ -762,7 +827,7 @@ export function ChartOverlay({
       event.stopPropagation()
       updatePending(null)
       updateDrag(null)
-      onGestureComplete()
+      onGestureComplete(false)
     }
 
     window.addEventListener('keydown', cancel, { capture: true })
@@ -1162,8 +1227,11 @@ function paintDrawing(
   } else {
     const left = Math.min(projected.x1, projected.x2)
     const top = Math.min(projected.y1, projected.y2)
-    const boxWidth = Math.abs(projected.x2 - projected.x1)
-    const boxHeight = Math.abs(projected.y2 - projected.y1)
+    // A floor, as every other rectangle painter in this file has: a zone that
+    // rounds to zero on one side would otherwise be stored, selectable and
+    // completely invisible.
+    const boxWidth = Math.max(MIN_SHAPE_PX, Math.abs(projected.x2 - projected.x1))
+    const boxHeight = Math.max(MIN_SHAPE_PX, Math.abs(projected.y2 - projected.y1))
     ctx.globalAlpha = hovered || selected ? 0.2 : 0.14
     ctx.fillRect(left, top, boxWidth, boxHeight)
     ctx.globalAlpha = 1

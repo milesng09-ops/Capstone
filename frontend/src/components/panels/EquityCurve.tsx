@@ -30,6 +30,7 @@ import {
 } from 'recharts'
 
 import { readChartPalette } from '@/lib/chart'
+import { cumulativeReturns } from '@/lib/trades'
 import type { EquityPoint } from '@/types/backtest'
 import { formatDateTime, formatPercent } from '@/utils/format'
 
@@ -48,11 +49,18 @@ export function EquityCurve({ points }: { points: EquityPoint[] }) {
     )
   }
 
+  // The backend sends an equity *level* compounded from a notional 100, and
+  // everything below this line -- the zero anchor, the `%` axis, the
+  // break-even reference, the tooltip -- reads a cumulative return. Converting
+  // here is the whole of the difference between a curve that leaps to 100 on
+  // the first trade and one that shows what the run actually did.
+  const returns = cumulativeReturns(points)
+
   // Anchor the curve at zero so the first trade's move is visible rather than
   // being the whole line.
   const data = [
-    { trade_number: 0, equity: 0, drawdown: 0, time: points[0].time },
-    ...points,
+    { trade_number: 0, equity: 0, drawdown: 0, time: returns[0].time },
+    ...returns,
   ]
 
   return (

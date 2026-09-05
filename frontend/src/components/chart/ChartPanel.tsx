@@ -111,9 +111,10 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
 
   const [hovered, setHovered] = useState<Candle | null>(null)
 
-  const { containerRef, handle, ready, fitContent } = useChartInstance({
+  const { containerRef, handle, ready, resetView } = useChartInstance({
     id: `chart-${symbol}`,
     candles,
+    interval,
     precision,
     onHoverBar: setHovered,
   })
@@ -125,11 +126,16 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     [addDrawing],
   )
 
-  const handleGestureComplete = useCallback(() => {
-    // Drop back to the cursor so the next drag pans the chart, matching how
-    // every charting platform behaves after a shape is placed.
-    setTool('cursor')
-  }, [setTool])
+  const handleGestureComplete = useCallback(
+    (committed: boolean) => {
+      // Drop back to the cursor so the next drag pans the chart, matching how
+      // every charting platform behaves after a shape is placed -- but only
+      // when something was actually placed. Releasing the tool on a misfire
+      // or an Escape made a mis-click cost the tool as well as the shape.
+      if (committed) setTool('cursor')
+    },
+    [setTool],
+  )
 
   const last = candles.at(-1)
   const first = candles[0]
@@ -213,9 +219,9 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
             size="icon"
             variant="ghost"
             className="pointer-events-auto h-5 w-5"
-            onClick={fitContent}
-            title="Fit every candle in view"
-            aria-label={`Fit ${symbol} in view`}
+            onClick={resetView}
+            title="Reset the chart: fit every candle and re-enable price autoscaling (R)"
+            aria-label={`Reset the ${symbol} chart`}
           >
             <Maximize2 size={11} />
           </Button>
@@ -255,6 +261,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           symbol={symbol}
           handle={handle}
           candles={candles}
+          interval={interval}
           ict={ictQuery.data}
           ictSettings={ictSettings}
           drawings={drawings}

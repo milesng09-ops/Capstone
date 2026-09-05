@@ -26,21 +26,6 @@ export const INTERVAL_MS: Record<Interval, number> = {
   '1d': 24 * 60 * 60_000,
 }
 
-/**
- * Offset from the UTC epoch that each interval's bucket boundaries are
- * anchored to. Mirrors `IntervalSpec.anchor_offset_ms` on the backend, which
- * is the authority -- keep the two in step. `4h` bars open at 02:00 UTC
- * rather than 00:00; everything else opens on plain multiples of its length.
- */
-export const INTERVAL_ANCHOR_OFFSET_MS: Record<Interval, number> = {
-  '5m': 0,
-  '15m': 0,
-  '1h': 0,
-  '4h': 2 * 60 * 60_000,
-  '6h': 0,
-  '1d': 0,
-}
-
 export interface Instrument {
   symbol: string
   display_name: string

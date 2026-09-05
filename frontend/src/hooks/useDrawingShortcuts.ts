@@ -11,10 +11,15 @@
  * shape being dragged and stops the event before it arrives here. What is
  * left for this hook is the resting case: drop the held tool, then clear the
  * selection.
+ *
+ * `R` resets the charts. It is here rather than on the chart for the same
+ * reason as the rest: the canvas cannot hold focus, so there is nowhere else
+ * for it to live.
  */
 
 import { useEffect } from 'react'
 
+import { resetAllCharts } from '@/lib/chartSync'
 import { useWorkspace } from '@/store/workspace'
 
 /** True when the keystroke belongs to whatever the user is typing into. */
@@ -52,6 +57,14 @@ export function useDrawingShortcuts(): void {
         if (!state.selectedDrawingId) return
         event.preventDefault()
         state.removeDrawing(state.selectedDrawingId)
+        return
+      }
+
+      // Reset every chart. Unmodified, because it is the one thing you reach
+      // for repeatedly while reading -- the same key TradingView binds it to.
+      if (!accel && key === 'r') {
+        event.preventDefault()
+        resetAllCharts()
         return
       }
 

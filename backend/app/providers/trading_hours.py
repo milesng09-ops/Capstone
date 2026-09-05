@@ -146,8 +146,11 @@ def trading_hours_between(
     cursor = end - remainder
     step = timedelta(hours=1)
     while cursor < end:
-        # A step is counted by its own start, so a partial final hour rounds
-        # down -- the estimate stays a floor, never a ceiling.
+        # An hour is credited whole when its *start* is open, so a step that
+        # begins just before the daily halt counts the closed minutes with it.
+        # The error is bounded by the sub-week remainder -- under an hour
+        # either way -- which is far inside the headroom the bar cap is chosen
+        # with, and never enough to move a preset across it.
         if is_trading_minute(cursor.astimezone(tz)):
             hours += 1.0
         cursor += step

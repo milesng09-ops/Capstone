@@ -24,12 +24,14 @@ class IntervalSpec:
     #: Interval we aggregate *from* when a provider cannot serve this one
     #: natively.  ``None`` means the interval is always requested directly.
     aggregate_from: str | None
-    #: Offset from the UTC epoch that bucket boundaries are anchored to, in
-    #: milliseconds.  ``0`` means bars open on plain multiples of
-    #: :attr:`milliseconds` (00:00, 01:00, ... for ``1h``).  ``4h`` uses a
-    #: 2-hour anchor so its bars open at 02:00 UTC rather than 00:00.  Must be
-    #: smaller than :attr:`milliseconds`.
-    anchor_offset_ms: int
+    #: Whether bucket boundaries are counted from the exchange's session open
+    #: rather than from the UTC epoch.  A 4h bar has to start when the trading
+    #: day starts -- 17:00 exchange-local, 18:00 New York -- and that boundary
+    #: is a wall-clock time that moves against UTC twice a year, so it cannot
+    #: be expressed as a constant offset.  Intervals shorter than an hour
+    #: divide the session evenly from either origin, so they stay on the plain
+    #: UTC grid, which is cheaper and needs no timezone.
+    session_anchored: bool
     #: Equivalent TradingView resolution string.  The frontend uses
     #: Lightweight Charts and speaks the canonical keys, so this is only kept
     #: so that clients sending resolutions such as ``60`` or ``1D`` are still
@@ -38,12 +40,12 @@ class IntervalSpec:
 
 
 SUPPORTED_INTERVALS: dict[str, IntervalSpec] = {
-    "5m": IntervalSpec("5m", "5 minutes", 5 * MINUTE_MS, None, 0, "5"),
-    "15m": IntervalSpec("15m", "15 minutes", 15 * MINUTE_MS, "5m", 0, "15"),
-    "1h": IntervalSpec("1h", "1 hour", HOUR_MS, "5m", 0, "60"),
-    "4h": IntervalSpec("4h", "4 hours", 4 * HOUR_MS, "1h", 2 * HOUR_MS, "240"),
-    "6h": IntervalSpec("6h", "6 hours", 6 * HOUR_MS, "1h", 0, "360"),
-    "1d": IntervalSpec("1d", "1 day", DAY_MS, "1h", 0, "1D"),
+    "5m": IntervalSpec("5m", "5 minutes", 5 * MINUTE_MS, None, False, "5"),
+    "15m": IntervalSpec("15m", "15 minutes", 15 * MINUTE_MS, "5m", False, "15"),
+    "1h": IntervalSpec("1h", "1 hour", HOUR_MS, "5m", False, "60"),
+    "4h": IntervalSpec("4h", "4 hours", 4 * HOUR_MS, "1h", True, "240"),
+    "6h": IntervalSpec("6h", "6 hours", 6 * HOUR_MS, "1h", True, "360"),
+    "1d": IntervalSpec("1d", "1 day", DAY_MS, "1h", True, "1D"),
 }
 
 INTERVAL_ORDER: list[str] = ["5m", "15m", "1h", "4h", "6h", "1d"]
@@ -79,8 +81,8 @@ def interval_ms(interval: str) -> int:
     return get_interval(interval).milliseconds
 
 
-def anchor_offset_ms(interval: str) -> int:
-    return get_interval(interval).anchor_offset_ms
+def is_session_anchored(interval: str) -> bool:
+    return get_interval(interval).session_anchored
 
 
 def normalise_resolution(resolution: str) -> str:

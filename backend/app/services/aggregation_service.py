@@ -11,12 +11,30 @@ the common case).  Aggregation rules:
 
 Bucketing conventions (documented in the UI under "Assumptions"):
 
-* Intraday buckets are anchored to the UTC epoch, offset by the interval's
-  ``anchor_offset_ms``, so a 6h bar (offset 0) starts at 00:00 / 06:00 /
-  12:00 / 18:00 UTC while a 4h bar (offset 2h) starts at 02:00 / 06:00 /
-  10:00 / 14:00 / 18:00 / 22:00 UTC.
-* Daily buckets are anchored to local midnight in the instrument's exchange
-  timezone (``America/Chicago`` for CME index futures).
+* Intervals of an hour and under are anchored to the UTC epoch: they divide
+  the session evenly from either origin, so the cheaper arithmetic is also
+  the correct one.
+* ``4h``, ``6h`` and ``1d`` are anchored to the **session open** -- 17:00 in
+  the instrument's exchange timezone, the boundary
+  :mod:`app.providers.trading_hours` already draws the trading day on.  So a
+  4h bar opens at 17:00 / 21:00 / 01:00 / 05:00 / 09:00 / 13:00 Chicago
+  (18:00 / 22:00 / 02:00 / ... New York), a 6h bar at 17:00 / 23:00 / 05:00 /
+  11:00, and the daily bar at 17:00 the previous evening.
+
+**Why not a fixed UTC offset.** The session boundary is a *wall-clock* time,
+and 17:00 Chicago is 22:00 UTC under daylight time but 23:00 UTC under
+standard time.  A constant offset therefore encodes one half of the year and
+is silently an hour out for the other -- bars opening mid-session, and the
+16:00 bucket starting inside the maintenance halt.  Converting into the
+exchange's own zone is what makes the grid track the session across a
+daylight-saving change.
+
+**Transition days.** A session day is 23 or 25 hours long across a
+daylight-saving change, so the last bucket of that day is short or an extra
+partial one appears.  The grid re-anchors at each session open rather than
+letting the error accumulate, which is the convention charting platforms
+follow: a bar may be an odd length once a year, but no bar ever starts at a
+time the session does not recognise.
 """
 
 from __future__ import annotations
@@ -25,18 +43,29 @@ import logging
 from collections import OrderedDict
 
 from app.models.domain import Candle
-from app.utils.intervals import DAY_MS, get_interval
-from app.utils.timeutils import local_day_start_ms
+from app.providers.trading_hours import SESSION_OPEN_HOUR
+from app.utils.intervals import get_interval
+from app.utils.timeutils import session_day_start_ms
 
 logger = logging.getLogger(__name__)
 
 
 def bucket_start(timestamp_ms: int, interval: str, timezone: str = "America/Chicago") -> int:
+    """First millisecond of the bucket ``timestamp_ms`` falls in.
+
+    See the module docstring for why the long intervals count from the session
+    open rather than from the epoch.
+    """
+
     spec = get_interval(interval)
-    if spec.milliseconds >= DAY_MS:
-        return local_day_start_ms(timestamp_ms, timezone)
-    shifted = timestamp_ms - spec.anchor_offset_ms
-    return shifted - (shifted % spec.milliseconds) + spec.anchor_offset_ms
+    if not spec.session_anchored:
+        # Python's modulo floors towards negative infinity, so this is also
+        # correct for pre-epoch timestamps.
+        return timestamp_ms - (timestamp_ms % spec.milliseconds)
+
+    opening = session_day_start_ms(timestamp_ms, timezone, SESSION_OPEN_HOUR)
+    elapsed = timestamp_ms - opening
+    return opening + (elapsed // spec.milliseconds) * spec.milliseconds
 
 
 def aggregate_candles(

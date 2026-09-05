@@ -36,6 +36,10 @@ from app.models.domain import Candle
 HOUR = 3_600_000
 T0 = 1_780_000_000_000
 
+#: Saturday 2026-05-30 00:00 America/Chicago, plus twelve hours. Read off a
+#: calendar rather than computed, so a failure means the session rule moved.
+CLOSED_WEEKEND = TimeRange(1_780_117_200_000, 1_780_117_200_000 + 12 * 3_600_000)
+
 
 @pytest.fixture
 def session() -> Session:
@@ -185,11 +189,14 @@ class TestWhatTheServiceStores:
         monkeypatch.setattr(module, "session_scope", scope)
 
     @staticmethod
-    def _persist(symbol: str, bars: list[Candle], provider: str) -> bool:
+    def _persist(
+        symbol: str, bars: list[Candle], provider: str, span: TimeRange | None = None
+    ) -> bool:
         from app.services.candle_service import CandleService
 
-        span = TimeRange(T0, T0 + 100 * HOUR)
-        return CandleService._persist(symbol, "1h", bars, provider, span)
+        return CandleService._persist(
+            symbol, "1h", bars, provider, span or TimeRange(T0, T0 + 100 * HOUR)
+        )
 
     def test_generated_bars_are_declined_for_a_series_of_real_prices(self, session):
         save_candles(session, "1h", candles("ES", 2), "massive")
@@ -219,8 +226,28 @@ class TestWhatTheServiceStores:
         assert stored is True
         assert providers_in_range(session, "NQ", "1h", T0, T0 + 100 * HOUR) == {"massive"}
 
-    def test_an_empty_range_is_still_recorded_as_covered(self, session):
-        # A closed market: nothing to store, but the range is settled and must
-        # not be refetched on every request.
-        assert self._persist("ES", [], "massive") is True
+    def test_an_empty_range_over_a_closed_market_is_recorded_as_covered(self, session):
+        # Saturday, read off a calendar: the market is shut all day, so an
+        # empty answer is the right one. The range is settled and must not be
+        # refetched on every request.
+        assert self._persist("ES", [], "massive", CLOSED_WEEKEND) is True
         assert load_coverage(session, "ES", "1h") != []
+
+    def test_an_empty_range_over_an_open_market_is_not_recorded_as_covered(self, session):
+        # Thursday afternoon to Monday evening -- four trading days. Nothing
+        # came back, so we were not served; covering it would make the hole
+        # permanent, because `missing_ranges` would never ask again.
+        assert self._persist("ES", [], "massive") is False
+        assert load_coverage(session, "ES", "1h") == []
+
+    def test_coverage_stops_where_the_bars_stop(self, session):
+        # A provider that trims the window to its own retention limit answers
+        # for part of the range. Covering the whole of it would record data we
+        # never received as permanently present.
+        span = TimeRange(T0, T0 + 100 * HOUR)
+        assert self._persist("ES", candles("ES", 3), "yahoo", span) is True
+
+        covered = load_coverage(session, "ES", "1h")
+        assert covered != []
+        # Three hourly bars from T0, so coverage ends one bar after the last.
+        assert max(entry.end for entry in covered) == T0 + 3 * HOUR

@@ -24,6 +24,13 @@ from zoneinfo import ZoneInfo
 
 from app.providers.futures_calendar import EXCHANGE_TIMEZONE
 
+#: Hour, in exchange-local time, at which a new trading day opens.  The CME
+#: equity-index session runs Sun 17:00 CT to Fri 16:00 CT, so 17:00 is both the
+#: weekly open and the daily boundary every other session rolls over on.  It is
+#: exported because bar bucketing has to agree with it: a 4h bar that does not
+#: start on a session boundary is a bar no trader recognises.
+SESSION_OPEN_HOUR = 17
+
 #: Granularity of the session scan. The shortest stretch the market is *open*
 #: for is the 23 hours between the daily halt and the next one, so quarter-hour
 #: steps cannot step over a session.
@@ -87,3 +94,54 @@ def has_trading_session(
     # shorter than one step would otherwise never be looked at.
     last = end - timedelta(milliseconds=1)
     return is_trading_minute(last.astimezone(tz))
+
+
+#: Hours the CME equity-index market is open in one full week: Sunday's
+#: 17:00-24:00 reopen (7), Monday to Thursday at 23 apiece with the 16:00
+#: maintenance hour removed (92), and Friday's 00:00-16:00 close (16).
+#: Derived from :func:`is_trading_minute`, and pinned against it by a test --
+#: it is a shortcut through the scan below, never a second copy of the rule.
+TRADING_HOURS_PER_WEEK = 7 + 4 * 23 + 16
+
+_WEEK = timedelta(days=7)
+
+
+def trading_hours_between(
+    start_ms: int,
+    end_ms: int,
+    *,
+    tz_name: str = EXCHANGE_TIMEZONE,
+) -> float:
+    """Hours of open market in ``[start_ms, end_ms)``.
+
+    Used to size a request honestly.  Dividing wall-clock span by bar length
+    counts weekends and the daily maintenance halt as tradeable, which
+    overstates a 90-day window of 5-minute bars by about 45% -- enough to have
+    a request refused for thousands of bars that do not exist.
+
+    Whole weeks are counted arithmetically and only the remainder is scanned,
+    so a two-year window costs the same handful of steps as a two-day one.
+    """
+
+    if end_ms <= start_ms:
+        return 0.0
+
+    tz = ZoneInfo(tz_name)
+    start = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+    end = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+
+    whole_weeks, remainder = divmod(end - start, _WEEK)
+    hours = float(whole_weeks * TRADING_HOURS_PER_WEEK)
+
+    # The remainder is under a week, so this scan is bounded at 168 steps
+    # however long the original window was.
+    cursor = end - remainder
+    step = timedelta(hours=1)
+    while cursor < end:
+        # A step is counted by its own start, so a partial final hour rounds
+        # down -- the estimate stays a floor, never a ceiling.
+        if is_trading_minute(cursor.astimezone(tz)):
+            hours += 1.0
+        cursor += step
+
+    return hours

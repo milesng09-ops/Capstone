@@ -15,7 +15,9 @@ instead of being served stale from cache forever.
 from __future__ import annotations
 
 from app.database.repository import TimeRange
-from app.utils.intervals import get_interval, interval_ms
+from app.providers.futures_calendar import EXCHANGE_TIMEZONE
+from app.providers.trading_hours import trading_hours_between
+from app.utils.intervals import DAY_MS, HOUR_MS, get_interval, interval_ms
 from app.utils.timeutils import now_ms
 
 #: Requested interval -> interval actually persisted.
@@ -65,8 +67,29 @@ def cacheable_end(requested_end: int, interval: str) -> int:
     return min(requested_end, horizon)
 
 
-def estimate_bar_count(range_: TimeRange, interval: str) -> int:
-    return max(0, range_.length // interval_ms(interval))
+def estimate_bar_count(
+    range_: TimeRange, interval: str, *, tz_name: str = EXCHANGE_TIMEZONE
+) -> int:
+    """How many bars ``range_`` can actually hold.
+
+    Counted against the trading calendar rather than the wall clock.  Dividing
+    the span by the bar length treats weekends and the daily maintenance halt
+    as tradeable, which overstates 90 days of 5-minute bars by about 45% --
+    and since this number is what a request is refused on, that difference is
+    the difference between "90 days is too much" and 90 days working.
+    """
+
+    if range_.length <= 0:
+        return 0
+
+    step = interval_ms(interval)
+    if step >= DAY_MS:
+        # A daily bar exists for each session, and sessions are what the hour
+        # count is made of; dividing it by a 24-hour day would undercount.
+        return int(trading_hours_between(range_.start, range_.end, tz_name=tz_name) // 23)
+
+    open_ms = int(trading_hours_between(range_.start, range_.end, tz_name=tz_name) * HOUR_MS)
+    return max(0, open_ms // step)
 
 
 def merge_adjacent(ranges: list[TimeRange], interval: str, max_gap_bars: int = 4) -> list[TimeRange]:

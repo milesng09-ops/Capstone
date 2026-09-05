@@ -353,10 +353,22 @@ class BacktestService:
         notes: list[str] = []
         providers = sorted({item.provider for item in series})
         notes.append(f"Data provider: {', '.join(providers)}.")
-        if "demo" in providers:
+
+        # Keyed on what the candles *are*, not on who served them last. A
+        # window can hold generated bars left by an earlier outage while the
+        # provider name reads "yahoo", and that is exactly the run whose win
+        # rate must not look measured.
+        if any(item.quality == "demo" for item in series):
             notes.append(
                 "Demo data is synthetic and generated from a fixed seed. "
                 "It is not actual market data."
+            )
+        if any(item.quality == "partial" for item in series):
+            notes.append(
+                "Part of the requested history could not be fetched, so this run "
+                "searched fewer candles than the window asked for. Reload the range "
+                "once the provider recovers and run it again before trusting the "
+                "win rate."
             )
         for item in series:
             notes.append(

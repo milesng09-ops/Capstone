@@ -41,6 +41,7 @@ from app.models.domain import BarsResult, Candle
 from app.providers.base import ProviderRateLimitError
 from app.providers.fallback_provider import AutomaticFallbackProvider
 from app.providers.instruments import get_instrument
+from app.providers.trading_hours import has_trading_session
 from app.services.aggregation_service import aggregate_candles
 from app.services.cache_service import (
     align_range,
@@ -391,14 +392,55 @@ class CandleService:
 
             if bars:
                 save_candles(session, store_interval, bars, provider)
+
+            # Cover what the provider actually served, not what it was asked
+            # for. A provider may quietly return less than the window -- Yahoo
+            # trims an intraday request to its own retention limit -- and
+            # recording the whole gap as covered turns that shortfall into a
+            # permanent hole: `missing_ranges` never asks again, and the API
+            # then reports the short series as a clean, complete fetch. That
+            # is a chart which disagrees with the exchange and cannot say why.
+            served_end = CandleService._served_end(symbol, store_interval, bars, gap)
+            if served_end is None:
+                # The market was open and the provider gave us nothing. Leave
+                # the range uncovered so the next request asks again.
+                return False
+
             # Only mark the settled part of the window as covered so the
             # forming bar is always refreshed on the next request.
-            coverage_end = cacheable_end(gap.end, store_interval)
+            coverage_end = cacheable_end(served_end, store_interval)
             if coverage_end >= gap.start:
                 record_coverage(
                     session, symbol, store_interval, gap.start, coverage_end, provider
                 )
         return True
+
+    @staticmethod
+    def _served_end(
+        symbol: str, store_interval: str, bars: list[Candle], gap: TimeRange
+    ) -> int | None:
+        """How much of ``gap`` this response may be recorded as covering.
+
+        ``None`` means "record nothing": the market was open and the provider
+        returned nothing, so the range is still owed to us.
+
+        An empty response has two opposite meanings and they must not be
+        conflated. Over a weekend or the daily halt it is the correct answer,
+        and re-asking would spend the quota re-confirming the market was shut.
+        Over a stretch the market was open it means we were not served, and
+        covering it would bake the hole in permanently.
+        """
+
+        if not bars:
+            instrument = get_instrument(symbol)
+            if has_trading_session(gap.start, gap.end, tz_name=instrument.timezone):
+                return None
+            return gap.end
+
+        # Trust the bars, not the request: a provider that trimmed the window
+        # to its own retention limit has covered only as far as it answered.
+        last_bar_end = max(bar.time for bar in bars) + interval_ms(store_interval)
+        return min(gap.end, last_bar_end)
 
     @staticmethod
     def _load_from_cache(symbol: str, store_interval: str, window: TimeRange) -> list[Candle]:
@@ -430,13 +472,19 @@ class CandleService:
         Analysis windows are legitimately larger than a chart viewport, so the
         range is fetched in slices that each respect the configured limit and
         then stitched back together.
+
+        **Provenance is stitched too.** Reporting the last slice's verdict for
+        the whole series is how a win rate measured across a rate-limited or
+        part-generated window came to be labelled ``live``: the earlier slices
+        carried the warning and the final one, fetched cleanly, overwrote it.
+        A series is described by its weakest part, the same rule the chart
+        path applies to a window that mixes providers.
         """
 
         settings = get_settings()
         step = max(1, settings.max_bars_per_request) * interval_ms(interval)
         collected: dict[int, Candle] = {}
-        last: BarsResult | None = None
-        cached_all = True
+        chunks: list[BarsResult] = []
         cursor = start
 
         while cursor < end:
@@ -444,14 +492,13 @@ class CandleService:
             result = await self.get_bars(symbol, interval, cursor, chunk_end)
             for candle in result.bars:
                 collected[candle.time] = candle
-            cached_all = cached_all and result.cached
-            last = result
+            chunks.append(result)
             if chunk_end >= end:
                 break
             cursor = chunk_end
 
         bars = [collected[key] for key in sorted(collected)]
-        if last is None:
+        if not chunks:
             return BarsResult(
                 symbol=symbol,
                 interval=interval,
@@ -460,7 +507,7 @@ class CandleService:
                 fallback_active=False,
                 bars=[],
             )
-        return last.model_copy(update={"bars": bars, "cached": cached_all})
+        return _merge_provenance(chunks, bars)
 
     async def available_range(self, symbol: str, interval: str) -> tuple[int | None, int | None]:
         store = storage_interval(interval)
@@ -472,6 +519,48 @@ class CandleService:
                 return candle_bounds(session, symbol, store)
 
         return await anyio.to_thread.run_sync(_bounds)
+
+
+#: Data qualities from worst to best. A series that is partly one thing and
+#: partly another is described by the worst of them, because that is the only
+#: reading that cannot mislead: a win rate measured over a window that is one
+#: third generated is not two thirds trustworthy, it is untrustworthy.
+_QUALITY_RANK: dict[str, int] = {
+    "demo": 0,
+    "partial": 1,
+    "unknown": 2,
+    "cached": 3,
+    "delayed": 4,
+    "live": 5,
+}
+
+
+def _merge_provenance(chunks: list[BarsResult], bars: list[Candle]) -> BarsResult:
+    """One verdict describing every slice of a stitched series."""
+
+    weakest = min(chunks, key=lambda chunk: _QUALITY_RANK.get(chunk.quality, 2))
+    reasons = [chunk.fallback_reason for chunk in chunks if chunk.fallback_reason]
+    retries = [
+        chunk.retry_after_seconds for chunk in chunks if chunk.retry_after_seconds is not None
+    ]
+    providers = sorted({chunk.provider for chunk in chunks})
+
+    return chunks[-1].model_copy(
+        update={
+            "bars": bars,
+            "cached": all(chunk.cached for chunk in chunks),
+            "quality": weakest.quality,
+            "rate_limited": any(chunk.rate_limited for chunk in chunks),
+            "fallback_active": any(chunk.fallback_active for chunk in chunks),
+            # Wait for the longest cool-off any slice reported: coming back
+            # sooner just spends another call to be refused again.
+            "retry_after_seconds": max(retries) if retries else None,
+            # De-duplicated in order, so one reason repeated across ten slices
+            # reads as one sentence rather than ten.
+            "fallback_reason": " ".join(dict.fromkeys(reasons)) or None,
+            "provider": providers[0] if len(providers) == 1 else ", ".join(providers),
+        }
+    )
 
 
 _service: CandleService | None = None

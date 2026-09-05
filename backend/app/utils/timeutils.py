@@ -7,7 +7,7 @@ and query parsing) and are always timezone aware.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
@@ -58,14 +58,28 @@ def _numeric_to_ms(value: float) -> float | int:
     return int(round(value))
 
 
-def local_day_start_ms(timestamp_ms: int, tz_name: str) -> int:
-    """Return the UTC millisecond value of local midnight for ``timestamp_ms``."""
+def format_ms(timestamp_ms: int) -> str:
+    return from_ms(timestamp_ms).isoformat().replace("+00:00", "Z")
+
+
+def session_day_start_ms(timestamp_ms: int, tz_name: str, open_hour: int) -> int:
+    """UTC milliseconds of the session open at or before ``timestamp_ms``.
+
+    A futures day is not a calendar day: it opens the previous evening, so an
+    instant at 09:00 belongs to the session that began at ``open_hour`` the
+    day before.  The boundary is a *local wall-clock* time, which is the whole
+    reason this cannot be a constant offset from the epoch -- it moves against
+    UTC twice a year, and a fixed offset silently drifts an hour for four
+    months of every year.
+
+    ``open_hour`` is never near a daylight-saving transition (those happen at
+    02:00 local), so the local time always exists exactly once and needs no
+    fold handling.
+    """
 
     tz = ZoneInfo(tz_name)
     local = datetime.fromtimestamp(timestamp_ms / 1000, tz=tz)
-    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
-    return int(midnight.timestamp() * 1000)
-
-
-def format_ms(timestamp_ms: int) -> str:
-    return from_ms(timestamp_ms).isoformat().replace("+00:00", "Z")
+    opening = local.replace(hour=open_hour, minute=0, second=0, microsecond=0)
+    if local < opening:
+        opening -= timedelta(days=1)
+    return int(opening.timestamp() * 1000)

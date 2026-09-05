@@ -56,6 +56,8 @@ class BarsResponse(BaseModel):
     fallback_active: bool = False
     fallback_reason: str | None = None
     quality: str = "cached"
+    rate_limited: bool = False
+    retry_after_seconds: float | None = None
     bars: list[Candle]
 
 

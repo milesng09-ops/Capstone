@@ -63,6 +63,8 @@ class ProviderStatus(BaseModel):
     last_error: str | None = None
     last_checked_ms: int | None = None
     cooldown_until_ms: int | None = None
+    #: True while this provider is cooling off from a quota rejection.
+    rate_limited: bool = False
     notes: str | None = None
 
 
@@ -76,6 +78,12 @@ class BarsResult(BaseModel):
     fallback_active: bool
     fallback_reason: str | None = None
     quality: DataQuality = "cached"
+    #: True when a provider quota, not an outage, is why part of this window
+    #: is missing. The distinction matters to the user: a rate limit clears on
+    #: its own, and the chart is worth waiting for rather than reconfiguring.
+    rate_limited: bool = False
+    #: Seconds until the limited provider is worth asking again, when it said.
+    retry_after_seconds: float | None = None
     bars: list[Candle] = Field(default_factory=list)
 
 

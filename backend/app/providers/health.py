@@ -25,6 +25,11 @@ class HealthEntry:
     last_checked_ms: int | None = None
     cooldown_until_ms: int | None = None
     failure_count: int = 0
+    #: Whether the current cool-off was caused by a quota rejection rather
+    #: than an outage. The UI phrases the two differently -- one is "wait",
+    #: the other is "something is wrong" -- and it should not have to infer
+    #: which by pattern-matching on ``last_error``.
+    rate_limited: bool = False
 
 
 @dataclass
@@ -72,11 +77,18 @@ class ProviderHealthRegistry:
             entry.last_error = None
             entry.cooldown_until_ms = None
             entry.failure_count = 0
+            entry.rate_limited = False
             entry.last_checked_ms = now_ms()
             if was_unhealthy:
                 logger.info("Provider '%s' recovered", provider)
 
-    def mark_failure(self, provider: str, reason: str, permanent: bool = False) -> None:
+    def mark_failure(
+        self,
+        provider: str,
+        reason: str,
+        permanent: bool = False,
+        rate_limited: bool = False,
+    ) -> None:
         settings = get_settings()
         ttl = (
             settings.provider_health_permanent_ttl_seconds
@@ -87,6 +99,7 @@ class ProviderHealthRegistry:
             entry = self._entries.setdefault(provider, HealthEntry())
             entry.healthy = False
             entry.last_error = reason
+            entry.rate_limited = rate_limited
             entry.failure_count += 1
             entry.last_checked_ms = now_ms()
             entry.cooldown_until_ms = now_ms() + ttl * 1000

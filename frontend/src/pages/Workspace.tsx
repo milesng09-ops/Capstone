@@ -25,6 +25,7 @@ import type { LucideIcon } from 'lucide-react'
 import { ChartGrid } from '@/components/chart/ChartGrid'
 import { ToolRail } from '@/components/chart/ToolRail'
 import { Splitter } from '@/components/layout/Splitter'
+import { RateLimitNotice } from '@/components/layout/RateLimitNotice'
 import { StatusBar } from '@/components/layout/StatusBar'
 import { TopBar } from '@/components/layout/TopBar'
 import { AnalysisPanel } from '@/components/panels/AnalysisPanel'
@@ -100,6 +101,12 @@ export function Workspace() {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
       <TopBar />
+      {/*
+        Directly under the top bar, above the candles: it qualifies what is
+        charted, so it reads before the chart rather than after it. Renders
+        nothing at all unless a provider is actually cooling off.
+      */}
+      <RateLimitNotice />
 
       <div className="relative flex min-h-0 min-w-0 flex-1">
         <ToolRail

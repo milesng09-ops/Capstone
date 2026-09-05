@@ -44,13 +44,38 @@ export const SESSION_ID = (() => {
 export class ApiError extends Error {
   readonly status: number
   readonly isNetworkError: boolean
+  /**
+   * Seconds to wait before retrying, from the response's `Retry-After`.
+   * Only a 429 carries one, and it is the provider's own number rather than
+   * a guess, so the UI can count down to a real reopening time.
+   */
+  readonly retryAfterSeconds: number | null
 
-  constructor(message: string, status: number, isNetworkError = false) {
+  constructor(
+    message: string,
+    status: number,
+    isNetworkError = false,
+    retryAfterSeconds: number | null = null,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.isNetworkError = isNetworkError
+    this.retryAfterSeconds = retryAfterSeconds
   }
+
+  /** A quota rejection: the request was fine, there were just too many. */
+  get isRateLimited(): boolean {
+    return this.status === 429
+  }
+}
+
+/** `Retry-After` in seconds, ignoring a header that is absent or unparseable. */
+function parseRetryAfter(response: Response): number | null {
+  const header = response.headers.get('Retry-After')
+  if (!header) return null
+  const seconds = Number(header)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null
 }
 
 const FRIENDLY_STATUS: Record<number, string> = {
@@ -58,6 +83,7 @@ const FRIENDLY_STATUS: Record<number, string> = {
   404: 'The requested data could not be found.',
   409: 'A backtest is already running. Wait for it to finish.',
   422: 'The configuration could not be used as entered.',
+  429: 'The market-data provider is rate limiting us. Wait a moment and try again.',
   500: 'The server ran into a problem. Please try again.',
   503: 'Market data is temporarily unavailable. Please try again.',
 }
@@ -94,6 +120,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(
       detail ?? FRIENDLY_STATUS[response.status] ?? 'Something went wrong.',
       response.status,
+      false,
+      parseRetryAfter(response),
     )
   }
 

@@ -38,7 +38,30 @@ class ProviderAuthError(ProviderError):
 
 
 class ProviderRateLimitError(ProviderError):
-    """HTTP 429 or an equivalent quota rejection."""
+    """HTTP 429 or an equivalent quota rejection.
+
+    Carries the provider's own ``Retry-After`` when it sent one, so the UI can
+    count down to a real reopening time instead of guessing.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        provider: str = "",
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message, provider)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class ProviderThrottledError(ProviderRateLimitError):
+    """We declined to send the call: our own budget for the provider is spent.
+
+    A subclass of :class:`ProviderRateLimitError` because it means the same
+    thing to everyone above -- too many requests, wait this long -- while
+    staying distinguishable here, where it matters: the provider did not
+    reject anything and must not be marked unhealthy for it.
+    """
 
 
 class ProviderUnavailableError(ProviderError):

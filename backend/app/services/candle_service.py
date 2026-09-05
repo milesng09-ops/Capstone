@@ -38,6 +38,7 @@ from app.database.repository import (
 )
 from app.database.session import session_scope
 from app.models.domain import BarsResult, Candle
+from app.providers.base import ProviderRateLimitError
 from app.providers.fallback_provider import AutomaticFallbackProvider
 from app.providers.instruments import get_instrument
 from app.services.aggregation_service import aggregate_candles
@@ -75,6 +76,13 @@ class _CacheOutcome:
     #: True when any gap in the window failed to fetch, so the bars returned
     #: are whatever was already stored -- possibly nothing.
     incomplete: bool
+    #: Set when the reason for an unfilled gap was a provider quota rather
+    #: than an outage. Kept separate from ``fallback_reason`` because the UI
+    #: acts on it -- it counts down and refetches -- instead of only showing
+    #: it, and parsing that intent back out of English prose is not something
+    #: the frontend should be doing.
+    rate_limited: bool = False
+    retry_after_seconds: float | None = None
 
     def resolved_quality(self) -> str:
         if self.incomplete:
@@ -196,6 +204,8 @@ class CandleService:
             ),
             fallback_reason=fallback_reason,
             quality=quality,
+            rate_limited=outcome.rate_limited,
+            retry_after_seconds=outcome.retry_after_seconds,
             bars=bars,
         )
 
@@ -233,6 +243,8 @@ class CandleService:
         quality = "delayed"
         fetched_any = False
         failed_gaps = 0
+        rate_limited = False
+        retry_after: float | None = None
 
         for gap in gaps:
             try:
@@ -242,6 +254,25 @@ class CandleService:
                     from_ms(gap.start),
                     from_ms(gap.end),
                 )
+            except ProviderRateLimitError as exc:
+                logger.warning(
+                    "Rate limited fetching %s %s %s-%s: %s",
+                    symbol,
+                    store_interval,
+                    gap.start,
+                    gap.end,
+                    exc,
+                )
+                rate_limited = True
+                if exc.retry_after_seconds is not None:
+                    retry_after = (
+                        exc.retry_after_seconds
+                        if retry_after is None
+                        else max(retry_after, exc.retry_after_seconds)
+                    )
+                fallback_reason = fallback_reason or str(exc)
+                failed_gaps += 1
+                continue
             except Exception as exc:  # noqa: BLE001 - degrade to whatever is cached
                 logger.warning(
                     "Fetch failed for %s %s %s-%s: %s",
@@ -296,6 +327,8 @@ class CandleService:
             fallback_reason=fallback_reason,
             quality=quality,
             incomplete=failed_gaps > 0,
+            rate_limited=rate_limited,
+            retry_after_seconds=retry_after,
         )
 
     # ------------------------------------------------------------------

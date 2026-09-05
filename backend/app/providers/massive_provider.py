@@ -25,12 +25,18 @@ import httpx
 
 from app.config import get_settings
 from app.models.domain import Candle, Instrument
+from app.providers.rate_limiter import (
+    RateLimitExceeded,
+    SlidingWindowRateLimiter,
+    get_massive_limiter,
+)
 from app.providers.base import (
     MarketDataProvider,
     ProviderAuthError,
     ProviderDataError,
     ProviderNotConfiguredError,
     ProviderRateLimitError,
+    ProviderThrottledError,
     ProviderUnavailableError,
 )
 from app.providers.futures_calendar import ContractMonth, contract_segments
@@ -87,12 +93,22 @@ class MassiveProvider(MarketDataProvider):
     native_intervals = set(MASSIVE_INTERVAL_MAP)
     quality = "live"
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        limiter: SlidingWindowRateLimiter | None = None,
+    ) -> None:
         settings = get_settings()
         self._api_key = (api_key if api_key is not None else settings.massive_api_key).strip()
         self._base_url = (base_url or settings.massive_base_url).rstrip("/")
         self._timeout = settings.provider_timeout_seconds
         self._max_retries = settings.provider_max_retries
+        self._max_throttle_wait = settings.massive_throttle_max_wait_seconds
+        # Module-level by default: the quota belongs to the API key, not to
+        # this object, so two providers built by accident must not each get a
+        # private budget and quietly double the request rate.
+        self._limiter = limiter or get_massive_limiter()
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
 
@@ -268,6 +284,22 @@ class MassiveProvider(MarketDataProvider):
         last_error: Exception | None = None
 
         for attempt in range(1, self._max_retries + 1):
+            # Counted per HTTP call, retries included: the vendor counts them
+            # that way, so a retry storm has to come out of the same budget as
+            # the request that provoked it.
+            try:
+                waited = await self._limiter.acquire(self._max_throttle_wait)
+            except RateLimitExceeded as exc:
+                raise ProviderThrottledError(
+                    "Local Massive request budget is spent "
+                    f"({self._limiter.max_calls} per minute)",
+                    provider=self.name,
+                    retry_after_seconds=exc.retry_after_seconds,
+                ) from exc
+
+            if waited > 0.1:
+                logger.info("Paced Massive request by %.1fs to stay under quota", waited)
+
             try:
                 response = await client.get(path, params=params)
             except httpx.TimeoutException:
@@ -285,10 +317,13 @@ class MassiveProvider(MarketDataProvider):
                         provider=self.name,
                     )
                 if response.status_code == 429:
+                    wait = self._retry_after(response, delay)
                     last_error = ProviderRateLimitError(
-                        "Massive rate limit exceeded (HTTP 429)", provider=self.name
+                        "Massive rate limit exceeded (HTTP 429)",
+                        provider=self.name,
+                        retry_after_seconds=wait,
                     )
-                    delay = self._retry_after(response, delay)
+                    delay = wait
                 elif response.status_code >= 500:
                     last_error = ProviderUnavailableError(
                         f"Massive server error (HTTP {response.status_code})", provider=self.name

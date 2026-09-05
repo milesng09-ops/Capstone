@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     provider_timeout_seconds: float = 20.0
     provider_max_retries: int = 3
 
+    #: Massive's published quota.  Enforced on our side as well, because going
+    #: over costs a two-minute health cool-off rather than just the one
+    #: rejected call -- so the sixth request in a minute is worth not sending.
+    massive_max_requests_per_minute: int = 5
+    #: How long a request will wait for a free slot before giving up and
+    #: letting the chain fall through to Yahoo.  Long enough to absorb an
+    #: ordinary burst, short enough that nobody watches a spinner over it.
+    massive_throttle_max_wait_seconds: float = 8.0
+
     # ---- Storage ---------------------------------------------------------
     database_url: str = ""
     demo_data_dir: str = str(DEFAULT_DEMO_DIR)

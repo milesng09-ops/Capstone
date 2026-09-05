@@ -75,6 +75,8 @@ export type ProviderName = 'massive' | 'yahoo' | 'demo' | 'auto'
 export const PROVIDER_LABELS: Record<string, string> = {
   massive: 'Massive',
   yahoo: 'Yahoo Finance',
+  // Reachable only via DATA_PROVIDER=demo. It is no longer an automatic
+  // fallback, so seeing this label means someone asked for it by name.
   demo: 'Demo Data',
   auto: 'Automatic',
 }
@@ -102,6 +104,14 @@ export interface BarsResponse {
   fallback_active: boolean
   fallback_reason: string | null
   quality: DataQuality
+  /**
+   * True when a provider quota, not an outage, is why part of this window is
+   * missing. Structured rather than folded into `fallback_reason`, because
+   * the UI acts on it -- it counts down and refetches -- and inferring that
+   * intent from an English sentence is not something a component should do.
+   */
+  rate_limited: boolean
+  retry_after_seconds: number | null
   bars: Candle[]
 }
 
@@ -114,6 +124,8 @@ export interface ProviderStatus {
   last_error: string | null
   last_checked_ms: number | null
   cooldown_until_ms: number | null
+  /** True while this provider is cooling off from a quota rejection. */
+  rate_limited: boolean
   notes: string | null
 }
 

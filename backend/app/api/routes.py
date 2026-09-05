@@ -39,6 +39,7 @@ from app.models.schemas import (
     SymbolsResponse,
     TradesResponse,
 )
+from app.providers.base import ProviderRateLimitError
 from app.providers.health import get_health_registry
 from app.providers.instruments import UnknownSymbolError, list_instruments
 from app.services.backtest_service import (
@@ -102,7 +103,10 @@ async def providers_status(
         elif name == "yahoo" and not configured:
             notes = "The yfinance package is not installed in the backend environment."
         elif name == "demo":
-            notes = "Bundled synthetic data. Always available, never real market prices."
+            notes = (
+                "Bundled synthetic data, never real market prices. Reachable only by "
+                "setting DATA_PROVIDER=demo; it is not an automatic fallback."
+            )
         statuses.append(
             ProviderStatus(
                 name=name,
@@ -113,6 +117,7 @@ async def providers_status(
                 last_error=entry.last_error if entry else None,
                 last_checked_ms=entry.last_checked_ms if entry else None,
                 cooldown_until_ms=entry.cooldown_until_ms if entry else None,
+                rate_limited=bool(entry and entry.rate_limited),
                 notes=notes,
             )
         )
@@ -185,6 +190,16 @@ async def bars(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except ProviderRateLimitError as exc:
+        # 429 rather than 503: the difference is "wait" versus "something is
+        # broken", and only one of those tells the user what to do.
+        retry_after = int(exc.retry_after_seconds or 60)
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"{exc} No market data was served, because generated bars are not "
+            f"substituted for real prices. Try again in about {retry_after}s.",
+            headers={"Retry-After": str(retry_after)},
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Bar request failed for %s %s", symbol, interval)
         raise HTTPException(
@@ -253,6 +268,13 @@ async def ict_analysis(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except ProviderRateLimitError as exc:
+        retry_after = int(exc.retry_after_seconds or 60)
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"{exc} Try again in about {retry_after}s.",
+            headers={"Retry-After": str(retry_after)},
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("ICT analysis failed for %s %s", symbol, interval)
         raise HTTPException(

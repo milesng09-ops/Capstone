@@ -189,8 +189,16 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
               quality === 'demo'
                 ? 'Synthetic data generated from a fixed seed. Not real market prices.'
                 : quality === 'partial'
-                  ? barsQuery.data?.fallback_reason ??
-                    'Part of this window could not be fetched. Bars may be missing.'
+                  ? // A quota is worth saying out loud even though the reason
+                    // string also mentions it: "this clears by itself" is the
+                    // part that decides whether the user waits or goes
+                    // hunting for a broken setting.
+                    barsQuery.data?.rate_limited
+                    ? `The provider is rate limiting us, so part of this window is missing. It clears on its own. ${
+                        barsQuery.data?.fallback_reason ?? ''
+                      }`.trim()
+                    : barsQuery.data?.fallback_reason ??
+                      'Part of this window could not be fetched. Bars may be missing.'
                   : `Source: ${barsQuery.data?.provider ?? 'unknown'}`
             }
           >

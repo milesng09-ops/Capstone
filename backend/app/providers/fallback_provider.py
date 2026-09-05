@@ -1,20 +1,25 @@
 """Automatic fallback across the provider chain.
 
-Priority is fixed: **Massive -> Yahoo Finance -> bundled demo data**, filtered
-by the ``DATA_PROVIDER`` setting:
+Priority is fixed: **Massive -> Yahoo Finance**, filtered by the
+``DATA_PROVIDER`` setting:
 
 ===================  =========================================================
 ``DATA_PROVIDER``    Chain
 ===================  =========================================================
-``auto``             massive (if a key exists) -> yahoo -> demo
-``massive``          massive -> yahoo -> demo
-``yahoo``            yahoo -> demo
+``auto``             massive (if a key exists) -> yahoo
+``massive``          massive -> yahoo
+``yahoo``            yahoo
 ``demo``             demo only
 ===================  =========================================================
 
+Every automatic chain ends in real market data or in an error.  Demo data is
+reachable only by asking for it by name; see :data:`CHAINS`.
+
 Any :class:`ProviderError` moves the request to the next link and is recorded
 in the health registry, so a provider that is down is skipped entirely on
-subsequent requests until its cool-off expires.
+subsequent requests until its cool-off expires.  When the chain runs out, a
+quota rejection is re-raised intact so the API can answer 429 with the
+provider's own ``Retry-After`` rather than a generic outage.
 """
 
 from __future__ import annotations
@@ -24,7 +29,12 @@ from datetime import datetime
 
 from app.config import get_settings
 from app.models.domain import Candle, Instrument, ProviderFetchResult
-from app.providers.base import MarketDataProvider, ProviderError, ProviderNotConfiguredError
+from app.providers.base import (
+    MarketDataProvider,
+    ProviderError,
+    ProviderNotConfiguredError,
+    ProviderRateLimitError,
+)
 from app.providers.demo_provider import DemoProvider
 from app.providers.health import ProviderHealthRegistry, get_health_registry
 from app.providers.massive_provider import MassiveProvider
@@ -33,10 +43,16 @@ from app.utils.intervals import resolve_fetch_interval
 
 logger = logging.getLogger(__name__)
 
+#: Demo data is deliberately absent from every automatic chain.  It is real
+#: prices or nothing: a rate limit that quietly swapped in synthetic candles
+#: produced a chart and a win rate indistinguishable from a live run, which is
+#: the one failure mode this application cannot afford.  ``DATA_PROVIDER=demo``
+#: still reaches it, because choosing it explicitly is not the same as being
+#: handed it without being told.
 CHAINS: dict[str, list[str]] = {
-    "auto": ["massive", "yahoo", "demo"],
-    "massive": ["massive", "yahoo", "demo"],
-    "yahoo": ["yahoo", "demo"],
+    "auto": ["massive", "yahoo"],
+    "massive": ["massive", "yahoo"],
+    "yahoo": ["yahoo"],
     "demo": ["demo"],
 }
 
@@ -143,6 +159,10 @@ class AutomaticFallbackProvider(MarketDataProvider):
         primary = chain[0] if chain else "demo"
         reason: str | None = None
         last_error: Exception | None = None
+        # A quota rejection outranks whatever failed after it: "you are over
+        # the limit, wait N seconds" is actionable, "no provider produced
+        # data" is not, and the caller needs the former to reach the user.
+        rate_limit_error: ProviderRateLimitError | None = None
 
         for position, name in enumerate(chain):
             provider = self._providers[name]
@@ -172,7 +192,12 @@ class AutomaticFallbackProvider(MarketDataProvider):
                 bars = await provider.get_bars(symbol, fetch_interval, start_time, end_time)
             except ProviderError as exc:
                 last_error = exc
-                self._registry.mark_failure(name, str(exc), permanent=exc.permanent)
+                is_rate_limit = isinstance(exc, ProviderRateLimitError)
+                if is_rate_limit:
+                    rate_limit_error = rate_limit_error or exc
+                self._registry.mark_failure(
+                    name, str(exc), permanent=exc.permanent, rate_limited=is_rate_limit
+                )
                 if position + 1 < len(chain):
                     next_provider = self._providers[chain[position + 1]]
                     self._registry.record_fallback(name, chain[position + 1], str(exc))
@@ -199,8 +224,10 @@ class AutomaticFallbackProvider(MarketDataProvider):
                 fallback_reason=self._last_reason,
             )
 
-        # Nothing in the chain worked. Demo data is the guaranteed floor, so we
-        # only get here when demo itself was excluded or broken.
+        # Nothing in the chain worked. There is no synthetic floor to land on
+        # any more, so this is a real failure and is reported as one.
+        if rate_limit_error is not None:
+            raise rate_limit_error
         message = str(last_error) if last_error else "no provider produced data"
         raise ProviderError(f"All providers failed: {message}", provider="auto")
 

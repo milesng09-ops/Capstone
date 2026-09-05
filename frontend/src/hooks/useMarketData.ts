@@ -3,11 +3,23 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { api } from '@/services/api'
-import type { Interval } from '@/types/market'
+import type { Interval, ProviderStatusResponse } from '@/types/market'
 import type { IctSettings } from '@/types/ict'
 
 /** Bars change only when a new one closes, so they can be cached generously. */
 const BAR_STALE_MS = 60_000
+
+const IDLE_POLL_MS = 60_000
+const COOLDOWN_POLL_MS = 5_000
+
+/** True while any provider is inside a failure cool-off it will come out of. */
+function isCoolingOff(status: ProviderStatusResponse | undefined): boolean {
+  if (!status) return false
+  const now = Date.now()
+  return status.providers.some(
+    (provider) => provider.cooldown_until_ms != null && provider.cooldown_until_ms > now,
+  )
+}
 
 export function useSymbols() {
   return useQuery({
@@ -86,12 +98,18 @@ export function useIct(
  * while looking exactly like a live run. Hence the retries -- a hiccup at
  * load should not be mistaken for an answer -- and the refetch on focus, so
  * coming back to the tab re-asks instead of trusting a minute-old verdict.
+ *
+ * While a provider is cooling off the poll tightens to five seconds. A quota
+ * cool-off is around two minutes, so a minute-long poll would report the
+ * recovery up to a minute after it happened -- long enough for the user to
+ * conclude it is still broken and go looking for a setting to change.
  */
 export function useProviderStatus() {
   return useQuery({
     queryKey: ['provider-status'],
     queryFn: () => api.providerStatus(),
-    refetchInterval: 60_000,
+    refetchInterval: (query) =>
+      isCoolingOff(query.state.data) ? COOLDOWN_POLL_MS : IDLE_POLL_MS,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
     retry: 3,

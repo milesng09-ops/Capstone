@@ -4,10 +4,19 @@ import { useCallback, useMemo, useState } from 'react'
 import { Maximize2 } from 'lucide-react'
 
 import { ChartOverlay } from '@/components/chart/ChartOverlay'
+import { DrawingActions } from '@/components/chart/DrawingActions'
 import { useChartInstance } from '@/components/chart/useChartInstance'
 import { Badge, Button, Spinner } from '@/components/ui/primitives'
+import { useBacktestResult } from '@/hooks/useBacktest'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars, useIct } from '@/hooks/useMarketData'
+import {
+  collectEvidence,
+  evidenceWindow,
+  findMatch,
+  findTrade,
+  tradesForSymbol,
+} from '@/lib/trades'
 import { useChartedSymbols, useWorkspace } from '@/store/workspace'
 import type { DrawingDraft } from '@/types/drawing'
 import {
@@ -38,10 +47,16 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   const selectedDrawingId = useWorkspace((state) => state.selectedDrawingId)
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
   const selection = useWorkspace((state) => state.selection)
+  const testWindow = useWorkspace((state) => state.testWindow)
+  const showTrades = useWorkspace((state) => state.showTrades)
+  const selectedTradeId = useWorkspace((state) => state.selectedTradeId)
+  const activeBacktestId = useWorkspace((state) => state.activeBacktestId)
   const addDrawing = useWorkspace((state) => state.addDrawing)
   const updateDrawing = useWorkspace((state) => state.updateDrawing)
   const selectDrawing = useWorkspace((state) => state.selectDrawing)
   const setSelection = useWorkspace((state) => state.setSelection)
+  const setTestWindow = useWorkspace((state) => state.setTestWindow)
+  const selectTrade = useWorkspace((state) => state.selectTrade)
   const setTool = useWorkspace((state) => state.setTool)
 
   const charted = useChartedSymbols()
@@ -60,6 +75,39 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     () => allDrawings.filter((drawing) => drawing.symbol === symbol),
     [allDrawings, symbol],
   )
+
+  // The run on screen, if any. Cached by id, so every pane reads the same
+  // response rather than fetching one each.
+  const backtestQuery = useBacktestResult(activeBacktestId)
+  const symbolTrades = useMemo(() => {
+    if (!backtestQuery.data) return []
+    return tradesForSymbol(backtestQuery.data.trades, symbol)
+  }, [backtestQuery.data, symbol])
+
+  // Drawing the boxes is a separate question from having them: with the
+  // boxes switched off, a trade picked from the table still explains itself.
+  const trades = showTrades ? symbolTrades : []
+
+  /**
+   * What the engine was looking at when it took the selected trade.
+   *
+   * Only assembled for the chart the trade was actually taken on -- the same
+   * timestamps on a correlated market are a different set of bars and would
+   * explain nothing.
+   */
+  const evidence = useMemo(() => {
+    if (!ictSettings.showTradeEvidence || !backtestQuery.data) return null
+    const trade = findTrade(symbolTrades, selectedTradeId)
+    if (!trade) return null
+    const match = findMatch(backtestQuery.data.matches, trade)
+    return collectEvidence(ictQuery.data, evidenceWindow(trade, match))
+  }, [
+    backtestQuery.data,
+    ictQuery.data,
+    ictSettings.showTradeEvidence,
+    selectedTradeId,
+    symbolTrades,
+  ])
 
   const [hovered, setHovered] = useState<Candle | null>(null)
 
@@ -203,6 +251,10 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           ictSettings={ictSettings}
           drawings={drawings}
           selection={selection?.symbol === symbol ? selection : null}
+          testWindow={isPrimary ? testWindow : null}
+          trades={trades}
+          selectedTradeId={selectedTradeId}
+          evidence={evidence}
           tool={tool}
           drawingColor={drawingColor}
           selectedDrawingId={selectedDrawingId}
@@ -212,8 +264,14 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           onUpdateDrawing={updateDrawing}
           onSelectDrawing={selectDrawing}
           onSelectionChange={setSelection}
+          onTestWindowChange={setTestWindow}
+          onSelectTrade={selectTrade}
           onGestureComplete={handleGestureComplete}
         />
+      )}
+
+      {ready && candles.length > 0 && (
+        <DrawingActions symbol={symbol} handle={handle} drawings={drawings} />
       )}
 
       {barsQuery.isLoading && (

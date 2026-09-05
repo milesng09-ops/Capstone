@@ -44,6 +44,34 @@ describe('buildBacktestRequest', () => {
     )
   })
 
+  it('searches exactly the drawn window when there is one', () => {
+    // Miles asked for "from when to when", not "how many days back": a window
+    // dragged on the chart has to be the range that is tested, unchanged.
+    const request = build({
+      testWindow: { start_time: 1_781_000_000_000, end_time: 1_785_000_000_000 },
+    })
+    expect(request.search.lookback_start).toBe(1_781_000_000_000)
+    expect(request.search.lookback_end).toBe(1_785_000_000_000)
+  })
+
+  it('orders a window that was dragged right to left', () => {
+    const request = build({
+      testWindow: { start_time: 1_785_000_000_000, end_time: 1_781_000_000_000 },
+    })
+    expect(request.search.lookback_start).toBeLessThan(request.search.lookback_end)
+  })
+
+  it('leaves the selected setup alone when a window is drawn', () => {
+    // The window says where to look, not what to look for.
+    const request = build({
+      testWindow: { start_time: 1_781_000_000_000, end_time: 1_785_000_000_000 },
+    })
+    expect(request.selection).toEqual({
+      start_time: selection.start_time,
+      end_time: selection.end_time,
+    })
+  })
+
   it('always includes the primary symbol, without duplicating it', () => {
     const request = build({
       primarySymbol: 'YM',

@@ -136,6 +136,43 @@ Anything else is `unconfirmed` and hidden by default.
 
 ---
 
+## Running a test
+
+1. **Mark the setup.** Drag the *Select setup* tool across the candles that
+   form it. Five candles is the minimum a pattern can be described in.
+2. **Say where to look.** Drag the *Test window* tool across the stretch of
+   history to search. Candles outside it stay on the chart, drawn exactly as
+   before, and are simply not searched — the context either side of a run is
+   how you tell whether the run asked a sensible question. Without a window,
+   the lookback field decides, counting back from the end of the loaded range.
+3. **Set the stop and the target**, then press *Test strategy*. There is no buy
+   or sell button: the engine takes every match it finds and reports what
+   happened.
+4. **Read the trades on the chart.** Each one is drawn as the long or short
+   position box it would have been marked up as by hand — reward one side of
+   the entry, risk the other, the box running from entry to exit so its width
+   is the holding period.
+5. **Check its reasoning.** Click a trade, on the chart or in the table, and
+   the results panel states it in order: the window that matched the setup,
+   what the detectors had standing there at the time, the prices the rules put
+   the stop and target at, and how it ended. The chart draws that same
+   evidence over the bars it came from.
+
+### The chart starts clean
+
+Every detector runs on every bar — the pattern search needs them — but
+**none of them are drawn** until you ask. Painted all at once, swings, gaps and
+divergences cover an index future end to end, which is exactly when the chart
+stops being readable. The switches are in the Analysis panel, and the evidence
+for a selected trade appears whatever they say.
+
+Drawings are directly editable: click one to select it, drag its body to move
+it or a handle to reshape it, recolour or delete it from the bar that appears
+against it, and Ctrl+Z takes back the last change. A drag is one undo step, not
+a hundred.
+
+---
+
 ## Two decisions worth knowing
 
 **Lightweight Charts, not Advanced Charts.** TradingView's Advanced Charts

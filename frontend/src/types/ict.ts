@@ -92,7 +92,14 @@ export const VALIDITY_NOTES: Record<SmtValidity, string> = {
     'Neither anchor is a swing point or a gap edge. Shown for inspection only.',
 }
 
-/** What the detectors should look for. Sent as query parameters. */
+/**
+ * What the detectors should look for, and how much of it is drawn.
+ *
+ * `enabled` and the `show*` flags are deliberately separate. Detection feeds
+ * the strategy search whether or not anything is painted, so switching an
+ * overlay off costs nothing downstream -- which is what makes a clean chart
+ * the sane default rather than a compromise.
+ */
 export interface IctSettings {
   enabled: boolean
   swingStrength: number
@@ -102,15 +109,35 @@ export interface IctSettings {
   showSwings: boolean
   showGaps: boolean
   showSmt: boolean
+  /**
+   * Draw the detections behind the *selected* trade even while the overlays
+   * above are off: the gap it entered from, the swings it was measured
+   * against, the divergence that confirmed it.
+   *
+   * This is the answer to "was my strategy implemented correctly?" -- the
+   * evidence appears for one trade, on demand, instead of every detection on
+   * the chart at once.
+   */
+  showTradeEvidence: boolean
 }
 
+/**
+ * A clean chart.
+ *
+ * Every detector runs -- the search needs them -- but nothing is painted
+ * until it is asked for. Drawn all at once, swings, gaps and divergences
+ * cover an index future end to end: they are found on almost every bar, so
+ * the chart stops being readable exactly where you need to read it. The
+ * evidence for a single trade is a different question, and stays on.
+ */
 export const DEFAULT_ICT_SETTINGS: IctSettings = {
   enabled: true,
   swingStrength: 2,
   minGapPercent: 0.05,
   includeFilledGaps: false,
   includeInvalidSmt: false,
-  showSwings: true,
-  showGaps: true,
-  showSmt: true,
+  showSwings: false,
+  showGaps: false,
+  showSmt: false,
+  showTradeEvidence: true,
 }

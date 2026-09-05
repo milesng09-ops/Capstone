@@ -1,17 +1,25 @@
 /**
- * The selected setup, the rules to trade it by, and the button that runs it.
+ * The selected setup, where to test it, the rules to trade it by, and the
+ * button that runs it.
  *
  * The flow Miles described: mark the setup on the chart, say where the stop
  * and target go, and get a win rate back without sitting through months of
- * bar-by-bar replay.
+ * bar-by-bar replay. No buy and no sell button -- the engine takes the trades,
+ * so the only verb here is *test*.
+ *
+ * The panel is ordered by how often each part is touched. The setup, the
+ * window and the two prices that define risk change every run and are open.
+ * Fees, slippage, the ATR period and the search thresholds are set once and
+ * then left, so they are folded away: still one click from here, but no
+ * longer between the user and the run button.
  */
 
 import { useMemo } from 'react'
-import { BoxSelect, Play, RotateCcw, X } from 'lucide-react'
+import { BoxSelect, CalendarRange, Play, RotateCcw, X } from 'lucide-react'
 
 import { PositionSizing } from '@/components/panels/PositionSizing'
 import { NumberField, SelectField, ToggleField } from '@/components/ui/fields'
-import { Badge, Button, Spinner } from '@/components/ui/primitives'
+import { Badge, Button, Disclosure, Spinner } from '@/components/ui/primitives'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars } from '@/hooks/useMarketData'
 import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
@@ -23,7 +31,15 @@ import type {
   TakeProfitType,
 } from '@/types/backtest'
 import { indexOfBar } from '@/lib/chart'
-import { formatDateTime, formatInteger, formatPercent, formatPrice } from '@/utils/format'
+import {
+  formatDate,
+  formatDateTime,
+  formatInteger,
+  formatPercent,
+  formatPrice,
+} from '@/utils/format'
+
+const DAY_MS = 86_400_000
 
 const DIRECTIONS: { value: Direction; label: string }[] = [
   { value: 'long', label: 'Long' },
@@ -53,10 +69,12 @@ export function StrategyPanel() {
   const interval = useWorkspace((state) => state.interval)
   const primary = useWorkspace((state) => state.primarySymbol)
   const selection = useWorkspace((state) => state.selection)
+  const testWindow = useWorkspace((state) => state.testWindow)
   const rules = useWorkspace((state) => state.rules)
   const search = useWorkspace((state) => state.search)
 
   const setSelection = useWorkspace((state) => state.setSelection)
+  const setTestWindow = useWorkspace((state) => state.setTestWindow)
   const setTool = useWorkspace((state) => state.setTool)
   const updateRules = useWorkspace((state) => state.updateRules)
   const updateSearch = useWorkspace((state) => state.updateSearch)
@@ -93,9 +111,19 @@ export function StrategyPanel() {
     }
   }, [candles, selection])
 
+  /** How much of the loaded history the window actually covers. */
+  const windowBars = useMemo(() => {
+    if (!testWindow || candles.length === 0) return null
+    return candles.filter(
+      (candle) =>
+        candle.time >= testWindow.start_time && candle.time <= testWindow.end_time,
+    ).length
+  }, [candles, testWindow])
+
   const runBacktest = useRunBacktest()
 
   const tooShort = Boolean(summary && summary.bars < 5)
+  const windowTooSmall = windowBars != null && windowBars < 20
   const canRun = Boolean(selection && summary && !tooShort && !runBacktest.isPending)
 
   const handleRun = () => {
@@ -108,6 +136,7 @@ export function StrategyPanel() {
       rules,
       search,
       rangeEnd: range.to,
+      testWindow,
     })
     runBacktest.mutate(request, {
       onSuccess: (result) => setActiveBacktestId(result.id),
@@ -181,25 +210,83 @@ export function StrategyPanel() {
         )}
       </section>
 
+      {/* ---- where to test ---- */}
+      <section className="space-y-2 border-t border-border pt-2.5">
+        <div className="flex items-center justify-between">
+          <span className="label-caps">Test window</span>
+          {testWindow && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-5 w-5"
+              onClick={() => setTestWindow(null)}
+              title="Test the whole loaded history again"
+              aria-label="Clear the test window"
+            >
+              <X size={12} />
+            </Button>
+          )}
+        </div>
+
+        {testWindow ? (
+          <div className="space-y-1 rounded-md border border-border bg-[hsl(var(--panel-raised))] p-2.5">
+            <p className="numeric text-2xs text-foreground">
+              {formatDate(testWindow.start_time)} &rarr; {formatDate(testWindow.end_time)}
+            </p>
+            <p className="text-2xs leading-relaxed text-muted-foreground">
+              {windowBars == null
+                ? 'Aligning to the loaded candles...'
+                : `${formatInteger(windowBars)} candles searched. Everything outside stays on the chart and is left alone.`}
+            </p>
+            {windowTooSmall && (
+              <p className="text-2xs leading-relaxed text-amber-400">
+                A window this narrow holds too few candles to find much. Widen it, or load
+                more history.
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="text-2xs leading-relaxed text-muted-foreground">
+            Searching the last {search.lookbackDays} days of the loaded history. Drag a
+            window on the chart to test one stretch instead.
+          </p>
+        )}
+
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="flex-1"
+            onClick={() => setTool('window')}
+          >
+            <CalendarRange size={13} />
+            {testWindow ? 'Redraw the window' : 'Pick a window on the chart'}
+          </Button>
+        </div>
+
+        {!testWindow && (
+          <NumberField
+            label="Lookback"
+            hint="How far back to search when no window is drawn"
+            value={search.lookbackDays}
+            min={7}
+            max={730}
+            suffix="d"
+            onChange={(lookbackDays) => updateSearch({ lookbackDays })}
+          />
+        )}
+      </section>
+
       {/* ---- trade rules ---- */}
       <section className="space-y-2 border-t border-border pt-2.5">
         <span className="label-caps">Trade rules</span>
 
-        <div className="grid grid-cols-2 gap-2">
-          <SelectField<Direction>
-            label="Direction"
-            value={rules.direction}
-            options={DIRECTIONS}
-            onChange={(direction) => updateRules({ direction })}
-          />
-          <SelectField<EntryType>
-            label="Entry"
-            hint="Where the position is opened once a match is found"
-            value={rules.entry_type}
-            options={ENTRIES}
-            onChange={(entry_type) => updateRules({ entry_type })}
-          />
-        </div>
+        <SelectField<Direction>
+          label="Direction"
+          value={rules.direction}
+          options={DIRECTIONS}
+          onChange={(direction) => updateRules({ direction })}
+        />
 
         <div className="grid grid-cols-2 gap-2">
           <SelectField<StopLossType>
@@ -234,6 +321,26 @@ export function StrategyPanel() {
             onChange={(take_profit_value) => updateRules({ take_profit_value })}
           />
         </div>
+      </section>
+
+      {/* ---- sizing ---- */}
+      <PositionSizing
+        candles={candles}
+        setup={summary ? { startIndex: summary.startIndex, endIndex: summary.endIndex } : null}
+      />
+
+      {/* ---- everything set once ---- */}
+      <Disclosure
+        label="Advanced"
+        summary={`entry, costs, ${search.maximumMatches} matches`}
+      >
+        <SelectField<EntryType>
+          label="Entry"
+          hint="Where the position is opened once a match is found"
+          value={rules.entry_type}
+          options={ENTRIES}
+          onChange={(entry_type) => updateRules({ entry_type })}
+        />
 
         <div className="grid grid-cols-2 gap-2">
           <NumberField
@@ -284,28 +391,8 @@ export function StrategyPanel() {
           checked={rules.allow_overlapping_trades}
           onChange={(allow_overlapping_trades) => updateRules({ allow_overlapping_trades })}
         />
-      </section>
-
-      {/* ---- sizing ---- */}
-      <PositionSizing
-        candles={candles}
-        setup={summary ? { startIndex: summary.startIndex, endIndex: summary.endIndex } : null}
-      />
-
-      {/* ---- search ---- */}
-      <section className="space-y-2 border-t border-border pt-2.5">
-        <span className="label-caps">Where to look</span>
 
         <div className="grid grid-cols-2 gap-2">
-          <NumberField
-            label="Lookback"
-            hint="How far back to search for the same setup"
-            value={search.lookbackDays}
-            min={7}
-            max={730}
-            suffix="d"
-            onChange={(lookbackDays) => updateSearch({ lookbackDays })}
-          />
           <NumberField
             label="Max matches"
             value={search.maximumMatches}
@@ -313,23 +400,22 @@ export function StrategyPanel() {
             max={25}
             onChange={(maximumMatches) => updateSearch({ maximumMatches })}
           />
+          <NumberField
+            label="Min similarity"
+            hint="1.0 is an identical shape. Lower finds more matches of lower quality."
+            value={search.minimumSimilarity}
+            min={-1}
+            max={1}
+            step={0.01}
+            onChange={(minimumSimilarity) => updateSearch({ minimumSimilarity })}
+          />
         </div>
 
-        <NumberField
-          label="Minimum similarity"
-          hint="1.0 is an identical shape. Lower finds more matches of lower quality."
-          value={search.minimumSimilarity}
-          min={-1}
-          max={1}
-          step={0.01}
-          onChange={(minimumSimilarity) => updateSearch({ minimumSimilarity })}
-        />
-
         <p className="text-2xs leading-relaxed text-muted-foreground">
-          Searching {symbols.join(', ')}. The selected window itself is always excluded, so a
-          setup is never matched against itself.
+          Searching {symbols.join(', ')}. The selected window itself is always excluded, so
+          a setup is never matched against itself.
         </p>
-      </section>
+      </Disclosure>
 
       {/* ---- run ---- */}
       <section className="mt-auto space-y-2 border-t border-border pt-2.5">
@@ -342,7 +428,7 @@ export function StrategyPanel() {
         <div className="flex gap-2">
           <Button variant="primary" className="flex-1" disabled={!canRun} onClick={handleRun}>
             {runBacktest.isPending ? <Spinner /> : <Play size={14} />}
-            {runBacktest.isPending ? 'Testing...' : 'Run backtest'}
+            {runBacktest.isPending ? 'Testing...' : 'Test strategy'}
           </Button>
           <Button
             size="icon"
@@ -354,6 +440,16 @@ export function StrategyPanel() {
             <RotateCcw size={14} />
           </Button>
         </div>
+
+        <p className="text-2xs leading-relaxed text-muted-foreground">
+          {selection
+            ? `Every match found in the ${
+                testWindow
+                  ? `${Math.max(1, Math.round((testWindow.end_time - testWindow.start_time) / DAY_MS))}-day window`
+                  : 'searched history'
+              } is traded by these rules, and the results are drawn on the chart.`
+            : 'Select a setup to enable the run.'}
+        </p>
       </section>
     </div>
   )

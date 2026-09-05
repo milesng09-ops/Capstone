@@ -26,7 +26,7 @@ import {
   type SizingConfig,
   type TradeRules,
 } from '@/types/backtest'
-import type { Interval, SelectionRange, SymbolKey } from '@/types/market'
+import type { Interval, SelectionRange, SymbolKey, TimeWindow } from '@/types/market'
 
 /** History loaded into the chart, in days. */
 export const RANGE_PRESETS = [30, 60, 90, 180, 365, 730] as const
@@ -78,6 +78,16 @@ interface WorkspaceState {
 
   // ---- backtest input -------------------------------------------------
   selection: SelectionRange | null
+  /**
+   * The stretch of history the engine searches. `null` means the whole
+   * loaded range, which is what the lookback field describes.
+   *
+   * Kept apart from `selection`: that is the *shape* being looked for, this
+   * is *where* to look for it. Narrowing the window never removes candles
+   * from the chart -- bars outside it are drawn as usual and simply not
+   * searched.
+   */
+  testWindow: TimeWindow | null
   rules: TradeRules
   search: SearchConfig
   /** Client-side only: the engine answers in percentages and sizes nothing. */
@@ -87,6 +97,10 @@ interface WorkspaceState {
   /** Which stored run the results panel is showing. Server state, so it is
    *  held by id and refetched rather than persisted. */
   activeBacktestId: string | null
+  /** Paint the simulated trades over the candles they were taken on. */
+  showTrades: boolean
+  /** The trade the chart is highlighting, and whose evidence it may show. */
+  selectedTradeId: string | null
 
   // ---- actions --------------------------------------------------------
   setPrimarySymbol: (symbol: SymbolKey) => void
@@ -109,11 +123,14 @@ interface WorkspaceState {
   redoDrawings: () => void
 
   setSelection: (selection: SelectionRange | null) => void
+  setTestWindow: (window: TimeWindow | null) => void
   updateRules: (patch: Partial<TradeRules>) => void
   updateSearch: (patch: Partial<SearchConfig>) => void
   updateSizing: (patch: Partial<SizingConfig>) => void
   resetStrategy: () => void
   setActiveBacktestId: (id: string | null) => void
+  setShowTrades: (show: boolean) => void
+  selectTrade: (id: string | null) => void
 }
 
 /**
@@ -160,10 +177,13 @@ export const useWorkspace = create<WorkspaceState>()(
       future: [],
 
       selection: null,
+      testWindow: null,
       rules: DEFAULT_TRADE_RULES,
       search: DEFAULT_SEARCH_CONFIG,
       sizing: DEFAULT_SIZING,
       activeBacktestId: null,
+      showTrades: true,
+      selectedTradeId: null,
 
       setPrimarySymbol: (symbol) =>
         set((state) => ({
@@ -174,6 +194,8 @@ export const useWorkspace = create<WorkspaceState>()(
           // A selection is a range of candles on one instrument; carrying it
           // across to a different instrument would silently retarget the test.
           selection: null,
+          // The results on screen were computed for the old instrument.
+          selectedTradeId: null,
         })),
 
       toggleCompareSymbol: (symbol) =>
@@ -192,7 +214,8 @@ export const useWorkspace = create<WorkspaceState>()(
           interval,
           // The same wall-clock range means a different number of candles on a
           // different interval, so the pattern would no longer be the one the
-          // user picked.
+          // user picked. The test window is wall-clock either way, so it
+          // survives: "test August" means the same thing at any resolution.
           selection: null,
         }),
 
@@ -277,6 +300,20 @@ export const useWorkspace = create<WorkspaceState>()(
 
       setSelection: (selection) => set({ selection }),
 
+      setTestWindow: (testWindow) =>
+        set(
+          testWindow == null
+            ? { testWindow: null }
+            : {
+                // Stored low-to-high so that everything downstream can treat
+                // it as a range without re-checking which end was dragged.
+                testWindow: {
+                  start_time: Math.min(testWindow.start_time, testWindow.end_time),
+                  end_time: Math.max(testWindow.start_time, testWindow.end_time),
+                },
+              },
+        ),
+
       updateRules: (patch) => set((state) => ({ rules: { ...state.rules, ...patch } })),
       updateSearch: (patch) => set((state) => ({ search: { ...state.search, ...patch } })),
       updateSizing: (patch) => set((state) => ({ sizing: { ...state.sizing, ...patch } })),
@@ -284,15 +321,49 @@ export const useWorkspace = create<WorkspaceState>()(
       resetStrategy: () =>
         set({ rules: DEFAULT_TRADE_RULES, search: DEFAULT_SEARCH_CONFIG }),
 
-      setActiveBacktestId: (activeBacktestId) => set({ activeBacktestId }),
+      setActiveBacktestId: (activeBacktestId) =>
+        // A trade id belongs to the run it came from, so it cannot survive a
+        // change of run.
+        set({ activeBacktestId, selectedTradeId: null }),
+
+      setShowTrades: (showTrades) => set({ showTrades }),
+      selectTrade: (selectedTradeId) => set({ selectedTradeId }),
     }),
     {
       name: 'mrl.workspace',
-      version: 1,
+      version: 2,
+      /**
+       * Version 2 turns the ICT overlays off.
+       *
+       * A stored preference outlives a change of default, so anyone who has
+       * opened the app before would keep the crowded chart forever and never
+       * learn that the default had moved. The flags are reset once, on the
+       * first load after the upgrade; turning them back on afterwards sticks,
+       * because by then it is a choice rather than a leftover.
+       */
+      migrate: (persisted, version) => {
+        const state = persisted as { ict?: IctSettings } | undefined
+        if (!state || version >= 2) return state
+        return {
+          ...state,
+          ict: {
+            ...DEFAULT_ICT_SETTINGS,
+            ...state.ict,
+            showSwings: false,
+            showGaps: false,
+            showSmt: false,
+            showTradeEvidence: true,
+          },
+        }
+      },
       // The transient bits of a session: which tool is held, what is selected,
       // the pending range, and the undo stack. Restoring these would be
       // confusing on reload -- undoing into a shape from yesterday most of
       // all, since there would be no gesture on screen to explain it.
+      //
+      // The test window is transient for a sharper reason: it names a stretch
+      // of wall-clock history, and one restored from last week would quietly
+      // narrow a run to a period the user is no longer looking at.
       partialize: (state) => ({
         primarySymbol: state.primarySymbol,
         compareSymbols: state.compareSymbols,
@@ -306,6 +377,7 @@ export const useWorkspace = create<WorkspaceState>()(
         rules: state.rules,
         search: state.search,
         sizing: state.sizing,
+        showTrades: state.showTrades,
       }),
     },
   ),

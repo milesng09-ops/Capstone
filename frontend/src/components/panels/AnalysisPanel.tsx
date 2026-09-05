@@ -1,6 +1,12 @@
 /**
  * ICT detector settings and what they found on the primary chart.
  *
+ * The detectors run whether or not anything is drawn -- the pattern search
+ * needs them either way -- so the overlay switches below are purely about the
+ * chart. They start off: drawn all at once, swings, gaps and divergences cover
+ * an index future end to end, and the list here is the readable way to see
+ * what was found. Switch one on to check a hunch, then switch it off again.
+ *
  * The divergence list is ordered newest first and states its own validity,
  * because "NQ took the high and ES did not" is only worth acting on when both
  * anchors are meaningful points on the reference chart.
@@ -23,7 +29,9 @@ export function AnalysisPanel() {
   const interval = useWorkspace((state) => state.interval)
   const primary = useWorkspace((state) => state.primarySymbol)
   const settings = useWorkspace((state) => state.ict)
+  const showTrades = useWorkspace((state) => state.showTrades)
   const updateIct = useWorkspace((state) => state.updateIct)
+  const setShowTrades = useWorkspace((state) => state.setShowTrades)
 
   const charted = useChartedSymbols()
   const references = charted.filter((symbol) => symbol !== primary)
@@ -83,10 +91,14 @@ export function AnalysisPanel() {
       </section>
 
       <section className="border-t border-border pt-2">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="label-caps">Overlays</span>
+        <div className="mb-1 flex items-center justify-between">
+          <span className="label-caps">Draw on the chart</span>
           {query.isFetching && <Spinner className="text-muted-foreground" />}
         </div>
+        <p className="mb-2 text-2xs leading-relaxed text-muted-foreground">
+          Off by default. Everything below is found either way and fed to the search; these
+          switches only decide what is painted over the candles.
+        </p>
         <ToggleField
           label={`Swing points${analysis ? ` (${analysis.swing_points.length})` : ''}`}
           checked={settings.showSwings}
@@ -107,6 +119,25 @@ export function AnalysisPanel() {
         />
       </section>
 
+      <section className="border-t border-border pt-2">
+        <span className="label-caps">Backtest results</span>
+        <div className="pt-1">
+          <ToggleField
+            label="Trades on the chart"
+            hint="Draw every simulated trade as a long or short position box"
+            checked={showTrades}
+            onChange={setShowTrades}
+          />
+          <ToggleField
+            label="Evidence for the selected trade"
+            hint="With a trade selected, draw the gaps, swings and divergences that were standing over the bars it was taken from -- whatever the switches above say"
+            checked={settings.showTradeEvidence}
+            disabled={!settings.enabled}
+            onChange={(showTradeEvidence) => updateIct({ showTradeEvidence })}
+          />
+        </div>
+      </section>
+
       {analysis?.warnings.length ? (
         <section className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2">
           <ul className="space-y-1 text-2xs leading-relaxed text-amber-300">
@@ -117,7 +148,13 @@ export function AnalysisPanel() {
         </section>
       ) : null}
 
-      <section className="min-h-0 flex-1 border-t border-border pt-2">
+      {/*
+       * Natural height, not `flex-1`: the list is as long as the range has
+       * divergences in it, and a box sized to the leftover space spilled its
+       * rows over the section below rather than scrolling them. The panel as
+       * a whole scrolls instead, which is what a column of settings wants.
+       */}
+      <section className="border-t border-border pt-2">
         <div className="mb-2 flex items-center justify-between">
           <span className="label-caps">
             Divergences {references.length ? `vs ${references.join(', ')}` : ''}
@@ -158,7 +195,7 @@ export function AnalysisPanel() {
 function DivergenceRow({ item }: { item: SmtDivergence }) {
   return (
     <li className="rounded-md border border-border bg-[hsl(var(--panel-raised))] p-2">
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <Badge tone={item.bias === 'bullish' ? 'bull' : 'bear'}>
           {item.bias === 'bullish' ? 'Bullish' : 'Bearish'}
         </Badge>

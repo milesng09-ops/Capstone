@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   BoxSelect,
+  CalendarRange,
   Magnet,
   Minus,
   MousePointer2,
@@ -40,12 +41,26 @@ import { cn } from '@/utils/cn'
 const TOOL_ICONS: Record<ToolMode, LucideIcon> = {
   cursor: MousePointer2,
   select: BoxSelect,
+  window: CalendarRange,
   trendline: Slash,
   horizontal: Minus,
   rectangle: Square,
 }
 
-const TOOL_ORDER: ToolMode[] = ['cursor', 'select', 'trendline', 'horizontal', 'rectangle']
+/**
+ * Pointer, then the two ranges a backtest is made of, then the shapes.
+ *
+ * The ranges sit next to each other because they are read as a pair: what to
+ * look for, and where to look for it.
+ */
+const TOOL_ORDER: ToolMode[] = [
+  'cursor',
+  'select',
+  'window',
+  'trendline',
+  'horizontal',
+  'rectangle',
+]
 
 export function ToolRail() {
   const tool = useWorkspace((state) => state.tool)
@@ -61,7 +76,7 @@ export function ToolRail() {
   return (
     <nav
       aria-label="Drawing tools"
-      className="panel flex w-10 shrink-0 flex-col items-center gap-0.5 border-r border-border py-1.5"
+      className="panel flex w-10 shrink-0 flex-col items-center gap-0.5 overflow-y-auto border-r border-border py-1.5"
     >
       {TOOL_ORDER.map((mode) => {
         const Icon = TOOL_ICONS[mode]

@@ -1,6 +1,7 @@
 /** Small styled building blocks shared across the workspace. */
 
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { useState, forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { ChevronRight } from 'lucide-react'
 
 import { cn } from '@/utils/cn'
 
@@ -52,6 +53,58 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     />
   )
 })
+
+// --------------------------------------------------------------------------
+// Disclosure
+// --------------------------------------------------------------------------
+/**
+ * A section that starts folded away.
+ *
+ * Not everything a panel can do deserves to be on screen while you are doing
+ * the ordinary thing. Fees, slippage and ATR periods matter once, when they
+ * are set; leaving them expanded costs the panel its shape and buries the two
+ * controls that are actually reached for. Folded, they are still one click
+ * away, which is the difference between hiding a control and removing it.
+ */
+export function Disclosure({
+  label,
+  summary,
+  defaultOpen = false,
+  children,
+}: {
+  label: string
+  /** What is inside, in a few words, so the fold is not a mystery box. */
+  summary?: string
+  defaultOpen?: boolean
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+
+  return (
+    <section className="border-t border-border pt-2.5">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 text-left"
+      >
+        <ChevronRight
+          size={12}
+          className={cn(
+            'shrink-0 text-muted-foreground transition-transform',
+            open && 'rotate-90',
+          )}
+        />
+        <span className="label-caps">{label}</span>
+        {summary && !open && (
+          <span className="truncate text-2xs text-muted-foreground">{summary}</span>
+        )}
+      </button>
+
+      {open && <div className="space-y-2 pt-2">{children}</div>}
+    </section>
+  )
+}
 
 // --------------------------------------------------------------------------
 // Panel

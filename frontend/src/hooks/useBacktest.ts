@@ -9,16 +9,21 @@ import type {
   SearchConfig,
   TradeRules,
 } from '@/types/backtest'
-import type { Interval, SelectionRange } from '@/types/market'
+import type { Interval, SelectionRange, TimeWindow } from '@/types/market'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
  * Turn workspace state into the request the backend expects.
  *
- * The lookback deliberately runs right up to the end of the loaded range: the
- * server excludes the selected window itself from the search, so overlapping
- * the two is safe and gives the pattern the most history to match against.
+ * Two ways to say where the engine may look. A **test window** dragged on the
+ * chart is explicit -- test exactly this stretch of history, leave everything
+ * else alone -- and wins when it is set. Without one, the lookback runs back
+ * from the end of the loaded range by however many days the field says.
+ *
+ * Either way it runs right up to the end of the range: the server excludes
+ * the selected setup itself from the search, so overlapping the two is safe
+ * and gives the pattern the most history to match against.
  */
 export function buildBacktestRequest(params: {
   selection: SelectionRange
@@ -28,11 +33,29 @@ export function buildBacktestRequest(params: {
   rules: TradeRules
   search: SearchConfig
   rangeEnd: number
+  /** Explicit history to search. Overrides the lookback when set. */
+  testWindow?: TimeWindow | null
 }): BacktestRequest {
-  const { selection, primarySymbol, symbols, interval, rules, search, rangeEnd } = params
+  const {
+    selection,
+    primarySymbol,
+    symbols,
+    interval,
+    rules,
+    search,
+    rangeEnd,
+    testWindow,
+  } = params
 
   const searchSymbols = search.searchSymbols.length ? search.searchSymbols : symbols
   const uniqueSymbols = Array.from(new Set([primarySymbol, ...searchSymbols]))
+
+  const lookbackStart = testWindow
+    ? Math.min(testWindow.start_time, testWindow.end_time)
+    : rangeEnd - search.lookbackDays * DAY_MS
+  const lookbackEnd = testWindow
+    ? Math.max(testWindow.start_time, testWindow.end_time)
+    : rangeEnd
 
   return {
     symbols: uniqueSymbols,
@@ -44,8 +67,8 @@ export function buildBacktestRequest(params: {
     },
     trade: rules,
     search: {
-      lookback_start: rangeEnd - search.lookbackDays * DAY_MS,
-      lookback_end: rangeEnd,
+      lookback_start: lookbackStart,
+      lookback_end: lookbackEnd,
       pattern_length: search.patternLength,
       maximum_matches: search.maximumMatches,
       minimum_similarity: search.minimumSimilarity,

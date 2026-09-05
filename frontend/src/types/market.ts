@@ -144,6 +144,18 @@ export interface CacheStatsResponse {
   last_fetch_ms: number | null
 }
 
+/**
+ * A span of market time, in Unix milliseconds.
+ *
+ * Used for the backtest window: the stretch of history the engine is allowed
+ * to look in. Bars outside it stay on the chart and stay untouched -- they
+ * are simply not searched.
+ */
+export interface TimeWindow {
+  start_time: number
+  end_time: number
+}
+
 /** A user-drawn period, stored in market coordinates -- never in pixels. */
 export interface SelectionRange {
   symbol: string

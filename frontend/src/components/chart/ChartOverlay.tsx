@@ -6,11 +6,21 @@
  * market coordinates to pixels itself. It renders, back to front:
  *
  *   1. fair value gap zones
- *   2. the backtest selection band
- *   3. SMT divergence lines
- *   4. swing point markers
- *   5. user drawings (trend lines, levels, zones)
- *   6. the shape currently being dragged
+ *   2. the evidence behind the selected trade
+ *   3. the veil over history the backtest is not allowed to search
+ *   4. the backtest selection band
+ *   5. SMT divergence lines
+ *   6. swing point markers
+ *   7. simulated trades, as long/short position boxes
+ *   8. user drawings (trend lines, levels, zones)
+ *   9. the shape currently being dragged
+ *
+ * **Almost none of that is on by default.** Drawn all at once, the detectors
+ * cover an index future end to end -- a gap or a pivot on nearly every bar --
+ * and the chart stops being readable exactly where it matters. So the
+ * overlays start off, the detectors keep running for the search, and what
+ * gets painted is what was asked for: the trades a run produced, and the
+ * evidence behind whichever one is selected.
  *
  * **Pointer ownership.** Two input models want the same mouse: the chart pans
  * and zooms with it, and the overlay draws with it. They are separated by
@@ -43,7 +53,7 @@
  * clamped to them.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { nearestBarTime, snapWithinBars } from '@/lib/chart'
 import {
@@ -56,17 +66,29 @@ import {
   type DrawingHit,
   type ProjectedDrawing,
 } from '@/lib/drawings'
+import {
+  hitTestPositions,
+  positionBox,
+  type PositionBox,
+  type ProjectedPosition,
+  type TradeEvidence,
+} from '@/lib/trades'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
-import type { Candle, SelectionRange } from '@/types/market'
-import { isDragTool } from '@/types/drawing'
+import type { Trade } from '@/types/backtest'
+import type { Candle, SelectionRange, TimeWindow } from '@/types/market'
+import { isDragTool, isRangeTool } from '@/types/drawing'
 import type { Drawing, DrawingDraft, DrawingPoint, ToolMode } from '@/types/drawing'
 import type { FairValueGap, IctAnalysis, IctSettings, SwingPoint } from '@/types/ict'
+import type { ChartPalette } from '@/lib/chart'
 
 /** Pointer distance, in pixels, within which a drag snaps to a swing point. */
 const SNAP_RADIUS = 14
 
 /** Minimum drag distance before a gesture counts as a shape, not a stray click. */
 const MIN_DRAG_PX = 4
+
+/** Narrowest a position box may be drawn, so a one-bar trade is still visible. */
+const MIN_POSITION_WIDTH_PX = 5
 
 interface Props {
   symbol: string
@@ -76,6 +98,13 @@ interface Props {
   ictSettings: IctSettings
   drawings: Drawing[]
   selection: SelectionRange | null
+  /** History the backtest may search. Outside it the candles are veiled. */
+  testWindow: TimeWindow | null
+  /** Simulated trades taken on *this* instrument. */
+  trades: Trade[]
+  selectedTradeId: string | null
+  /** Detections behind the selected trade, or null when none is selected. */
+  evidence: TradeEvidence | null
   tool: ToolMode
   drawingColor: string
   selectedDrawingId: string | null
@@ -86,6 +115,8 @@ interface Props {
   onUpdateDrawing: (id: string, drawing: Drawing) => void
   onSelectDrawing: (id: string | null) => void
   onSelectionChange: (selection: SelectionRange | null) => void
+  onTestWindowChange: (window: TimeWindow | null) => void
+  onSelectTrade: (id: string | null) => void
   onGestureComplete: () => void
 }
 
@@ -122,6 +153,10 @@ export function ChartOverlay({
   ictSettings,
   drawings,
   selection,
+  testWindow,
+  trades,
+  selectedTradeId,
+  evidence,
   tool,
   drawingColor,
   selectedDrawingId,
@@ -131,6 +166,8 @@ export function ChartOverlay({
   onUpdateDrawing,
   onSelectDrawing,
   onSelectionChange,
+  onTestWindowChange,
+  onSelectTrade,
   onGestureComplete,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -146,6 +183,14 @@ export function ChartOverlay({
   const hoverRef = useRef<DrawingHit | null>(null)
   /** Set while a drawing is being dragged; see `suppress` below. */
   const suppressRef = useRef(false)
+  /**
+   * A press on the chart that has not yet become anything.
+   *
+   * Clicking a trade selects it, but the same press is also how the chart is
+   * panned, so the two cannot be told apart until the pointer comes back up:
+   * travelled, and it was a pan; still, and it was a click.
+   */
+  const pressRef = useRef<{ x: number; y: number; tradeId: string | null } | null>(null)
 
   const updatePending = useCallback((value: PendingGesture | null) => {
     pendingRef.current = value
@@ -164,10 +209,11 @@ export function ChartOverlay({
 
   /**
    * True while a tool is held, i.e. the next press starts a new shape. The
-   * select tool is inert on a comparison chart, which leaves the pointer free
-   * to edit drawings there exactly as the cursor tool would.
+   * range tools are inert on a comparison chart -- a backtest runs on the
+   * primary -- which leaves the pointer free to edit drawings there exactly
+   * as the cursor tool would.
    */
-  const drawingActive = isDragTool(tool) && (tool !== 'select' || allowSelection)
+  const drawingActive = isDragTool(tool) && (!isRangeTool(tool) || allowSelection)
 
   /**
    * Market time -> x for objects that always sit on a bar (ICT detections,
@@ -189,6 +235,14 @@ export function ChartOverlay({
     (ms: number): number | null => handle.timeToXFree(ms),
     [handle],
   )
+
+  /** Trades as boxes, in market units. Projected to pixels at paint time. */
+  const boxes = useMemo(() => trades.map(positionBox), [trades])
+
+  // The last painted geometry, kept so a click can be tested against exactly
+  // what is on screen rather than against a fresh projection that a pan in
+  // flight may already have invalidated.
+  const projectedRef = useRef<ProjectedPosition[]>([])
 
   // ---- rendering -------------------------------------------------------
   const draw = useCallback(() => {
@@ -223,6 +277,24 @@ export function ChartOverlay({
       }
     }
 
+    // The detections behind one trade, drawn whether or not the overlay for
+    // that class is on -- that is the whole point of asking for them. What is
+    // already on screen is not painted twice.
+    if (evidence) {
+      paintEvidenceWindow(ctx, evidence.window, xOf, height, palette)
+      if (!ictSettings.showGaps) {
+        for (const gap of evidence.gaps) {
+          paintGap(ctx, gap, xOf, yOf, width, palette.bull, palette.bear)
+        }
+      }
+    }
+
+    // Veiled last among the background layers, so it dims the detections too:
+    // everything under it is out of scope, not just the candles.
+    if (testWindow) {
+      paintTestWindow(ctx, testWindow, xOf, width, height, palette)
+    }
+
     if (selection) {
       paintSelection(ctx, selection, xOf, height, palette.accent)
     }
@@ -238,6 +310,34 @@ export function ChartOverlay({
         paintSwing(ctx, point, xOf, yOf, palette.muted)
       }
     }
+
+    if (evidence) {
+      if (!ictSettings.showSmt) {
+        for (const divergence of evidence.divergences) {
+          paintSmt(ctx, divergence, xOf, yOf, palette.bull, palette.bear)
+        }
+      }
+      if (!ictSettings.showSwings) {
+        for (const point of evidence.swings) {
+          paintSwing(ctx, point, xOf, yOf, palette.muted)
+        }
+      }
+    }
+
+    // Trades, as the long/short position tool a chart is normally marked up
+    // with: entry in the middle, risk one side, reward the other, running the
+    // length of the hold.
+    const projected: ProjectedPosition[] = []
+    for (const box of boxes) {
+      const item = paintPosition(ctx, box, xOfDrawing, yOf, palette, {
+        selected: box.id === selectedTradeId,
+        // With one trade picked, the rest step back rather than disappear:
+        // where this trade sits among the others is part of reading it.
+        dimmed: selectedTradeId != null && box.id !== selectedTradeId,
+      })
+      if (item) projected.push(item)
+    }
+    projectedRef.current = projected
 
     // An in-flight drag is painted in place of the stored shape, so the store
     // is written once on release rather than on every frame.
@@ -257,15 +357,19 @@ export function ChartOverlay({
       paintPending(ctx, gesture, tool, width, height, drawingColor, palette.accent)
     }
   }, [
+    boxes,
     drawingColor,
     drawings,
+    evidence,
     handle,
     ict,
     ictSettings.showGaps,
     ictSettings.showSmt,
     ictSettings.showSwings,
     selectedDrawingId,
+    selectedTradeId,
     selection,
+    testWindow,
     tool,
     xOf,
     xOfDrawing,
@@ -363,11 +467,23 @@ export function ChartOverlay({
       return hitTestAt(event.clientX - rect.left, event.clientY - rect.top)
     }
 
+    const offsetOf = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect()
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    }
+
     const handleMove = (event: PointerEvent) => {
       if (dragRef.current) return
       const hit = locate(event)
-      if (hitKey(hit) === hitKey(hoverRef.current)) return
-      updateHover(hit)
+      if (hitKey(hit) !== hitKey(hoverRef.current)) updateHover(hit)
+
+      // A trade is clickable but not draggable, so it only wants a cursor.
+      // Set here rather than through state: a hover that changes nothing
+      // React renders should not cost a render.
+      if (!hit) {
+        const { x, y } = offsetOf(event)
+        parent.style.cursor = hitTestPositions(projectedRef.current, x, y) ? 'pointer' : ''
+      }
     }
 
     const handleLeave = () => {
@@ -387,7 +503,15 @@ export function ChartOverlay({
       // arrives with no hover behind it.
       const hit = locate(event)
       onSelectDrawing(hit?.id ?? null)
-      if (!hit) return
+
+      if (!hit) {
+        // Nothing to grab. Remember where the press landed and what was under
+        // it; `handleUp` decides whether that turns out to be a click.
+        const { x, y } = offsetOf(event)
+        pressRef.current = { x, y, tradeId: hitTestPositions(projectedRef.current, x, y) }
+        return
+      }
+      pressRef.current = null
 
       const target = drawings.find((drawing) => drawing.id === hit.id)
       const resolved = pointAt(event.clientX, event.clientY, false)
@@ -407,6 +531,21 @@ export function ChartOverlay({
       })
     }
 
+    /**
+     * A press that never travelled is a click: it selects the trade under it,
+     * or clears the selection when there was none. A press that panned the
+     * chart selects nothing, which is what keeps the two gestures apart.
+     */
+    const handleUp = (event: PointerEvent) => {
+      const press = pressRef.current
+      pressRef.current = null
+      if (!press) return
+
+      const { x, y } = offsetOf(event)
+      if (Math.abs(x - press.x) > MIN_DRAG_PX || Math.abs(y - press.y) > MIN_DRAG_PX) return
+      onSelectTrade(press.tradeId)
+    }
+
     const suppress = (event: Event) => {
       if (!suppressRef.current) return
       event.stopPropagation()
@@ -416,6 +555,9 @@ export function ChartOverlay({
     parent.addEventListener('pointermove', handleMove)
     parent.addEventListener('pointerleave', handleLeave)
     parent.addEventListener('pointerdown', handleDown, { capture: true })
+    // At the window, so a press released off the pane still resolves rather
+    // than leaving a stale candidate behind.
+    window.addEventListener('pointerup', handleUp)
     parent.addEventListener('mousedown', suppress, { capture: true })
     parent.addEventListener('touchstart', suppress, { capture: true, passive: false })
 
@@ -423,15 +565,18 @@ export function ChartOverlay({
       parent.removeEventListener('pointermove', handleMove)
       parent.removeEventListener('pointerleave', handleLeave)
       parent.removeEventListener('pointerdown', handleDown, { capture: true })
+      window.removeEventListener('pointerup', handleUp)
       parent.removeEventListener('mousedown', suppress, { capture: true })
       parent.removeEventListener('touchstart', suppress, { capture: true })
       parent.style.cursor = ''
+      pressRef.current = null
     }
   }, [
     drawingActive,
     drawings,
     hitTestAt,
     onSelectDrawing,
+    onSelectTrade,
     pointAt,
     updateDrag,
     updateHover,
@@ -507,9 +652,9 @@ export function ChartOverlay({
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || !drawingActive) return
 
-    // A selection is a range of bars, not a shape, so it never snaps to a
-    // swing point -- that would move the window off the candles it names.
-    const resolved = pointAt(event.clientX, event.clientY, tool !== 'select' && snapToSwings)
+    // A range is made of bars, not of shapes, so it never snaps to a swing
+    // point -- that would move the window off the candles it names.
+    const resolved = pointAt(event.clientX, event.clientY, !isRangeTool(tool) && snapToSwings)
     if (!resolved) return
 
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -527,7 +672,7 @@ export function ChartOverlay({
   const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const gesture = pendingRef.current
     if (!gesture) return
-    const resolved = pointAt(event.clientX, event.clientY, tool !== 'select' && snapToSwings)
+    const resolved = pointAt(event.clientX, event.clientY, !isRangeTool(tool) && snapToSwings)
     if (!resolved) return
 
     updatePending({
@@ -566,11 +711,10 @@ export function ChartOverlay({
         color: drawingColor,
         price: gesture.current.price,
       })
-    } else if (tool === 'select') {
-      // A backtest window has to be made of real bars, so a drag that runs off
-      // the end of the data is pulled back to the edge candle rather than
-      // selecting empty space. Drawings keep their free coordinates; this does
-      // not.
+    } else if (isRangeTool(tool)) {
+      // A range has to be made of real bars, so a drag that runs off the end
+      // of the data is pulled back to the edge candle rather than covering
+      // empty space. Drawings keep their free coordinates; these do not.
       const start = nearestBarTime(
         candles,
         Math.min(gesture.start.time, gesture.current.time),
@@ -580,12 +724,16 @@ export function ChartOverlay({
         Math.max(gesture.start.time, gesture.current.time),
       )
       if (start != null && end != null && start !== end) {
-        onSelectionChange({
-          symbol,
-          start_time: start,
-          end_time: end,
-          source_interval: (ict?.interval ?? '1h') as SelectionRange['source_interval'],
-        })
+        if (tool === 'select') {
+          onSelectionChange({
+            symbol,
+            start_time: start,
+            end_time: end,
+            source_interval: (ict?.interval ?? '1h') as SelectionRange['source_interval'],
+          })
+        } else {
+          onTestWindowChange({ start_time: start, end_time: end })
+        }
       }
     } else if (tool === 'trendline' || tool === 'rectangle') {
       onCreateDrawing({
@@ -721,6 +869,176 @@ function paintSelection(
   ctx.lineTo(x + span - 0.5, height)
   ctx.stroke()
   ctx.restore()
+}
+
+/**
+ * The stretch of history the backtest is not allowed to search.
+ *
+ * Drawn as a veil over everything outside the window rather than by hiding
+ * the bars: Miles was explicit that narrowing the test must not take candles
+ * off the chart -- the context either side of a run is how you tell whether
+ * the run was asking a sensible question. Veiled, those bars are still there
+ * to read, and visibly out of scope.
+ */
+function paintTestWindow(
+  ctx: CanvasRenderingContext2D,
+  window: TimeWindow,
+  xOf: XConverter,
+  width: number,
+  height: number,
+  palette: ChartPalette,
+) {
+  const left = xOf(window.start_time)
+  const right = xOf(window.end_time)
+  if (left == null || right == null) return
+
+  const start = Math.min(left, right)
+  const end = Math.max(left, right)
+
+  ctx.save()
+  ctx.fillStyle = palette.background
+  ctx.globalAlpha = 0.62
+  if (start > 0) ctx.fillRect(0, 0, start, height)
+  if (end < width) ctx.fillRect(end, 0, width - end, height)
+
+  ctx.globalAlpha = 0.9
+  ctx.strokeStyle = palette.muted
+  ctx.lineWidth = 1
+  ctx.setLineDash([4, 3])
+  ctx.beginPath()
+  ctx.moveTo(start + 0.5, 0)
+  ctx.lineTo(start + 0.5, height)
+  ctx.moveTo(end - 0.5, 0)
+  ctx.lineTo(end - 0.5, height)
+  ctx.stroke()
+
+  ctx.setLineDash([])
+  ctx.globalAlpha = 0.75
+  ctx.fillStyle = palette.text
+  ctx.font = '9px ui-monospace, monospace'
+  ctx.textBaseline = 'top'
+  ctx.fillText('test window', start + 4, 4)
+  ctx.restore()
+}
+
+/** A faint bracket over the bars a selected trade is being explained from. */
+function paintEvidenceWindow(
+  ctx: CanvasRenderingContext2D,
+  window: TimeWindow,
+  xOf: XConverter,
+  height: number,
+  palette: ChartPalette,
+) {
+  const left = xOf(window.start_time)
+  const right = xOf(window.end_time)
+  if (left == null || right == null) return
+
+  const start = Math.min(left, right)
+  const span = Math.max(2, Math.abs(right - left))
+
+  ctx.save()
+  ctx.globalAlpha = 0.08
+  ctx.fillStyle = palette.accent
+  ctx.fillRect(start, 0, span, height)
+  ctx.restore()
+}
+
+interface PositionStyle {
+  selected: boolean
+  dimmed: boolean
+}
+
+/**
+ * One trade, as the position tool it would have been drawn with by hand.
+ *
+ * Reward above the entry and risk below it (mirrored for a short), the box
+ * running from entry to exit so its width *is* the holding period. The
+ * outcome is written on it rather than left to colour alone, because green
+ * and red are the two colours a candle chart has already spent.
+ */
+function paintPosition(
+  ctx: CanvasRenderingContext2D,
+  box: PositionBox,
+  xOf: XConverter,
+  yOf: YConverter,
+  palette: ChartPalette,
+  { selected, dimmed }: PositionStyle,
+): ProjectedPosition | null {
+  const x1 = xOf(box.from)
+  const x2 = xOf(box.to)
+  const entryY = yOf(box.entry)
+  const stopY = yOf(box.stop)
+  const targetY = yOf(box.target)
+  if (x1 == null || x2 == null || entryY == null || stopY == null || targetY == null) {
+    return null
+  }
+
+  const left = Math.min(x1, x2)
+  const span = Math.max(MIN_POSITION_WIDTH_PX, Math.abs(x2 - x1))
+  const right = left + span
+
+  const rewardTop = Math.min(entryY, targetY)
+  const rewardHeight = Math.max(1, Math.abs(targetY - entryY))
+  const riskTop = Math.min(entryY, stopY)
+  const riskHeight = Math.max(1, Math.abs(stopY - entryY))
+
+  ctx.save()
+
+  const base = selected ? 0.26 : dimmed ? 0.07 : 0.16
+  ctx.globalAlpha = base
+  ctx.fillStyle = palette.bull
+  ctx.fillRect(left, rewardTop, span, rewardHeight)
+  ctx.fillStyle = palette.bear
+  ctx.fillRect(left, riskTop, span, riskHeight)
+
+  ctx.globalAlpha = dimmed ? 0.35 : 0.85
+  ctx.lineWidth = selected ? 1.6 : 1
+  ctx.strokeStyle = palette.bull
+  ctx.strokeRect(left + 0.5, rewardTop + 0.5, span - 1, rewardHeight - 1)
+  ctx.strokeStyle = palette.bear
+  ctx.strokeRect(left + 0.5, riskTop + 0.5, span - 1, riskHeight - 1)
+
+  // The entry runs the full width of the box: it is the one price the trade
+  // was actually opened at, and every other line is measured from it.
+  ctx.globalAlpha = dimmed ? 0.5 : 1
+  ctx.strokeStyle = palette.text
+  ctx.lineWidth = selected ? 2 : 1.2
+  ctx.beginPath()
+  ctx.moveTo(left, entryY + 0.5)
+  ctx.lineTo(right, entryY + 0.5)
+  ctx.stroke()
+
+  // Where it actually closed, which is only the stop or the target when the
+  // trade ran to one of them.
+  const exitY = yOf(box.exit)
+  if (exitY != null) {
+    ctx.fillStyle = box.won ? palette.bull : palette.bear
+    ctx.beginPath()
+    ctx.arc(right, exitY, selected ? 3.5 : 2.5, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  if (!dimmed) {
+    const sign = box.netReturn >= 0 ? '+' : ''
+    const label = `#${box.tradeNumber} ${box.isLong ? 'Long' : 'Short'} ${sign}${box.netReturn.toFixed(2)}%`
+    ctx.globalAlpha = 0.95
+    ctx.font = selected
+      ? '600 10px ui-monospace, monospace'
+      : '9px ui-monospace, monospace'
+    ctx.textBaseline = 'bottom'
+    ctx.fillStyle = palette.text
+    ctx.fillText(label, left, Math.min(rewardTop, riskTop) - 3)
+  }
+
+  ctx.restore()
+
+  return {
+    id: box.id,
+    left,
+    right,
+    top: Math.min(rewardTop, riskTop),
+    bottom: Math.max(rewardTop + rewardHeight, riskTop + riskHeight),
+  }
 }
 
 function paintSmt(
@@ -883,12 +1201,16 @@ function paintPending(
   ctx.setLineDash([4, 3])
   ctx.lineWidth = 1.5
 
-  if (tool === 'select') {
+  if (tool === 'select' || tool === 'window') {
     const left = Math.min(gesture.startX, gesture.currentX)
     const span = Math.abs(gesture.currentX - gesture.startX)
-    ctx.fillStyle = accent
-    ctx.globalAlpha = 0.16
-    ctx.fillRect(left, 0, span, height)
+    // The window previews as an outline only: it is about to *exclude* what
+    // lies outside it, so filling the inside would say the opposite.
+    if (tool === 'select') {
+      ctx.fillStyle = accent
+      ctx.globalAlpha = 0.16
+      ctx.fillRect(left, 0, span, height)
+    }
     ctx.globalAlpha = 1
     ctx.strokeStyle = accent
     ctx.strokeRect(left + 0.5, 0.5, span, height - 1)

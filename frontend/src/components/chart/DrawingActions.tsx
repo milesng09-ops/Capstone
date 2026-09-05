@@ -1,0 +1,159 @@
+/**
+ * What you can do to the drawing you just clicked, floating next to it.
+ *
+ * Selecting a shape and pressing Delete already worked, but a keystroke is
+ * not an affordance: nothing on screen said the shape could be removed, so
+ * the honest reading of "I can't erase them" is that there was no way to find
+ * out. A small bar that appears against the selection says it plainly, and is
+ * how every charting platform answers the same question.
+ *
+ * It tracks the drawing rather than the pointer -- anchored above the shape
+ * and re-placed on every pan and zoom through the chart's own notifications,
+ * so it stays where the shape is instead of where the shape used to be.
+ */
+
+import { useEffect, useState } from 'react'
+import { Trash2 } from 'lucide-react'
+
+import type { ChartHandle } from '@/components/chart/useChartInstance'
+import { Button } from '@/components/ui/primitives'
+import { useWorkspace } from '@/store/workspace'
+import { DRAWING_COLORS, TOOL_LABELS, type Drawing } from '@/types/drawing'
+import { cn } from '@/utils/cn'
+
+/** Roughly the bar's own size, used to keep it inside the pane. */
+const BAR_WIDTH_PX = 150
+const BAR_HEIGHT_PX = 26
+
+interface Props {
+  symbol: string
+  handle: ChartHandle
+  /** Only this pane's drawings; a selection on another chart is not ours. */
+  drawings: Drawing[]
+}
+
+interface Anchor {
+  x: number
+  y: number
+}
+
+export function DrawingActions({ handle, drawings }: Props) {
+  const selectedId = useWorkspace((state) => state.selectedDrawingId)
+  const removeDrawing = useWorkspace((state) => state.removeDrawing)
+  const updateDrawing = useWorkspace((state) => state.updateDrawing)
+
+  const drawing = drawings.find((item) => item.id === selectedId) ?? null
+  const [anchor, setAnchor] = useState<Anchor | null>(null)
+  const [pane, setPane] = useState<HTMLElement | null>(null)
+
+  useEffect(() => {
+    if (!drawing || !pane) {
+      setAnchor(null)
+      return
+    }
+
+    const place = () => {
+      const point = anchorFor(drawing, handle)
+      if (!point) {
+        setAnchor(null)
+        return
+      }
+
+      const width = pane.clientWidth
+      const height = pane.clientHeight
+      setAnchor({
+        x: clamp(point.x - BAR_WIDTH_PX / 2, 4, Math.max(4, width - BAR_WIDTH_PX - 4)),
+        // Above the shape by default; below it when the shape is near the top
+        // of the pane and there is no room above.
+        y:
+          point.y - BAR_HEIGHT_PX - 8 < 4
+            ? clamp(point.y + 10, 4, Math.max(4, height - BAR_HEIGHT_PX - 4))
+            : point.y - BAR_HEIGHT_PX - 8,
+      })
+    }
+
+    place()
+    // The chart notifies imperatively on pan, zoom and resize, which is what
+    // keeps the bar attached without re-rendering the tree on every frame.
+    return handle.subscribe(place)
+  }, [drawing, handle, pane])
+
+  if (!drawing) return null
+
+  return (
+    <div
+      ref={setPane}
+      className="pointer-events-none absolute inset-0 z-30"
+      aria-hidden={anchor == null}
+    >
+      {anchor && (
+        <div
+          role="toolbar"
+          aria-label={`${TOOL_LABELS[drawing.kind]} actions`}
+          className="pointer-events-auto absolute flex items-center gap-1 rounded border border-border bg-[hsl(var(--popover))] px-1.5 py-1 shadow-lg"
+          style={{ left: anchor.x, top: anchor.y }}
+        >
+          <span className="label-caps pr-0.5">{TOOL_LABELS[drawing.kind]}</span>
+
+          <span className="h-3.5 w-px bg-border" />
+
+          {DRAWING_COLORS.map((color) => (
+            <button
+              key={color}
+              type="button"
+              aria-label={`Recolour to ${color}`}
+              aria-pressed={color === drawing.color}
+              onClick={() => updateDrawing(drawing.id, { color })}
+              style={{ backgroundColor: color }}
+              className={cn(
+                'h-3 w-3 rounded-full border transition-transform',
+                color === drawing.color
+                  ? 'scale-125 border-foreground'
+                  : 'border-transparent hover:scale-125',
+              )}
+            />
+          ))}
+
+          <span className="h-3.5 w-px bg-border" />
+
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-5 w-5 text-muted-foreground hover:text-bear"
+            onClick={() => removeDrawing(drawing.id)}
+            title="Delete this drawing (Del)"
+            aria-label="Delete drawing"
+          >
+            <Trash2 size={12} />
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Where the bar hangs from: the middle of the shape's top edge.
+ *
+ * A level has no ends -- it runs the full width of the pane -- so it is
+ * anchored a short way in from the left, next to the price label that is
+ * already painted there.
+ */
+function anchorFor(drawing: Drawing, handle: ChartHandle): Anchor | null {
+  if (drawing.kind === 'horizontal') {
+    const y = handle.priceToY(drawing.price)
+    return y == null ? null : { x: BAR_WIDTH_PX / 2 + 8, y }
+  }
+
+  const x1 = handle.timeToXFree(drawing.from.time)
+  const x2 = handle.timeToXFree(drawing.to.time)
+  const y1 = handle.priceToY(drawing.from.price)
+  const y2 = handle.priceToY(drawing.to.price)
+  if (x1 == null || x2 == null || y1 == null || y2 == null) return null
+
+  return { x: (x1 + x2) / 2, y: Math.min(y1, y2) }
+}
+
+function clamp(value: number, low: number, high: number): number {
+  return Math.min(high, Math.max(low, value))
+}

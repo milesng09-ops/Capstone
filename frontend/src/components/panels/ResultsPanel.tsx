@@ -8,14 +8,16 @@
  * let it look like one.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Info, TriangleAlert } from 'lucide-react'
 
 import { EquityCurve } from '@/components/panels/EquityCurve'
+import { TradeEvidence } from '@/components/panels/TradeEvidence'
 import { TradesTable } from '@/components/panels/TradesTable'
 import { Badge, EmptyState, Metric, Spinner } from '@/components/ui/primitives'
 import { SegmentedControl } from '@/components/ui/fields'
 import { useBacktestResult } from '@/hooks/useBacktest'
+import { findMatch, findTrade } from '@/lib/trades'
 import { useWorkspace } from '@/store/workspace'
 import type { BacktestResult } from '@/types/backtest'
 import { cn } from '@/utils/cn'
@@ -39,8 +41,18 @@ const TABS: { value: ResultTab; label: string }[] = [
 
 export function ResultsPanel() {
   const activeId = useWorkspace((state) => state.activeBacktestId)
+  const selectedTradeId = useWorkspace((state) => state.selectedTradeId)
+  const selectTrade = useWorkspace((state) => state.selectTrade)
   const query = useBacktestResult(activeId)
-  const [tab, setTab] = useState<ResultTab>('equity')
+  // Trades lead: they are the trades a run produced, and the row and the
+  // position box on the chart are two views of the same thing.
+  const [tab, setTab] = useState<ResultTab>('trades')
+
+  // Picking a trade off the chart should not leave the panel showing a
+  // different tab than the thing that was just selected.
+  useEffect(() => {
+    if (selectedTradeId) setTab('trades')
+  }, [selectedTradeId])
 
   if (!activeId) {
     return (
@@ -71,6 +83,7 @@ export function ResultsPanel() {
 
   const result = query.data
   const summary = result.summary
+  const selectedTrade = findTrade(result.trades, selectedTradeId)
 
   if (!summary) {
     return (
@@ -112,9 +125,33 @@ export function ResultsPanel() {
         </p>
       )}
 
-      <div className="min-h-0 flex-1 px-3 pb-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 pb-3">
         {tab === 'equity' && <EquityCurve points={summary.equity_curve} />}
-        {tab === 'trades' && <TradesTable trades={result.trades} />}
+        {tab === 'trades' && (
+          <>
+            {/*
+             * Capped and scrollable: the evidence for a trade is several
+             * paragraphs, and in a short results pane it otherwise pushed
+             * the table out of the panel and over the status bar.
+             */}
+            {selectedTrade && (
+              <div className="max-h-[45%] shrink-0 overflow-y-auto">
+                <TradeEvidence
+                  trade={selectedTrade}
+                  match={findMatch(result.matches, selectedTrade)}
+                  rules={result.configuration.trade}
+                />
+              </div>
+            )}
+            <div className="min-h-0 flex-1">
+              <TradesTable
+                trades={result.trades}
+                selectedId={selectedTradeId}
+                onSelect={selectTrade}
+              />
+            </div>
+          </>
+        )}
         {tab === 'matches' && <MatchesList result={result} />}
         {tab === 'notes' && <Notes summary={summary} />}
       </div>

@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ChartOverlay } from '@/components/chart/ChartOverlay'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
+import type { Trade } from '@/types/backtest'
 import type { Drawing } from '@/types/drawing'
 import type { Candle } from '@/types/market'
 
@@ -62,6 +63,10 @@ function setup(overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {}) {
     ictSettings: DEFAULT_ICT_SETTINGS,
     drawings: [] as Drawing[],
     selection: null,
+    testWindow: null,
+    trades: [] as Trade[],
+    selectedTradeId: null,
+    evidence: null,
     tool: 'cursor' as const,
     drawingColor: '#818cf8',
     selectedDrawingId: null,
@@ -71,6 +76,8 @@ function setup(overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {}) {
     onUpdateDrawing: vi.fn(),
     onSelectDrawing: vi.fn(),
     onSelectionChange: vi.fn(),
+    onTestWindowChange: vi.fn(),
+    onSelectTrade: vi.fn(),
     onGestureComplete: vi.fn(),
     ...overrides,
   }
@@ -228,5 +235,97 @@ describe('editing an existing drawing', () => {
 
     fireEvent(container, pointer('pointerdown', 100, 150))
     expect(onSelectDrawing).not.toHaveBeenCalled()
+  })
+})
+
+describe('marking the range to test in', () => {
+  it('commits a window from a drag across the candles', () => {
+    const { canvas, onTestWindowChange } = setup({ tool: 'window' })
+
+    fireEvent(canvas, pointer('pointerdown', 900_000, 100))
+    fireEvent(canvas, pointer('pointermove', 903_600, 160))
+    fireEvent(canvas, pointer('pointerup', 903_600, 160))
+
+    // Snapped to the two bars, because a window the engine searches has to be
+    // made of candles that exist.
+    expect(onTestWindowChange).toHaveBeenCalledWith({
+      start_time: 900_000,
+      end_time: 903_600,
+    })
+  })
+
+  it('orders the window when it is dragged right to left', () => {
+    const { canvas, onTestWindowChange } = setup({ tool: 'window' })
+
+    fireEvent(canvas, pointer('pointerdown', 903_600, 100))
+    fireEvent(canvas, pointer('pointermove', 900_000, 160))
+    fireEvent(canvas, pointer('pointerup', 900_000, 160))
+
+    expect(onTestWindowChange).toHaveBeenCalledWith({
+      start_time: 900_000,
+      end_time: 903_600,
+    })
+  })
+
+  it('does not set a selection, which is the other range entirely', () => {
+    const { canvas, onSelectionChange } = setup({ tool: 'window' })
+
+    fireEvent(canvas, pointer('pointerdown', 900_000, 100))
+    fireEvent(canvas, pointer('pointermove', 903_600, 160))
+    fireEvent(canvas, pointer('pointerup', 903_600, 160))
+
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('is inert on a comparison chart, where a backtest never runs', () => {
+    const { canvas, onTestWindowChange } = setup({ tool: 'window', allowSelection: false })
+
+    fireEvent(canvas, pointer('pointerdown', 900_000, 100))
+    fireEvent(canvas, pointer('pointermove', 903_600, 160))
+    fireEvent(canvas, pointer('pointerup', 903_600, 160))
+
+    expect(onTestWindowChange).not.toHaveBeenCalled()
+  })
+
+  it('is abandoned by Escape mid-drag', () => {
+    const { canvas, onTestWindowChange } = setup({ tool: 'window' })
+
+    fireEvent(canvas, pointer('pointerdown', 900_000, 100))
+    fireEvent(canvas, pointer('pointermove', 903_600, 160))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent(canvas, pointer('pointerup', 903_600, 160))
+
+    expect(onTestWindowChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('clicking a trade', () => {
+  it('clears the selection on a click over empty chart', () => {
+    const { container, onSelectTrade } = setup()
+
+    fireEvent(container, pointer('pointerdown', 100, 400))
+    fireEvent(window, pointer('pointerup', 100, 400))
+
+    expect(onSelectTrade).toHaveBeenCalledWith(null)
+  })
+
+  it('selects nothing when the press panned the chart instead', () => {
+    // A pan starts with the same press; only a release that never travelled
+    // counts as a click.
+    const { container, onSelectTrade } = setup()
+
+    fireEvent(container, pointer('pointerdown', 100, 400))
+    fireEvent(window, pointer('pointerup', 300, 400))
+
+    expect(onSelectTrade).not.toHaveBeenCalled()
+  })
+
+  it('leaves the press to the drawing under it', () => {
+    const { container, onSelectTrade } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    fireEvent(window, pointer('pointerup', 100, 150))
+
+    expect(onSelectTrade).not.toHaveBeenCalled()
   })
 })

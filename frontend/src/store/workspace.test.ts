@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { useWorkspace } from '@/store/workspace'
 import type { Drawing } from '@/types/drawing'
+import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
 
 function level(id: string, price = 100, symbol = 'NQ'): Drawing {
   return { id, kind: 'horizontal', symbol, color: '#818cf8', createdAt: 0, price }
@@ -121,5 +122,62 @@ describe('drawing history', () => {
       useWorkspace.getState().addDrawing(level(`d${index}`))
     }
     expect(useWorkspace.getState().past.length).toBeLessThanOrEqual(50)
+  })
+})
+
+describe('the test window', () => {
+  beforeEach(() => {
+    useWorkspace.setState({ testWindow: null, selectedTradeId: null, activeBacktestId: null })
+  })
+
+  it('starts unset, meaning the whole loaded history', () => {
+    expect(useWorkspace.getState().testWindow).toBeNull()
+  })
+
+  it('stores a window dragged right to left in order', () => {
+    useWorkspace.getState().setTestWindow({ start_time: 500, end_time: 100 })
+    expect(useWorkspace.getState().testWindow).toEqual({ start_time: 100, end_time: 500 })
+  })
+
+  it('can be cleared back to the whole history', () => {
+    useWorkspace.getState().setTestWindow({ start_time: 100, end_time: 500 })
+    useWorkspace.getState().setTestWindow(null)
+    expect(useWorkspace.getState().testWindow).toBeNull()
+  })
+})
+
+describe('trade selection', () => {
+  beforeEach(() => {
+    useWorkspace.setState({ selectedTradeId: null, activeBacktestId: null })
+  })
+
+  it('drops the selected trade when the run on screen changes', () => {
+    // A trade id belongs to one run; carried across, it would highlight
+    // nothing while claiming something was selected.
+    useWorkspace.getState().selectTrade('trade-1')
+    useWorkspace.getState().setActiveBacktestId('run-2')
+    expect(useWorkspace.getState().selectedTradeId).toBeNull()
+  })
+
+  it('drops the selected trade when the charted instrument changes', () => {
+    useWorkspace.setState({ primarySymbol: 'NQ' })
+    useWorkspace.getState().selectTrade('trade-1')
+    useWorkspace.getState().setPrimarySymbol('ES')
+    expect(useWorkspace.getState().selectedTradeId).toBeNull()
+  })
+})
+
+describe('overlay defaults', () => {
+  it('paints no detections until asked, but still runs them', () => {
+    // The clean chart Miles asked for: found either way, drawn only on
+    // request, so the search is never silently weakened by hiding them.
+    expect(DEFAULT_ICT_SETTINGS.enabled).toBe(true)
+    expect(DEFAULT_ICT_SETTINGS.showSwings).toBe(false)
+    expect(DEFAULT_ICT_SETTINGS.showGaps).toBe(false)
+    expect(DEFAULT_ICT_SETTINGS.showSmt).toBe(false)
+  })
+
+  it('keeps the evidence for a selected trade on', () => {
+    expect(DEFAULT_ICT_SETTINGS.showTradeEvidence).toBe(true)
   })
 })

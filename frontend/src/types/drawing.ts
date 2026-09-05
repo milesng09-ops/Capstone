@@ -10,8 +10,14 @@
 
 export type DrawingKind = 'trendline' | 'horizontal' | 'rectangle'
 
-/** Active pointer mode. `cursor` hands the mouse back to the chart. */
-export type ToolMode = 'cursor' | 'select' | DrawingKind
+/**
+ * Active pointer mode. `cursor` hands the mouse back to the chart.
+ *
+ * `select` and `window` are not drawings: they mark out the two ranges a
+ * backtest is made of -- the setup to look for, and the stretch of history to
+ * look for it in -- and both only mean anything on the primary chart.
+ */
+export type ToolMode = 'cursor' | 'select' | 'window' | DrawingKind
 
 export interface DrawingPoint {
   /** Unix milliseconds, snapped to a candle open. */
@@ -62,7 +68,8 @@ export type DrawingDraft = DistributiveOmit<Drawing, 'id' | 'createdAt'>
 
 export const TOOL_LABELS: Record<ToolMode, string> = {
   cursor: 'Cursor',
-  select: 'Select range',
+  select: 'Select setup',
+  window: 'Test window',
   trendline: 'Trend line',
   horizontal: 'Level',
   rectangle: 'Zone',
@@ -71,6 +78,9 @@ export const TOOL_LABELS: Record<ToolMode, string> = {
 export const TOOL_HINTS: Record<ToolMode, string> = {
   cursor: 'Pan and zoom. Click a drawing to select it, then drag it or its handles.',
   select: 'Drag across the candles that form the setup you want to test. Esc cancels.',
+  window:
+    'Drag across the stretch of history to test in. Candles outside it stay on the ' +
+    'chart, they are simply not searched. Esc cancels.',
   trendline: 'Drag from one point to another. Snaps to nearby swing points. Esc cancels.',
   horizontal: 'Press to preview a level, release to place it. Esc cancels.',
   rectangle: 'Drag to mark a zone. Esc cancels.',
@@ -98,4 +108,9 @@ export const DEFAULT_DRAWING_COLOR = DRAWING_COLORS[0]
  */
 export function isDragTool(tool: ToolMode): boolean {
   return tool !== 'cursor'
+}
+
+/** True for the range tools, which are meaningful only on the primary chart. */
+export function isRangeTool(tool: ToolMode): boolean {
+  return tool === 'select' || tool === 'window'
 }

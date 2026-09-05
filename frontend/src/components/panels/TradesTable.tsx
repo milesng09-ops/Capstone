@@ -4,6 +4,11 @@
  * This is also the table view that keeps the panel readable without colour:
  * each row states its outcome in words and carries a signed number, so the
  * green/red tint is reinforcement rather than the only signal.
+ *
+ * A row is a way into the chart. Picking one draws that trade's position box
+ * over the candles it was taken on and, with the evidence overlay on, the
+ * detections behind it -- which is the only way to check a row against the
+ * bars that produced it.
  */
 
 import { Badge } from '@/components/ui/primitives'
@@ -11,7 +16,13 @@ import { EXIT_REASON_LABELS, type Trade } from '@/types/backtest'
 import { cn } from '@/utils/cn'
 import { directionClass, formatDateTime, formatPercent, formatPrice } from '@/utils/format'
 
-export function TradesTable({ trades }: { trades: Trade[] }) {
+interface Props {
+  trades: Trade[]
+  selectedId: string | null
+  onSelect: (id: string | null) => void
+}
+
+export function TradesTable({ trades, selectedId, onSelect }: Props) {
   if (trades.length === 0) {
     return (
       <div className="grid h-full place-items-center p-4 text-center text-2xs text-muted-foreground">
@@ -41,10 +52,28 @@ export function TradesTable({ trades }: { trades: Trade[] }) {
           {trades.map((trade) => {
             const outcome =
               trade.net_return > 0 ? 'Win' : trade.net_return < 0 ? 'Loss' : 'Flat'
+            const selected = trade.id === selectedId
+            // Clicking the selected row again lets go of it, which is how you
+            // get the whole run back on the chart without hunting for a
+            // "clear" control.
+            const toggle = () => onSelect(selected ? null : trade.id)
             return (
               <tr
                 key={trade.id}
-                className="border-b border-border/50 transition-colors hover:bg-secondary/50"
+                tabIndex={0}
+                aria-selected={selected}
+                onClick={toggle}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()
+                  toggle()
+                }}
+                title="Show this trade on the chart"
+                className={cn(
+                  'cursor-pointer border-b border-border/50 transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                  selected ? 'bg-primary/15' : 'hover:bg-secondary/50',
+                )}
               >
                 <Td className="numeric text-muted-foreground">{trade.trade_number}</Td>
                 <Td>

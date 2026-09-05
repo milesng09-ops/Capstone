@@ -52,9 +52,17 @@ class Settings(BaseSettings):
     #: rejected call -- so the sixth request in a minute is worth not sending.
     massive_max_requests_per_minute: int = 5
     #: How long a request will wait for a free slot before giving up and
-    #: letting the chain fall through to Yahoo.  Long enough to absorb an
-    #: ordinary burst, short enough that nobody watches a spinner over it.
-    massive_throttle_max_wait_seconds: float = 8.0
+    #: letting the chain fall through to Yahoo.
+    #:
+    #: One full window, because that is the point at which waiting stops being
+    #: a gamble: with a sliding window, a slot is *guaranteed* to open within
+    #: ``60s`` of the oldest call, so anything short of that gives up on a
+    #: request it could have served.  The cost is a bars request that can sit
+    #: for up to a minute, which is the trade being made deliberately --
+    #: queueing for the preferred provider rather than quietly switching
+    #: source mid-session.  Lower it to favour a fast answer from Yahoo over a
+    #: slow one from Massive.
+    massive_throttle_max_wait_seconds: float = 60.0
 
     # ---- Storage ---------------------------------------------------------
     database_url: str = ""

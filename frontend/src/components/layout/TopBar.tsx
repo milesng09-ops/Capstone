@@ -67,8 +67,18 @@ export function TopBar() {
     ? `Last confirmed with the backend at ${formatDateTime(statusQuery.dataUpdatedAt)}.`
     : ''
 
+  /*
+   * One row on a laptop, two on a phone.
+   *
+   * The symbols and the intervals alone come to just over 300px, so at 375
+   * the provider badge was pushed off the end of a bar that scrolled sideways
+   * to reach it. That badge is the one that says whether a win rate came from
+   * real prices or from demo candles, and status you have to go looking for
+   * is status you will not look for. Wrapping spends about 28px of chart
+   * height to keep it in sight; scrolling spent nothing and hid it.
+   */
   return (
-    <header className="panel flex h-9 shrink-0 items-center gap-2 overflow-x-auto border-b border-border px-2">
+    <header className="panel flex min-h-9 shrink-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1 min-[600px]:h-9 min-[600px]:flex-nowrap min-[600px]:overflow-x-auto min-[600px]:py-0">
       <div className="flex shrink-0 items-center gap-1.5" title="Market Replay Lab">
         <Activity size={15} className="text-primary" />
         <span className="hidden text-xs font-semibold tracking-tight lg:block">
@@ -227,7 +237,18 @@ function LayoutPicker() {
   ]
 
   return (
-    <div className="flex items-center gap-px" role="group" aria-label="Chart layout">
+    /*
+     * Gone below 600px, where the grid forces everything to stack anyway: a
+     * control that cannot change what you are looking at is worse than no
+     * control, and these three were the first things pushed off the end of a
+     * 375px header. They come back with the width that makes them mean
+     * something.
+     */
+    <div
+      className="hidden items-center gap-px min-[600px]:flex"
+      role="group"
+      aria-label="Chart layout"
+    >
       {options.map(({ value, icon: Icon, title }) => (
         <Button
           key={value}

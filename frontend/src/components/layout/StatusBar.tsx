@@ -23,6 +23,9 @@ import { offsetLabel, TIME_ZONES, timeZoneLabel } from '@/utils/timezone'
 const DISCLAIMER =
   'Educational and research use only. Historical results do not guarantee future performance, and a backtest measures a rule against the past, not the market you will actually trade.'
 
+/** The same caveat, for a bar too narrow to finish the sentence. */
+const SHORT_DISCLAIMER = 'Educational use only — past results are not future performance.'
+
 /**
  * The running clock, and the zone every timestamp in the app is read against.
  *
@@ -104,11 +107,19 @@ export function StatusBar() {
         </>
       )}
 
+      {/*
+       * Two lengths of the same caveat. The full sentence was being cut off
+       * mid-clause below about 1200px -- a disclaimer truncated at "not the
+       * market you will" is worse than a short one that finishes, so under
+       * that width the short form runs instead and the full text stays on
+       * the tooltip. It shortens; it never disappears.
+       */}
       <p
-        className="ml-auto hidden shrink truncate pl-2 text-2xs text-muted-foreground lg:block"
+        className="ml-auto hidden shrink truncate pl-2 text-2xs text-muted-foreground sm:block"
         title={DISCLAIMER}
       >
-        {DISCLAIMER}
+        <span className="xl:hidden">{SHORT_DISCLAIMER}</span>
+        <span className="hidden xl:inline">{DISCLAIMER}</span>
       </p>
 
       <Clock />

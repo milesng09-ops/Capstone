@@ -39,7 +39,15 @@ export function TradesTable({ trades, selectedId, onSelect }: Props) {
 
   return (
     <div className="h-full overflow-auto">
-      <table className="w-full border-collapse text-2xs">
+      {/*
+       * A floor under the width, so the nine columns scroll sideways instead
+       * of being crushed into each other. `w-full` alone let the panel squeeze
+       * them until entry and exit prices ran together, which is the one thing
+       * this table exists to keep apart -- and dropping columns to fit would
+       * hide exactly the working every result here is meant to show. On a
+       * pane wider than the floor nothing changes.
+       */}
+      <table className="w-full min-w-[42rem] border-collapse text-2xs">
         <thead className="sticky top-0 z-10 bg-[hsl(var(--panel))]">
           <tr className="border-b border-border text-left">
             <Th className="w-8">#</Th>

@@ -165,3 +165,37 @@
       transition-colors hover:bg-primary/70;
   }
 }
+
+/*
+ * Touch targets.
+ *
+ * The whole app is built for a mouse, where a 24px button is a comfortable
+ * target and the density buys screen for candles. A finger is not a mouse:
+ * the same button is a coin toss, and the cost of missing here is picking the
+ * wrong tool mid-drawing. So on a device whose primary input is coarse --
+ * which is the actual question, not how wide the window happens to be --
+ * every control gets the 32px minimum that a fingertip needs.
+ *
+ * Height and width only. Nothing here changes type size, spacing or colour,
+ * so a touch layout is the mouse layout with room to hit it, not a second
+ * design to keep in step with the first.
+ */
+@media (pointer: coarse) {
+  button,
+  select,
+  [role='button'],
+  input:not([type='range']) {
+    min-height: 32px;
+  }
+
+  button,
+  select,
+  [role='button'] {
+    min-width: 32px;
+  }
+
+  /* The rails are 40px wide; a 32px floor inside them still fits. */
+  nav button {
+    min-height: 34px;
+  }
+}

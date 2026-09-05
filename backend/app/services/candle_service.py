@@ -19,6 +19,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
+from enum import Enum
 
 import anyio
 
@@ -54,6 +55,23 @@ from app.utils.intervals import get_interval, interval_ms, is_intraday
 from app.utils.timeutils import from_ms
 
 logger = logging.getLogger(__name__)
+
+
+class _PersistOutcome(str, Enum):
+    """Why a fetched range did or did not make it into the cache.
+
+    Three outcomes, because the caller has to explain the failure and the two
+    failures are unrelated: one is our own rule about not mixing generated
+    bars into real prices, the other is a provider that did not answer. Told
+    the wrong one, the user goes looking for a data-source setting when the
+    real answer is to wait.
+    """
+
+    STORED = "stored"
+    #: Generated bars offered for a series that already holds real prices.
+    DECLINED_GENERATED = "declined_generated"
+    #: The market was open and nothing came back.
+    NOT_SERVED = "not_served"
 
 
 class RequestTooLargeError(ValueError):
@@ -115,15 +133,20 @@ class CandleService:
             raise ValueError("'to' must be greater than 'from'")
 
         requested = TimeRange(start, end)
-        bars = estimate_bar_count(requested, interval)
+        # Sized against the interval that is actually FETCHED, not the one that
+        # was asked for. A daily chart is built from hourly bars, so counting
+        # dailies would let a two-year request through as 521 bars and then go
+        # and fetch twelve thousand.
+        store = storage_interval(interval)
+        bars = estimate_bar_count(requested, store)
         if bars > settings.max_bars_per_request:
             raise RequestTooLargeError(
-                f"Requested {bars:,} bars of {interval} data. "
+                f"Requested {bars:,} bars of {store} data to build {interval}. "
                 f"The limit is {settings.max_bars_per_request:,} bars per request - "
                 "narrow the date range or use a larger interval."
             )
 
-        if is_intraday(interval):
+        if is_intraday(store):
             span_days = requested.length / (24 * 60 * 60 * 1000)
             if span_days > settings.max_intraday_history_days:
                 raise RequestTooLargeError(
@@ -294,18 +317,22 @@ class CandleService:
                     bars, store_interval, timezone=instrument.timezone
                 )
 
-            stored = await anyio.to_thread.run_sync(
+            outcome = await anyio.to_thread.run_sync(
                 self._persist, symbol, store_interval, bars, result.provider, gap
             )
-            if not stored:
-                # Generated bars offered for a series of real prices. The range
-                # stays unfilled, which the response reports as incomplete --
-                # a gap in the chart is honest, and a stretch of invented
-                # candles drawn as though it were the market is not.
+            if outcome is not _PersistOutcome.STORED:
+                # The range stays unfilled either way, which the response
+                # reports as incomplete -- a gap in the chart is honest. But
+                # the two reasons want different responses from the user, so
+                # they are not given the same sentence.
                 failed_gaps += 1
                 fallback_reason = fallback_reason or (
                     "This range could not be fetched from a market-data provider, and "
                     "generated data is not mixed into a series of real prices."
+                    if outcome is _PersistOutcome.DECLINED_GENERATED
+                    else "The provider returned no candles for part of this window "
+                    "while the market was open, so that stretch is still missing. "
+                    "It will be asked for again."
                 )
                 continue
 
@@ -352,7 +379,7 @@ class CandleService:
         bars: list[Candle],
         provider: str,
         gap: TimeRange,
-    ) -> bool:
+    ) -> "_PersistOutcome":
         """Store a fetched range, unless storing it would mix two kinds of data.
 
         A series is either real or generated, never both. Demo bars are a
@@ -366,7 +393,7 @@ class CandleService:
         bars arriving for a series that still holds generated ones -- evicts
         them, because that is the moment the stand-in stops being needed.
 
-        Returns whether the range was stored.
+        Returns which of the three outcomes applied.
         """
 
         with session_scope() as session:
@@ -378,7 +405,7 @@ class CandleService:
                         symbol,
                         store_interval,
                     )
-                    return False
+                    return _PersistOutcome.DECLINED_GENERATED
             elif bars:
                 evicted = drop_demo_candles(session, symbol, store_interval)
                 if evicted:
@@ -400,26 +427,27 @@ class CandleService:
             # permanent hole: `missing_ranges` never asks again, and the API
             # then reports the short series as a clean, complete fetch. That
             # is a chart which disagrees with the exchange and cannot say why.
-            served_end = CandleService._served_end(symbol, store_interval, bars, gap)
-            if served_end is None:
+            served = CandleService._served_span(symbol, store_interval, bars, gap)
+            if served is None:
                 # The market was open and the provider gave us nothing. Leave
                 # the range uncovered so the next request asks again.
-                return False
+                return _PersistOutcome.NOT_SERVED
 
             # Only mark the settled part of the window as covered so the
             # forming bar is always refreshed on the next request.
+            served_start, served_end = served
             coverage_end = cacheable_end(served_end, store_interval)
-            if coverage_end >= gap.start:
+            if coverage_end >= served_start:
                 record_coverage(
-                    session, symbol, store_interval, gap.start, coverage_end, provider
+                    session, symbol, store_interval, served_start, coverage_end, provider
                 )
-        return True
+        return _PersistOutcome.STORED
 
     @staticmethod
-    def _served_end(
+    def _served_span(
         symbol: str, store_interval: str, bars: list[Candle], gap: TimeRange
-    ) -> int | None:
-        """How much of ``gap`` this response may be recorded as covering.
+    ) -> tuple[int, int] | None:
+        """Which part of ``gap`` this response may be recorded as covering.
 
         ``None`` means "record nothing": the market was open and the provider
         returned nothing, so the range is still owed to us.
@@ -429,18 +457,23 @@ class CandleService:
         and re-asking would spend the quota re-confirming the market was shut.
         Over a stretch the market was open it means we were not served, and
         covering it would bake the hole in permanently.
+
+        With bars, the span is the bars' own extent -- **both** ends. Yahoo
+        trims a long intraday request at the *old* end, so taking the gap's
+        start on trust would record the years it never sent as covered, which
+        is the same permanent hole by the other door. Coverage rows are
+        end-inclusive, so the last bar's own timestamp is the end: claiming an
+        interval beyond it would mark a bar that was never fetched.
         """
 
         if not bars:
             instrument = get_instrument(symbol)
             if has_trading_session(gap.start, gap.end, tz_name=instrument.timezone):
                 return None
-            return gap.end
+            return gap.start, gap.end
 
-        # Trust the bars, not the request: a provider that trimmed the window
-        # to its own retention limit has covered only as far as it answered.
-        last_bar_end = max(bar.time for bar in bars) + interval_ms(store_interval)
-        return min(gap.end, last_bar_end)
+        times = [bar.time for bar in bars]
+        return max(gap.start, min(times)), min(gap.end, max(times))
 
     @staticmethod
     def _load_from_cache(symbol: str, store_interval: str, window: TimeRange) -> list[Candle]:
@@ -525,25 +558,40 @@ class CandleService:
 #: partly another is described by the worst of them, because that is the only
 #: reading that cannot mislead: a win rate measured over a window that is one
 #: third generated is not two thirds trustworthy, it is untrustworthy.
+#:
+#: An unrecognised quality ranks *below* all of these rather than in the
+#: middle, so a value added here later cannot accidentally outrank "demo" and
+#: suppress the warning that goes with it.
 _QUALITY_RANK: dict[str, int] = {
     "demo": 0,
     "partial": 1,
-    "unknown": 2,
-    "cached": 3,
-    "delayed": 4,
-    "live": 5,
+    "cached": 2,
+    "delayed": 3,
+    "live": 4,
 }
+_UNKNOWN_QUALITY_RANK = -1
 
 
 def _merge_provenance(chunks: list[BarsResult], bars: list[Candle]) -> BarsResult:
     """One verdict describing every slice of a stitched series."""
 
-    weakest = min(chunks, key=lambda chunk: _QUALITY_RANK.get(chunk.quality, 2))
+    weakest = min(
+        chunks, key=lambda chunk: _QUALITY_RANK.get(chunk.quality, _UNKNOWN_QUALITY_RANK)
+    )
     reasons = [chunk.fallback_reason for chunk in chunks if chunk.fallback_reason]
     retries = [
         chunk.retry_after_seconds for chunk in chunks if chunk.retry_after_seconds is not None
     ]
-    providers = sorted({chunk.provider for chunk in chunks})
+
+    # One name, never a list. `provider` is compared for equality all over the
+    # codebase -- the demo badge on a saved run, the mixed-source guard on an
+    # SMT comparison -- and a joined string silently fails every one of those
+    # checks: "demo, yahoo" is not "demo", so the badge that says the numbers
+    # are synthetic stops appearing on exactly the runs that need it. The
+    # weakest slice's provider is the honest single answer, because it is the
+    # one that decided the quality reported alongside it.
+    providers = {chunk.provider for chunk in chunks}
+    provider = weakest.provider if len(providers) > 1 else next(iter(providers))
 
     return chunks[-1].model_copy(
         update={
@@ -556,10 +604,22 @@ def _merge_provenance(chunks: list[BarsResult], bars: list[Candle]) -> BarsResul
             # sooner just spends another call to be refused again.
             "retry_after_seconds": max(retries) if retries else None,
             # De-duplicated in order, so one reason repeated across ten slices
-            # reads as one sentence rather than ten.
-            "fallback_reason": " ".join(dict.fromkeys(reasons)) or None,
-            "provider": providers[0] if len(providers) == 1 else ", ".join(providers),
+            # reads as one sentence rather than ten. Joined on a full stop,
+            # since these are sentences and a bare space runs them together.
+            "fallback_reason": _join_reasons(reasons),
+            "provider": provider,
         }
+    )
+
+
+def _join_reasons(reasons: list[str]) -> str | None:
+    """Distinct reasons as one readable paragraph."""
+
+    unique = [reason.strip() for reason in dict.fromkeys(reasons) if reason.strip()]
+    if not unique:
+        return None
+    return " ".join(
+        reason if reason.endswith((".", "!", "?")) else f"{reason}." for reason in unique
     )
 
 

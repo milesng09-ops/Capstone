@@ -19,9 +19,16 @@
  * The window runs to the *next* hour boundary so the bar currently forming is
  * always inside it. Asking for a little more than exists costs nothing: there
  * are no bars in the future to return.
+ *
+ * **The hour has to be watched, not just read.** `Date.now()` inside a memo is
+ * only sampled when a dependency changes, so a window computed once at mount
+ * would sit still while the market moved -- a session left open overnight
+ * would still be charting yesterday. The bucket is therefore state, advanced
+ * by a timer that fires on the hour, and it is the only thing besides the
+ * range length that the window depends on.
  */
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useWorkspace } from '@/store/workspace'
 
@@ -38,8 +45,33 @@ export function buildRange(rangeDays: number, now = Date.now()): ChartRange {
   return { from: to - rangeDays * DAY_MS, to }
 }
 
+/** Which hour it is, re-read as each one closes. */
+function useHourBucket(): number {
+  const [bucket, setBucket] = useState(() => Math.floor(Date.now() / HOUR_MS))
+
+  useEffect(() => {
+    // Scheduled to the boundary rather than polled, so the window turns over
+    // when the hour does instead of up to an hour late.
+    let timer = 0
+    const schedule = () => {
+      timer = window.setTimeout(
+        () => {
+          setBucket(Math.floor(Date.now() / HOUR_MS))
+          schedule()
+        },
+        HOUR_MS - (Date.now() % HOUR_MS) + 1_000,
+      )
+    }
+    schedule()
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  return bucket
+}
+
 export function useChartRange(): ChartRange {
   const rangeDays = useWorkspace((state) => state.rangeDays)
+  const hour = useHourBucket()
 
-  return useMemo(() => buildRange(rangeDays), [rangeDays])
+  return useMemo(() => buildRange(rangeDays, hour * HOUR_MS), [rangeDays, hour])
 }

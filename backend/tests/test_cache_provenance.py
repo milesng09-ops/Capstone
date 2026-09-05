@@ -32,6 +32,7 @@ from app.database.repository import (
 )
 from app.models.db_models import Base
 from app.models.domain import Candle
+from app.services.candle_service import _PersistOutcome
 
 HOUR = 3_600_000
 T0 = 1_780_000_000_000
@@ -191,7 +192,7 @@ class TestWhatTheServiceStores:
     @staticmethod
     def _persist(
         symbol: str, bars: list[Candle], provider: str, span: TimeRange | None = None
-    ) -> bool:
+    ):
         from app.services.candle_service import CandleService
 
         return CandleService._persist(
@@ -203,7 +204,9 @@ class TestWhatTheServiceStores:
 
         stored = self._persist("ES", candles("ES", 3, start=T0 + 50 * HOUR), DEMO_PROVIDER)
 
-        assert stored is False
+        # Named, not just falsy: the caller explains this failure to the user,
+        # and it must not be confused with a provider that did not answer.
+        assert stored is _PersistOutcome.DECLINED_GENERATED
         # Nothing written, and no coverage claiming the range was filled --
         # the caller reports it as a range it could not fetch instead.
         assert providers_in_range(session, "ES", "1h", T0, T0 + 100 * HOUR) == {"massive"}
@@ -213,7 +216,7 @@ class TestWhatTheServiceStores:
         # The no-API-key path has to keep working.
         stored = self._persist("YM", candles("YM", 3), DEMO_PROVIDER)
 
-        assert stored is True
+        assert stored is _PersistOutcome.STORED
         assert providers_in_range(session, "YM", "1h", T0, T0 + 3 * HOUR) == {
             DEMO_PROVIDER
         }
@@ -223,21 +226,21 @@ class TestWhatTheServiceStores:
 
         stored = self._persist("NQ", candles("NQ", 2, start=T0 + 50 * HOUR), "massive")
 
-        assert stored is True
+        assert stored is _PersistOutcome.STORED
         assert providers_in_range(session, "NQ", "1h", T0, T0 + 100 * HOUR) == {"massive"}
 
     def test_an_empty_range_over_a_closed_market_is_recorded_as_covered(self, session):
         # Saturday, read off a calendar: the market is shut all day, so an
         # empty answer is the right one. The range is settled and must not be
         # refetched on every request.
-        assert self._persist("ES", [], "massive", CLOSED_WEEKEND) is True
+        assert self._persist("ES", [], "massive", CLOSED_WEEKEND) is _PersistOutcome.STORED
         assert load_coverage(session, "ES", "1h") != []
 
     def test_an_empty_range_over_an_open_market_is_not_recorded_as_covered(self, session):
         # Thursday afternoon to Monday evening -- four trading days. Nothing
         # came back, so we were not served; covering it would make the hole
         # permanent, because `missing_ranges` would never ask again.
-        assert self._persist("ES", [], "massive") is False
+        assert self._persist("ES", [], "massive") is _PersistOutcome.NOT_SERVED
         assert load_coverage(session, "ES", "1h") == []
 
     def test_coverage_stops_where_the_bars_stop(self, session):
@@ -245,9 +248,22 @@ class TestWhatTheServiceStores:
         # for part of the range. Covering the whole of it would record data we
         # never received as permanently present.
         span = TimeRange(T0, T0 + 100 * HOUR)
-        assert self._persist("ES", candles("ES", 3), "yahoo", span) is True
+        assert self._persist("ES", candles("ES", 3), "yahoo", span) is _PersistOutcome.STORED
 
         covered = load_coverage(session, "ES", "1h")
         assert covered != []
-        # Three hourly bars from T0, so coverage ends one bar after the last.
-        assert max(entry.end for entry in covered) == T0 + 3 * HOUR
+        # Coverage rows are end-inclusive, so the last bar's own timestamp is
+        # the end. Claiming an interval beyond it would mark the next bar --
+        # which was never fetched -- as permanently present.
+        assert max(entry.end for entry in covered) == T0 + 2 * HOUR
+
+    def test_coverage_starts_where_the_bars_start(self, session):
+        # Yahoo trims a long intraday request at the *old* end and says
+        # nothing. Taking the requested start on trust would record the years
+        # it never sent as covered -- the same permanent hole by the other
+        # door.
+        span = TimeRange(T0 - 50 * HOUR, T0 + 100 * HOUR)
+        assert self._persist("ES", candles("ES", 3), "yahoo", span) is _PersistOutcome.STORED
+
+        covered = load_coverage(session, "ES", "1h")
+        assert min(entry.start for entry in covered) == T0

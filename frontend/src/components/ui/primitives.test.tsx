@@ -64,3 +64,34 @@ describe('Disclosure', () => {
     expect(screen.getByText('the setup')).toBeInTheDocument()
   })
 })
+
+describe('Disclosure opening on request', () => {
+  function Host({ requested }: { requested: boolean }) {
+    return (
+      <Disclosure label="Sizing" defaultOpen={requested}>
+        <p>the calculator</p>
+      </Disclosure>
+    )
+  }
+
+  it('opens when it is asked to, not only when it mounts', async () => {
+    // "Open when a setup is selected" is a prop that becomes true later, and
+    // useState reads its argument once -- so the section used to stay shut
+    // and the behaviour the caller asked for was simply absent.
+    const { rerender } = render(<Host requested={false} />)
+    expect(screen.queryByText('the calculator')).not.toBeInTheDocument()
+
+    rerender(<Host requested />)
+    expect(await screen.findByText('the calculator')).toBeInTheDocument()
+  })
+
+  it('leaves a section the reader folded away folded', async () => {
+    // Reaching in to close it would be the same bug wearing the other hat.
+    const { rerender } = render(<Host requested />)
+    await userEvent.click(screen.getByRole('button', { name: /sizing/i }))
+    expect(screen.queryByText('the calculator')).not.toBeInTheDocument()
+
+    rerender(<Host requested />)
+    expect(screen.queryByText('the calculator')).not.toBeInTheDocument()
+  })
+})

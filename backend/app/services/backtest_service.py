@@ -214,7 +214,7 @@ class BacktestService:
             all_trades,
             total_matches=len(found),
             skipped_matches=skipped_total,
-            data_quality=self._data_quality_notes(usable, query, interval),
+            data_quality=self._data_quality_notes(series, usable, query, interval),
             extra_assumptions=self._extra_assumptions(query, request),
         )
 
@@ -348,7 +348,10 @@ class BacktestService:
 
     @staticmethod
     def _data_quality_notes(
-        series: list[_SymbolSeries], query, interval: str
+        series: list[_SymbolSeries],
+        usable: list[_SymbolSeries],
+        query,
+        interval: str,
     ) -> list[str]:
         notes: list[str] = []
         providers = sorted({item.provider for item in series})
@@ -363,6 +366,10 @@ class BacktestService:
                 "Demo data is synthetic and generated from a fixed seed. "
                 "It is not actual market data."
             )
+        # Over every series fetched, not only the ones long enough to search:
+        # a symbol dropped for a short fetch is the strongest evidence that
+        # the window was incomplete, and it is exactly the one that would be
+        # missing from a list of what got used.
         if any(item.quality == "partial" for item in series):
             notes.append(
                 "Part of the requested history could not be fetched, so this run "
@@ -370,10 +377,21 @@ class BacktestService:
                 "once the provider recovers and run it again before trusting the "
                 "win rate."
             )
+        searched = {item.symbol for item in usable}
         for item in series:
-            notes.append(
-                f"{item.symbol}: {len(item.candles):,} {interval} candles used for the search."
-            )
+            if item.symbol in searched:
+                notes.append(
+                    f"{item.symbol}: {len(item.candles):,} {interval} candles used for the "
+                    "search."
+                )
+            else:
+                # Dropped for holding too few candles. Saying so matters more
+                # than the ones that worked: a run quietly measured on one
+                # market instead of two is not the run that was asked for.
+                notes.append(
+                    f"{item.symbol}: only {len(item.candles):,} {interval} candles were "
+                    "available, too few to search, so this market was left out of the run."
+                )
             if item.fallback_reason:
                 notes.append(f"{item.symbol}: {item.fallback_reason}")
         notes.append(

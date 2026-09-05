@@ -1,6 +1,13 @@
 /** Small styled building blocks shared across the workspace. */
 
-import { useState, forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  forwardRef,
+  type ButtonHTMLAttributes,
+  type ReactNode,
+} from 'react'
 import { ChevronRight } from 'lucide-react'
 
 import { cn } from '@/utils/cn'
@@ -91,6 +98,20 @@ export function Disclosure({
   children: ReactNode
 }) {
   const [open, setOpen] = useState(defaultOpen)
+
+  /*
+   * `useState` reads its argument once, so a `defaultOpen` that becomes true
+   * later -- "open when a setup is selected" -- did nothing at all: the
+   * section stayed shut and the behaviour the caller asked for was simply
+   * absent. Opening on the transition honours it. It only ever opens: a
+   * section the user has deliberately folded away stays folded, since
+   * reaching in to close it would be the same bug wearing the other hat.
+   */
+  const wasRequested = useRef(defaultOpen)
+  useEffect(() => {
+    if (defaultOpen && !wasRequested.current) setOpen(true)
+    wasRequested.current = defaultOpen
+  }, [defaultOpen])
 
   return (
     <section className={cn(divided && 'border-t border-border pt-2.5')}>

@@ -67,6 +67,7 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
   const tool = useWorkspace((state) => state.tool)
   const drawingColor = useWorkspace((state) => state.drawingColor)
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
+  const showSwings = useWorkspace((state) => state.ict.showSwings)
   const drawingCount = useWorkspace((state) => state.drawings.length)
 
   const setTool = useWorkspace((state) => state.setTool)
@@ -101,14 +102,25 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
 
       <ColorPicker value={drawingColor} onChange={setDrawingColor} />
 
+      {/*
+        Snapping only reaches swing points the chart is drawing, so with them
+        hidden -- which is the default -- this control has nothing to act on.
+        Left merely lit it was a switch that visibly did nothing; disabled and
+        explained, it says what to turn on to make it work.
+      */}
       <Button
         size="icon"
         variant="toolbar"
-        data-active={snapToSwings}
+        data-active={snapToSwings && showSwings}
+        disabled={!showSwings}
         onClick={() => setSnapToSwings(!snapToSwings)}
-        title="Snap drawings to nearby swing points"
+        title={
+          showSwings
+            ? 'Snap drawings to nearby swing points'
+            : 'Snapping needs the swing points on screen — turn them on under Analysis'
+        }
         aria-label="Snap to swing points"
-        aria-pressed={snapToSwings}
+        aria-pressed={snapToSwings && showSwings}
       >
         <Magnet size={15} />
       </Button>

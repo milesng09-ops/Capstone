@@ -18,7 +18,7 @@
  * fixed here.
  */
 
-import { useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { ChevronUp, PanelRightClose, SlidersHorizontal, Radar, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -75,6 +75,17 @@ export function Workspace() {
    */
   const narrow = useMediaQuery(NARROW_QUERY)
   /**
+   * Which panel the sheet is showing, when there is a sheet.
+   *
+   * Deliberately *not* the stored choice. Narrowing the window used to write
+   * the docked panel away to null, and that null was persisted -- so dragging
+   * a window narrow and wide again lost the panel for good, and reopening the
+   * app started with it gone. The stored value is the user's answer for a
+   * window wide enough to hold a column; the sheet gets its own, transient,
+   * one.
+   */
+  const [sheetTab, setSheetTab] = useState<SidePanel | null>(null)
+  /**
    * Narrower still, and two 40px rails are a fifth of the screen spent before
    * a single candle is drawn. So the right-hand rail stops being a column and
    * folds into the left one, which is already there for the drawing tools.
@@ -82,30 +93,15 @@ export function Workspace() {
    * floating over the candles to buy them.
    */
   const cramped = useMediaQuery(CRAMPED_QUERY)
-  // What was open when the window got too narrow for it, so that widening
-  // the window again puts back the panel it took away rather than leaving
-  // the user to work out where it went.
-  const displaced = useRef<SidePanel | null>(null)
-  // The latest tab, readable from an effect that must not re-run when it
-  // changes. Recording it inside the `setTab` updater instead would be a
-  // side effect in a function React is free to call twice -- and does, in
-  // development, which is how it came to be read back as null.
-  const tabRef = useRef(tab)
-  tabRef.current = tab
-
-  useEffect(() => {
-    if (narrow) {
-      displaced.current = tabRef.current
-      setTab(null)
-      return
-    }
-    const restore = displaced.current
-    displaced.current = null
-    if (restore) setTab(restore)
-  }, [narrow])
-
+  // Narrowing no longer has to remember and restore anything: the stored
+  // choice is simply not consulted while there is no room for a column, and
+  // is still there when there is again.
   const dockedPanel = tab != null && !narrow
-  const sheetPanel = tab != null && narrow
+  const sheetPanel = sheetTab != null && narrow
+
+  // One pair of rail buttons drives whichever of the two exists.
+  const activePanel = narrow ? sheetTab : tab
+  const pickPanel = narrow ? setSheetTab : setTab
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
@@ -119,7 +115,7 @@ export function Workspace() {
 
       <div className="relative flex min-h-0 min-w-0 flex-1">
         <ToolRail
-          footer={cramped ? <PanelTabs tab={tab} onPick={setTab} /> : undefined}
+          footer={cramped ? <PanelTabs tab={activePanel} onPick={pickPanel} /> : undefined}
         />
 
         {/*
@@ -227,15 +223,17 @@ export function Workspace() {
               // there is nothing on this edge to clear.
               cramped ? 'right-0' : 'right-10',
             )}
-            aria-label={tab === 'analysis' ? 'Analysis' : 'Strategy'}
+            aria-label={sheetTab === 'analysis' ? 'Analysis' : 'Strategy'}
           >
             <div className="flex h-7 shrink-0 items-center justify-between border-b border-border px-2">
-              <span className="label-caps">{tab === 'analysis' ? 'Analysis' : 'Strategy'}</span>
+              <span className="label-caps">
+                {sheetTab === 'analysis' ? 'Analysis' : 'Strategy'}
+              </span>
               <Button
                 size="icon"
                 variant="ghost"
                 className="h-5 w-5"
-                onClick={() => setTab(null)}
+                onClick={() => setSheetTab(null)}
                 title="Close the panel"
                 aria-label="Close the panel"
               >
@@ -243,7 +241,7 @@ export function Workspace() {
               </Button>
             </div>
             <div className="min-h-0 flex-1">
-              {tab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
+              {sheetTab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
             </div>
           </aside>
         )}
@@ -259,7 +257,7 @@ export function Workspace() {
             aria-label="Side panels"
             className="panel flex w-10 shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-border py-1.5"
           >
-            <PanelTabs tab={tab} onPick={setTab} />
+            <PanelTabs tab={activePanel} onPick={pickPanel} />
           </nav>
         )}
       </div>

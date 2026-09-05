@@ -88,34 +88,30 @@ const SNAP_RADIUS = 14
 const MIN_DRAG_PX = 4
 
 /**
- * Would a shape spanning these two points be big enough to see?
+ * Does a shape between these two points actually cover anything?
  *
- * Asked in pixels, of the coordinates that will actually be stored, because
- * that is the thing the user has to be able to find again. A trend line needs
- * length in either direction; a zone needs both, since one collapsed side
- * leaves a shape with no area to paint.
+ * Asked in **market** coordinates rather than pixels, because the answer must
+ * not depend on how far the chart happens to be zoomed: a zone that is valid
+ * at one zoom and refused at another is a tool that behaves differently on
+ * Tuesday. A pixel test also has to pick a threshold, and any threshold
+ * refuses shapes somebody legitimately wanted -- a thin price band is a real
+ * annotation, not a mistake.
+ *
+ * So the only thing rejected is genuine degeneracy. A line needs to move in
+ * some direction; a zone needs to span both a stretch of time and a range of
+ * price, because collapsed on either side it has no area at all. That is the
+ * shape that painted nothing while staying selectable -- the bug this guards.
+ * The pixel-level "was this a drag or a stray click" question is separate,
+ * and `gesture.moved` already answers it.
  */
 function isVisiblySized(
   kind: 'trendline' | 'rectangle',
   from: DrawingPoint,
   to: DrawingPoint,
-  xOf: (ms: number) => number | null,
-  yOf: (price: number) => number | null,
 ): boolean {
-  const x1 = xOf(from.time)
-  const x2 = xOf(to.time)
-  const y1 = yOf(from.price)
-  const y2 = yOf(to.price)
-  if (x1 == null || x2 == null || y1 == null || y2 == null) return false
-
-  const width = Math.abs(x2 - x1)
-  const height = Math.abs(y2 - y1)
-  // A line only needs length, in whichever direction it runs. A zone needs
-  // both: collapsed on one side it has no area, and a zone with no area is
-  // not a zone the user can find again.
-  return kind === 'trendline'
-    ? Math.hypot(width, height) > MIN_DRAG_PX
-    : width > MIN_DRAG_PX && height > MIN_DRAG_PX
+  const spansTime = from.time !== to.time
+  const spansPrice = from.price !== to.price
+  return kind === 'trendline' ? spansTime || spansPrice : spansTime && spansPrice
 }
 
 /** Narrowest a position box may be drawn, so a one-bar trade is still visible. */
@@ -480,7 +476,7 @@ export function ChartOverlay({
         y,
       }
     },
-    [candles, handle, ict, xOf],
+    [candles, handle, ict, ictSettings.showSwings, xOf],
   )
 
   /**
@@ -671,7 +667,16 @@ export function ChartOverlay({
       // A press that never moved is a plain click. The shape is already
       // selected, and writing it back unchanged would spend an undo step on
       // nothing.
-      if (active.moved) onUpdateDrawing(active.original.id, active.preview)
+      if (!active.moved) return
+      // Dragging a corner past its opposite collapses the shape exactly as a
+      // degenerate first drag does, and with the same result: something
+      // stored, selectable and invisible. Refuse the write and leave the
+      // drawing as it was, which is still on screen to try again from.
+      const shape = active.preview
+      if (shape.kind !== 'horizontal' && !isVisiblySized(shape.kind, shape.from, shape.to)) {
+        return
+      }
+      onUpdateDrawing(active.original.id, shape)
     }
 
     window.addEventListener('pointermove', move)
@@ -732,6 +737,15 @@ export function ChartOverlay({
         Math.abs(resolved.x - gesture.startX) > MIN_DRAG_PX ||
         Math.abs(resolved.y - gesture.startY) > MIN_DRAG_PX,
     })
+  }
+
+  const handlePointerCancel = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (!pendingRef.current) return
+    updatePending(null)
+    onGestureComplete(false)
   }
 
   const handlePointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -795,7 +809,7 @@ export function ChartOverlay({
       // the drag threshold. The shape was then stored with `from === to`: it
       // painted nothing, yet stayed selected, clickable and listed, which is
       // exactly "the zone is not showing, but I can delete it".
-      if (!isVisiblySized(tool, gesture.start, gesture.current, xOfDrawing, handle.priceToY)) {
+      if (!isVisiblySized(tool, gesture.start, gesture.current)) {
         onGestureComplete(false)
         return
       }
@@ -848,7 +862,10 @@ export function ChartOverlay({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
+      // A cancelled pointer -- the browser taking over for a scroll or a
+      // system gesture -- is an interruption, not a release. Running the
+      // commit path on it placed a shape the user never finished drawing.
+      onPointerCancel={handlePointerCancel}
     />
   )
 }

@@ -231,6 +231,34 @@ describe('drawing a shape', () => {
     expect(onCreateDrawing).not.toHaveBeenCalled()
   })
 
+  it('allows a thin zone, because a price band is a real annotation', () => {
+    // The guard asks whether the shape covers any time and any price, not
+    // whether it clears a pixel threshold -- otherwise the same drag would be
+    // accepted at one zoom and refused at another.
+    const { canvas, onCreateDrawing } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 400, 101))
+    fireEvent(canvas, pointer('pointerup', 400, 101))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'rectangle' }),
+    )
+  })
+
+  it('abandons rather than commits when the browser takes the pointer', () => {
+    // A pointercancel is an interruption, not a release. Running the commit
+    // path on it placed a shape the user never finished drawing.
+    const { canvas, onCreateDrawing, onGestureComplete } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 240, 180))
+    fireEvent(canvas, new MouseEvent('pointercancel', { bubbles: true, cancelable: true }))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+    expect(onGestureComplete).toHaveBeenCalledWith(false)
+  })
+
   it('keeps the tool held when a gesture places nothing', () => {
     // Losing the tool on a misfire makes a mis-click cost two things: the
     // shape, and the tool you have to go and pick again.

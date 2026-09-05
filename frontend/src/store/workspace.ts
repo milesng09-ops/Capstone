@@ -430,10 +430,32 @@ export const useWorkspace = create<WorkspaceState>()(
        * because by then it is a choice rather than a leftover.
        */
       migrate: (persisted, version) => {
-        const state = persisted as { ict?: IctSettings } | undefined
-        if (!state || version >= 2) return state
+        const state = persisted as
+          | { ict?: IctSettings; interval?: Interval; rangeDays?: RangeDays }
+          | undefined
+        if (!state) return state
+
+        /*
+         * A stored range outlives the rule that bounds it.
+         *
+         * The clamp lives in `setInterval`/`setRangeDays`, which a rehydrate
+         * never calls -- so a workspace saved as 5m over 180 days came back
+         * exactly as saved and every chart showed the bar-count error the
+         * clamp exists to prevent. Anyone who hit that combination before
+         * upgrading would be stuck in it, since the way out is to press the
+         * interval button that was already selected.
+         */
+        const clamped =
+          state.interval && state.rangeDays
+            ? {
+                ...state,
+                rangeDays: Math.min(state.rangeDays, longestRange(state.interval)),
+              }
+            : state
+
+        if (version >= 2) return clamped
         return {
-          ...state,
+          ...clamped,
           ict: {
             ...DEFAULT_ICT_SETTINGS,
             ...state.ict,

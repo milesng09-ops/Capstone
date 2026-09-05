@@ -127,8 +127,16 @@ def trading_hours_between(
         return 0.0
 
     tz = ZoneInfo(tz_name)
-    start = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
-    end = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+    try:
+        start = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+        end = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        # A timestamp the platform cannot represent -- pre-1970 or centuries
+        # out. This function only ever sizes a request, so the proportional
+        # answer is good enough and a bad date deserves the ordinary "too
+        # large" refusal rather than a 500.
+        span_hours = (end_ms - start_ms) / 3_600_000
+        return span_hours * TRADING_HOURS_PER_WEEK / (24 * 7)
 
     whole_weeks, remainder = divmod(end - start, _WEEK)
     hours = float(whole_weeks * TRADING_HOURS_PER_WEEK)

@@ -312,11 +312,21 @@ export function useChartInstance({ id, candles, interval, precision, onHoverBar 
    * Refitting on the changes that invalidate the view -- and not on a refetch,
    * which would throw away a zoom the user chose -- is what stops every
    * timeframe click needing a manual reset.
+   *
+   * Keyed on the *data*, not on the interval alone. The interval prop changes
+   * as soon as the button is pressed, while the candles for it are still in
+   * flight, so refitting there fits the outgoing series and then never runs
+   * again once the real ones arrive -- leaving exactly the view it was meant
+   * to fix. Waiting until the candles change and comparing against the last
+   * interval actually fitted refits once, against the bars it is describing.
    */
+  const fittedIntervalRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!ready) return
+    if (!ready || candles.length === 0) return
+    if (fittedIntervalRef.current === interval) return
+    fittedIntervalRef.current = interval
     resetView()
-  }, [interval, ready, resetView])
+  }, [candles, interval, ready, resetView])
 
   return { containerRef, handle: handleRef.current, ready, resetView }
 }

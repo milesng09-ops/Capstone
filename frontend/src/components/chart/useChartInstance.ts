@@ -27,6 +27,7 @@ import {
   fromChartTime,
   logicalFromTime,
   readChartPalette,
+  timeAxisOptions,
   timeFromLogical,
   toChartTime,
   withAlpha,
@@ -38,6 +39,7 @@ import {
   isApplyingSync,
   registerChart,
 } from '@/lib/chartSync'
+import { useTimeZone } from '@/store/workspace'
 import type { Candle } from '@/types/market'
 
 export interface ChartHandle {
@@ -76,10 +78,14 @@ export function useChartInstance({ id, candles, precision, onHoverBar }: Options
   const candlesRef = useRef<Candle[]>(candles)
   const hoverRef = useRef(onHoverBar)
 
+  const timeZone = useTimeZone()
+  const zoneRef = useRef(timeZone)
+
   const [ready, setReady] = useState(false)
 
   candlesRef.current = candles
   hoverRef.current = onHoverBar
+  zoneRef.current = timeZone
 
   const notify = useCallback(() => {
     for (const listener of listenersRef.current) listener()
@@ -95,6 +101,7 @@ export function useChartInstance({ id, candles, precision, onHoverBar }: Options
 
     const chart = createChart(container, {
       ...baseChartOptions(palette, precision),
+      ...timeAxisOptions(zoneRef.current),
       layout: {
         ...baseChartOptions(palette, precision).layout,
         background: { type: ColorType.Solid, color: 'transparent' },
@@ -187,6 +194,13 @@ export function useChartInstance({ id, candles, precision, onHoverBar }: Options
     // the user's zoom away on every refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, precision, notify])
+
+  // ---- time zone -------------------------------------------------------
+  // Relabelling the axis is an options change rather than a rebuild, so the
+  // zoom, the drawings and the data all stay exactly where they are.
+  useEffect(() => {
+    chartRef.current?.applyOptions(timeAxisOptions(timeZone))
+  }, [timeZone, ready])
 
   // ---- data ------------------------------------------------------------
   useEffect(() => {

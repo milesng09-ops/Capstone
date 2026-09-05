@@ -18,7 +18,7 @@ import { Badge, EmptyState, Metric, Spinner } from '@/components/ui/primitives'
 import { SegmentedControl } from '@/components/ui/fields'
 import { useBacktestResult } from '@/hooks/useBacktest'
 import { findMatch, findTrade } from '@/lib/trades'
-import { useWorkspace } from '@/store/workspace'
+import { useTimeZone, useWorkspace } from '@/store/workspace'
 import type { BacktestResult } from '@/types/backtest'
 import { cn } from '@/utils/cn'
 import {
@@ -40,6 +40,10 @@ const TABS: { value: ResultTab; label: string }[] = [
 ]
 
 export function ResultsPanel() {
+  // Timestamps below are drawn in the zone chosen in the status bar;
+  // reading it here is what re-renders them when that changes.
+  useTimeZone()
+
   const activeId = useWorkspace((state) => state.activeBacktestId)
   const selectedTradeId = useWorkspace((state) => state.selectedTradeId)
   const selectTrade = useWorkspace((state) => state.selectTrade)

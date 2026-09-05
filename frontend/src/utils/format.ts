@@ -1,46 +1,83 @@
 /** Formatting helpers for a dense financial UI. */
 
 import type { Interval } from '@/types/market'
+import { LOCAL_TIME_ZONE, resolveTimeZone, type TimeZoneId } from '@/utils/timezone'
 
-const DATE_TIME = new Intl.DateTimeFormat('en-GB', {
-  year: 'numeric',
-  month: 'short',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
+/**
+ * Every timestamp in the app is drawn in the zone picked in the status bar.
+ *
+ * Holding it in a module variable rather than threading it through each call
+ * leaves the fifteen-odd places that print a time unchanged; the store sets it,
+ * and the components that show timestamps subscribe to `timeZone` so they
+ * re-render when it moves.
+ */
+let activeZone: TimeZoneId = LOCAL_TIME_ZONE
 
-const DATE_ONLY = new Intl.DateTimeFormat('en-GB', {
-  year: 'numeric',
-  month: 'short',
-  day: '2-digit',
-})
-
-const TIME_ONLY = new Intl.DateTimeFormat('en-GB', {
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
-
-export function formatDateTime(ms: number): string {
-  if (!Number.isFinite(ms)) return '--'
-  return DATE_TIME.format(new Date(ms))
+export function setFormattingTimeZone(zone: TimeZoneId): void {
+  activeZone = zone
 }
 
-export function formatDate(ms: number): string {
-  if (!Number.isFinite(ms)) return '--'
-  return DATE_ONLY.format(new Date(ms))
+type Shape = 'dateTime' | 'date' | 'time' | 'clock'
+
+const SHAPES: Record<Shape, Intl.DateTimeFormatOptions> = {
+  dateTime: {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  },
+  date: { year: 'numeric', month: 'short', day: '2-digit' },
+  time: { hour: '2-digit', minute: '2-digit', hour12: false },
+  clock: { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false },
 }
 
-export function formatTime(ms: number): string {
+// Building an Intl formatter is expensive enough to matter in a table of a few
+// hundred trades, so one is kept per shape and zone.
+const FORMATTERS = new Map<string, Intl.DateTimeFormat>()
+
+function formatter(shape: Shape, zone: TimeZoneId): Intl.DateTimeFormat {
+  const key = `${shape}|${zone}`
+  let cached = FORMATTERS.get(key)
+  if (!cached) {
+    cached = new Intl.DateTimeFormat('en-GB', {
+      timeZone: resolveTimeZone(zone),
+      ...SHAPES[shape],
+    })
+    FORMATTERS.set(key, cached)
+  }
+  return cached
+}
+
+export function formatDateTime(ms: number, zone: TimeZoneId = activeZone): string {
   if (!Number.isFinite(ms)) return '--'
-  return TIME_ONLY.format(new Date(ms))
+  return formatter('dateTime', zone).format(new Date(ms))
+}
+
+export function formatDate(ms: number, zone: TimeZoneId = activeZone): string {
+  if (!Number.isFinite(ms)) return '--'
+  return formatter('date', zone).format(new Date(ms))
+}
+
+export function formatTime(ms: number, zone: TimeZoneId = activeZone): string {
+  if (!Number.isFinite(ms)) return '--'
+  return formatter('time', zone).format(new Date(ms))
+}
+
+/** `HH:MM:SS` -- the running clock in the status bar. */
+export function formatClock(ms: number, zone: TimeZoneId = activeZone): string {
+  if (!Number.isFinite(ms)) return '--:--:--'
+  return formatter('clock', zone).format(new Date(ms))
 }
 
 /** Pick date-only vs date+time based on how coarse the interval is. */
-export function formatForInterval(ms: number, interval: Interval): string {
-  return interval === '1d' ? formatDate(ms) : formatDateTime(ms)
+export function formatForInterval(
+  ms: number,
+  interval: Interval,
+  zone: TimeZoneId = activeZone,
+): string {
+  return interval === '1d' ? formatDate(ms, zone) : formatDateTime(ms, zone)
 }
 
 export function formatPrice(value: number, precision = 2): string {

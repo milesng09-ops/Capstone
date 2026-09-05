@@ -23,7 +23,7 @@ import { Badge, Button, Disclosure, Spinner } from '@/components/ui/primitives'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars } from '@/hooks/useMarketData'
 import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
-import { useChartedSymbols, useWorkspace } from '@/store/workspace'
+import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
 import type {
   Direction,
   EntryType,
@@ -65,6 +65,10 @@ const TARGETS: { value: TakeProfitType; label: string }[] = [
 ]
 
 export function StrategyPanel() {
+  // Timestamps below are drawn in the zone chosen in the status bar;
+  // reading it here is what re-renders them when that changes.
+  useTimeZone()
+
   const range = useChartRange()
   const interval = useWorkspace((state) => state.interval)
   const primary = useWorkspace((state) => state.primarySymbol)

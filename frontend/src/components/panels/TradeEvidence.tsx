@@ -18,7 +18,7 @@ import { Badge } from '@/components/ui/primitives'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useIct } from '@/hooks/useMarketData'
 import { collectEvidence, evidenceWindow, hasEvidence } from '@/lib/trades'
-import { useChartedSymbols, useWorkspace } from '@/store/workspace'
+import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
 import {
   EXIT_REASON_LABELS,
   type PatternMatch,
@@ -42,6 +42,10 @@ export function TradeEvidence({
   rules: TradeRules
 }) {
   const range = useChartRange()
+  // Timestamps below are drawn in the zone chosen in the status bar;
+  // reading it here is what re-renders them when that changes.
+  useTimeZone()
+
   const interval = useWorkspace((state) => state.interval)
   const settings = useWorkspace((state) => state.ict)
   const charted = useChartedSymbols()

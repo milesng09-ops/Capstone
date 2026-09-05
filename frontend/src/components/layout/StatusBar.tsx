@@ -12,12 +12,68 @@
  * it was measured against the past.
  */
 
+import { useEffect, useState } from 'react'
+
 import { SegmentedControl } from '@/components/ui/fields'
 import { RANGE_PRESETS, useWorkspace, type RangeDays } from '@/store/workspace'
 import { TOOL_HINTS, TOOL_LABELS } from '@/types/drawing'
+import { formatClock } from '@/utils/format'
+import { offsetLabel, TIME_ZONES, timeZoneLabel } from '@/utils/timezone'
 
 const DISCLAIMER =
   'Educational and research use only. Historical results do not guarantee future performance, and a backtest measures a rule against the past, not the market you will actually trade.'
+
+/**
+ * The running clock, and the zone every timestamp in the app is read against.
+ *
+ * It ticks for a reason beyond decoration. The same bar is a different hour to
+ * a trader in London and one in Chicago, and a session boundary read off the
+ * wrong clock is a wrong answer; a clock that moves says which one the charts
+ * are using right now. The offset beside it is computed from the current
+ * instant, so it follows the twice-yearly daylight-saving shift that a fixed
+ * label would get wrong for weeks at a time.
+ */
+function Clock() {
+  const timeZone = useWorkspace((state) => state.timeZone)
+  const setTimeZone = useWorkspace((state) => state.setTimeZone)
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    // Tick on the second boundary rather than every 1000ms from mount, so the
+    // seconds never sit a fraction behind the wall clock they claim to show.
+    let timer = 0
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        setNow(Date.now())
+        schedule()
+      }, 1000 - (Date.now() % 1000))
+    }
+    schedule()
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  return (
+    <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
+      <span className="numeric text-2xs tabular-nums text-foreground">
+        {formatClock(now, timeZone)}
+      </span>
+      <span className="text-2xs text-muted-foreground">{offsetLabel(timeZone, now)}</span>
+      <select
+        aria-label="Time zone"
+        title={`Charts and timestamps are shown in ${timeZoneLabel(timeZone)}`}
+        className="cursor-pointer rounded bg-transparent px-1 py-0.5 text-2xs text-muted-foreground outline-none hover:bg-secondary hover:text-foreground"
+        value={timeZone}
+        onChange={(event) => setTimeZone(event.target.value)}
+      >
+        {TIME_ZONES.map((zone) => (
+          <option key={zone.value} value={zone.value}>
+            {zone.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
 
 export function StatusBar() {
   const rangeDays = useWorkspace((state) => state.rangeDays)
@@ -54,6 +110,8 @@ export function StatusBar() {
       >
         {DISCLAIMER}
       </p>
+
+      <Clock />
     </footer>
   )
 }

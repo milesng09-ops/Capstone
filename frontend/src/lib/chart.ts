@@ -17,10 +17,13 @@ import type {
   ChartOptions,
   DeepPartial,
   HistogramData,
+  TickMarkType,
   UTCTimestamp,
 } from 'lightweight-charts'
 
 import type { Candle } from '@/types/market'
+import { formatDateTime } from '@/utils/format'
+import { resolveTimeZone, type TimeZoneId } from '@/utils/timezone'
 
 /** Milliseconds -> the seconds-based timestamp the chart library expects. */
 export function toChartTime(ms: number): UTCTimestamp {
@@ -156,6 +159,56 @@ export function readChartPalette(): ChartPalette {
     bear: read('--bear', FALLBACK_PALETTE.bear),
     accent: read('--primary', FALLBACK_PALETTE.accent),
     muted: read('--muted-foreground', FALLBACK_PALETTE.muted),
+  }
+}
+
+/**
+ * Axis labels and the crosshair time, drawn in the chosen zone.
+ *
+ * Lightweight Charts has no time zone of its own: it renders every timestamp
+ * against the browser's clock, so the axis could disagree with the status bar
+ * and with every date printed in the panels. Formatting the ticks ourselves is
+ * the whole fix -- the data stays in UTC seconds, only the labels move.
+ */
+export function timeAxisOptions(zone: TimeZoneId): DeepPartial<ChartOptions> {
+  const timeZone = resolveTimeZone(zone)
+  const shape = (options: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat('en-GB', { timeZone, ...options })
+
+  const year = shape({ year: 'numeric' })
+  const month = shape({ month: 'short', year: '2-digit' })
+  const day = shape({ day: '2-digit', month: 'short' })
+  const time = shape({ hour: '2-digit', minute: '2-digit', hour12: false })
+  const seconds = shape({
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+
+  return {
+    timeScale: {
+      // TickMarkType: 0 Year, 1 Month, 2 DayOfMonth, 3 Time, 4 TimeWithSeconds.
+      tickMarkFormatter: (chartTime: UTCTimestamp, tickMarkType: TickMarkType) => {
+        const date = new Date(fromChartTime(chartTime))
+        switch (tickMarkType) {
+          case 0:
+            return year.format(date)
+          case 1:
+            return month.format(date)
+          case 2:
+            return day.format(date)
+          case 4:
+            return seconds.format(date)
+          default:
+            return time.format(date)
+        }
+      },
+    },
+    localization: {
+      timeFormatter: (chartTime: UTCTimestamp) =>
+        formatDateTime(fromChartTime(chartTime), zone),
+    },
   }
 }
 

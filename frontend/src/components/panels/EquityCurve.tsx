@@ -16,6 +16,7 @@
  * this panel carries its sign and a word as well as a colour.
  */
 
+import { useTimeZone } from '@/store/workspace'
 import { useMemo } from 'react'
 import {
   Area,
@@ -33,6 +34,10 @@ import type { EquityPoint } from '@/types/backtest'
 import { formatDateTime, formatPercent } from '@/utils/format'
 
 export function EquityCurve({ points }: { points: EquityPoint[] }) {
+  // Timestamps below are drawn in the zone chosen in the status bar;
+  // reading it here is what re-renders them when that changes.
+  useTimeZone()
+
   const palette = useMemo(() => readChartPalette(), [])
 
   if (points.length === 0) {

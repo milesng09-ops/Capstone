@@ -11,6 +11,7 @@
  * bars that produced it.
  */
 
+import { useTimeZone } from '@/store/workspace'
 import { Badge } from '@/components/ui/primitives'
 import { EXIT_REASON_LABELS, type Trade } from '@/types/backtest'
 import { cn } from '@/utils/cn'
@@ -23,6 +24,10 @@ interface Props {
 }
 
 export function TradesTable({ trades, selectedId, onSelect }: Props) {
+  // Timestamps below are drawn in the zone chosen in the status bar;
+  // reading it here is what re-renders them when that changes.
+  useTimeZone()
+
   if (trades.length === 0) {
     return (
       <div className="grid h-full place-items-center p-4 text-center text-2xs text-muted-foreground">

@@ -21,7 +21,12 @@ import { SegmentedControl } from '@/components/ui/fields'
 import { Badge, Button, Spinner } from '@/components/ui/primitives'
 import { useBacktestHistory } from '@/hooks/useBacktest'
 import { useProviderStatus } from '@/hooks/useMarketData'
-import { useChartedSymbols, useWorkspace, type ChartLayout } from '@/store/workspace'
+import {
+  useChartedSymbols,
+  useTimeZone,
+  useWorkspace,
+  type ChartLayout,
+} from '@/store/workspace'
 import {
   INTERVAL_LABELS,
   INTERVALS,
@@ -33,6 +38,10 @@ import {
 import { formatDateTime, formatNumber } from '@/utils/format'
 
 export function TopBar() {
+  // Timestamps below are drawn in the zone chosen in the status bar;
+  // reading it here is what re-renders them when that changes.
+  useTimeZone()
+
   const statusQuery = useProviderStatus()
   const historyQuery = useBacktestHistory()
 

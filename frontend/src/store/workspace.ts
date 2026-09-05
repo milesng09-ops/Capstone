@@ -27,6 +27,8 @@ import {
   type TradeRules,
 } from '@/types/backtest'
 import type { Interval, SelectionRange, SymbolKey, TimeWindow } from '@/types/market'
+import { setFormattingTimeZone } from '@/utils/format'
+import { isKnownTimeZone, LOCAL_TIME_ZONE, type TimeZoneId } from '@/utils/timezone'
 
 /** History loaded into the chart, in days. */
 export const RANGE_PRESETS = [30, 60, 90, 180, 365, 730] as const
@@ -62,6 +64,8 @@ interface WorkspaceState {
   rangeDays: RangeDays
   /** How the charted markets are arranged against each other. */
   chartLayout: ChartLayout
+  /** The clock every timestamp in the app is drawn against. */
+  timeZone: TimeZoneId
 
   // ---- analysis -------------------------------------------------------
   ict: IctSettings
@@ -108,6 +112,7 @@ interface WorkspaceState {
   setInterval: (interval: Interval) => void
   setRangeDays: (days: RangeDays) => void
   setChartLayout: (layout: ChartLayout) => void
+  setTimeZone: (zone: TimeZoneId) => void
 
   updateIct: (patch: Partial<IctSettings>) => void
 
@@ -165,6 +170,7 @@ export const useWorkspace = create<WorkspaceState>()(
       interval: '1h',
       rangeDays: 180,
       chartLayout: 'stacked',
+      timeZone: LOCAL_TIME_ZONE,
 
       ict: DEFAULT_ICT_SETTINGS,
 
@@ -222,6 +228,13 @@ export const useWorkspace = create<WorkspaceState>()(
       setRangeDays: (rangeDays) => set({ rangeDays }),
 
       setChartLayout: (chartLayout) => set({ chartLayout }),
+
+      setTimeZone: (timeZone) => {
+        // The formatters read a module variable rather than the store, so it
+        // has to move in the same breath as the state components watch.
+        setFormattingTimeZone(timeZone)
+        set({ timeZone })
+      },
 
       updateIct: (patch) => set((state) => ({ ict: { ...state.ict, ...patch } })),
 
@@ -370,6 +383,7 @@ export const useWorkspace = create<WorkspaceState>()(
         interval: state.interval,
         rangeDays: state.rangeDays,
         chartLayout: state.chartLayout,
+        timeZone: state.timeZone,
         ict: state.ict,
         drawings: state.drawings,
         drawingColor: state.drawingColor,
@@ -382,6 +396,27 @@ export const useWorkspace = create<WorkspaceState>()(
     },
   ),
 )
+
+// `persist` rehydrates as this module is evaluated, so the restored zone has
+// to reach the formatters before anything renders. A zone that has since left
+// the list -- or a hand-edited one -- falls back to the machine clock rather
+// than throwing inside `Intl` on every timestamp.
+if (!isKnownTimeZone(useWorkspace.getState().timeZone)) {
+  useWorkspace.setState({ timeZone: LOCAL_TIME_ZONE })
+}
+setFormattingTimeZone(useWorkspace.getState().timeZone)
+
+/**
+ * Subscribe to the active time zone.
+ *
+ * Components that print timestamps call this even where they ignore the value:
+ * the formatters read a module variable, so without a store subscription a
+ * change of zone would leave yesterday's labels on screen until something else
+ * happened to re-render them.
+ */
+export function useTimeZone(): TimeZoneId {
+  return useWorkspace((state) => state.timeZone)
+}
 
 /** Every symbol the workspace currently charts, primary first. */
 export function useChartedSymbols(): SymbolKey[] {

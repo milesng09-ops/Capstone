@@ -12,15 +12,19 @@ rather than queued, which keeps server load predictable.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass
 
 import anyio
+from pydantic import ValidationError
 
 from app.analysis import find_fair_value_gaps, find_smt_divergences, find_swing_points
 from app.analysis.conditions import detectors_at_entry, unmet_condition
 from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade, entry_bar
+from app.backtesting.attempts import configuration_key
 from app.backtesting.metrics import compute_metrics
 from app.backtesting.significance import (
     BASELINE_OVERSAMPLE,
@@ -31,7 +35,12 @@ from app.backtesting.significance import (
     summarise_baseline,
 )
 from app.config import get_settings
-from app.database.repository import create_backtest, get_matches, get_trades
+from app.database.repository import (
+    configurations_against_selection,
+    create_backtest,
+    get_matches,
+    get_trades,
+)
 from app.database.session import session_scope
 from app.models.db_models import BacktestRow, PatternMatchRow, TradeRow
 from app.models.domain import Candle
@@ -263,6 +272,13 @@ class BacktestService:
             )
         )
 
+        # ---- how many times this window has been asked ----------------
+        # Counted before this run is written, then this configuration added,
+        # so a rerun of something already tried does not inflate the tally.
+        configurations = await anyio.to_thread.run_sync(
+            lambda: self._configurations_tried(request)
+        )
+
         summary = compute_metrics(
             all_trades,
             total_matches=len(found),
@@ -272,6 +288,7 @@ class BacktestService:
             baseline=baseline,
             condition_filtered_matches=filtered_total,
             conditions_applied=self._conditions_applied(request),
+            configurations_tried=configurations,
         )
 
         # ---- persist ---------------------------------------------------
@@ -576,6 +593,41 @@ class BacktestService:
             "by then, and the random-entry baseline is held to the same conditions."
         )
         return lines
+
+    def _configurations_tried(self, request: BacktestRequest) -> int:
+        """Distinct configurations run against a window overlapping this one.
+
+        Includes this one, so the first run of a fresh window reports 1.
+        Rerunning something already tried does not move the number: the search
+        is deterministic, so it is the same draw at the same question, not a
+        new one.
+        """
+
+        with session_scope() as session:
+            prior = configurations_against_selection(
+                session,
+                primary_symbol=request.primary_symbol,
+                interval=request.interval,
+                selection_start=request.selection.start_time,
+                selection_end=request.selection.end_time,
+            )
+
+        keys = set()
+        for payload in prior:
+            try:
+                keys.add(configuration_key(BacktestRequest.model_validate(payload)))
+            except ValidationError:
+                # A run recorded under an older shape of the request. It was
+                # still an attempt at this window, so it counts -- identified
+                # by the payload itself rather than dropped for not parsing.
+                keys.add(
+                    hashlib.sha256(
+                        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()[:32]
+                )
+
+        keys.add(configuration_key(request))
+        return len(keys)
 
     def _draw_baseline(
         self,

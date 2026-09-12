@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import statistics
 
+from app.backtesting.attempts import family_wise_probability
 from app.backtesting.engine import ASSUMPTIONS, SimulatedTrade
 from app.backtesting.significance import (
     Baseline,
@@ -52,6 +53,7 @@ def compute_metrics(
     baseline: Baseline | None = None,
     condition_filtered_matches: int = 0,
     conditions_applied: list[str] | None = None,
+    configurations_tried: int = 1,
 ) -> BacktestSummary:
     assumptions = list(ASSUMPTIONS) + list(extra_assumptions or [])
     assumptions.extend(conditions_applied or [])
@@ -88,6 +90,8 @@ def compute_metrics(
             win_rate_high=0.0,
             baseline=_baseline_out(baseline),
             baseline_p_value=None,
+            configurations_tried=configurations_tried,
+            family_wise_p_value=None,
             condition_filtered_matches=condition_filtered_matches,
             conditions_applied=list(conditions_applied or []),
             same_bar_ambiguity_count=0,
@@ -139,6 +143,20 @@ def compute_metrics(
             6,
         )
 
+    family_wise = (
+        round(family_wise_probability(p_value, configurations_tried), 6)
+        if p_value is not None
+        else None
+    )
+    if configurations_tried > 1:
+        assumptions.append(
+            f"{configurations_tried} distinct configurations have been run against this "
+            "window. The single-test p-value does not account for that; the family-wise "
+            "figure beside it does, treating them as independent, which they are not -- "
+            "so the real number is lower than shown. Ideas discarded before being run "
+            "were attempts too, and nothing can count those."
+        )
+
     return BacktestSummary(
         total_matches=total_matches,
         trades_executed=len(trades),
@@ -167,6 +185,8 @@ def compute_metrics(
         win_rate_high=high,
         baseline=_baseline_out(baseline),
         baseline_p_value=p_value,
+        configurations_tried=configurations_tried,
+        family_wise_p_value=family_wise,
         condition_filtered_matches=condition_filtered_matches,
         conditions_applied=list(conditions_applied or []),
         sample_size_warning=warning,

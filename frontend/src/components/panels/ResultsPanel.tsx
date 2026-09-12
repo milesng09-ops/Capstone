@@ -260,8 +260,14 @@ function matchesHint(summary: NonNullable<BacktestResult['summary']>): string {
  *
  * Two facts, in the order they should be read: what an arbitrary entry paid
  * under these same rules, and how often chance alone matches the result. The
- * second is deliberately phrased as odds rather than a p-value -- "1 in 3" is
- * harder to mistake for a small number than "0.36".
+ * second is phrased as odds rather than a p-value -- "1 in 3" is harder to
+ * mistake for a small number than "0.36".
+ *
+ * Once more than one configuration has been tried on this window, the odds
+ * quoted are the family-wise ones. Showing the single-test figure there would
+ * be the tool's most flattering possible lie: every individual run looks
+ * honest, and the twentieth 1-in-20 result is arithmetic rather than a
+ * finding.
  */
 function baselineCaption(
   summary: NonNullable<BacktestResult['summary']>,
@@ -270,10 +276,18 @@ function baselineCaption(
   if (!baseline) return null
 
   const head = `Random entry ${formatNumber(baseline.win_rate, 1)}%`
-  const p = summary.baseline_p_value
+  const repeated = summary.configurations_tried > 1
+  const p = repeated ? summary.family_wise_p_value : summary.baseline_p_value
   if (p == null) return head
-  if (p < 0.001) return `${head} · chance alone: under 1 in 1,000`
-  return `${head} · chance alone: 1 in ${formatInteger(Math.round(1 / p))}`
+
+  const odds =
+    p < 0.001
+      ? 'under 1 in 1,000'
+      : `1 in ${formatInteger(Math.round(1 / p))}`
+  const scope = repeated
+    ? ` across ${formatInteger(summary.configurations_tried)} configurations tried here`
+    : ''
+  return `${head} · chance alone: ${odds}${scope}`
 }
 
 /**

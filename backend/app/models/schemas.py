@@ -358,6 +358,12 @@ class BacktestSummary(BaseModel):
     #: Matches dropped because they did not meet the detector conditions.
     #: Separate from `skipped_matches`, which counts matches that could not be
     #: simulated at all -- a match filtered out on purpose is not a failure.
+    #: Distinct configurations run against a window overlapping this one,
+    #: this run included. 1 means this is the first thing tried here.
+    configurations_tried: int = 1
+    #: Chance that *any* of those configurations looks this good by chance.
+    #: `None` when there is no baseline to compare against.
+    family_wise_p_value: float | None = None
     condition_filtered_matches: int = 0
     #: One line per condition that was required, for the notes.
     conditions_applied: list[str] = Field(default_factory=list)

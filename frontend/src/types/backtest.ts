@@ -168,6 +168,13 @@ export interface BacktestSummary {
    * the same selection.
    */
   baseline_p_value: number | null
+  /**
+   * Distinct configurations run against a window overlapping this one, this
+   * run included. 1 means this is the first thing tried here.
+   */
+  configurations_tried: number
+  /** Chance that *any* of those configurations looks this good by chance. */
+  family_wise_p_value: number | null
   /** Matches found, then dropped for not meeting the detector conditions. */
   condition_filtered_matches: number
   /** One line per condition that was required. */

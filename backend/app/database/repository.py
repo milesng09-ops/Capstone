@@ -464,3 +464,35 @@ def delete_backtest(session: Session, backtest_id: str) -> bool:
 def _chunks(items: list[dict], size: int):
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def configurations_against_selection(
+    session: Session,
+    *,
+    primary_symbol: str,
+    interval: str,
+    selection_start: int,
+    selection_end: int,
+) -> list[dict]:
+    """Configurations of every past run whose selection overlaps this one.
+
+    Overlap rather than an exact match, using the same predicate the rest of
+    the codebase uses for two ranges touching.  A window nudged by one bar is
+    the same hunt over the same stretch of history, and counting it as a fresh
+    start is how the tally would end up flattering: drag the edge, get a clean
+    slate, quote the single-test p-value again.
+
+    Returns the raw configuration payloads.  Turning them into keys is the
+    caller's job, because the key definition lives with the thing that knows
+    what changes an answer.
+    """
+
+    rows = session.execute(
+        select(BacktestRow.configuration_json).where(
+            BacktestRow.primary_symbol == primary_symbol,
+            BacktestRow.interval == interval,
+            BacktestRow.selection_start <= selection_end,
+            BacktestRow.selection_end >= selection_start,
+        )
+    ).all()
+    return [row[0] for row in rows if isinstance(row[0], dict)]

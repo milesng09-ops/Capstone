@@ -57,6 +57,8 @@ const SUMMARY: BacktestSummary = {
     seed: 10532413940444770088,
   },
   baseline_p_value: 0.355816,
+  configurations_tried: 1,
+  family_wise_p_value: 0.355816,
   condition_filtered_matches: 0,
   conditions_applied: [],
   sample_size_warning: null,
@@ -146,5 +148,36 @@ describe('runs saved before any of this existed', () => {
     show(legacy)
     expect(screen.queryByText(/Random entry/)).not.toBeInTheDocument()
     expect(screen.queryByText(/chance alone/)).not.toBeInTheDocument()
+  })
+})
+
+describe('once the same window has been asked more than once', () => {
+  it('quotes the family-wise odds, not the single-test ones', () => {
+    // The flattering version of this panel shows 1 in 33 here. Ten draws at
+    // that threshold clear it a quarter of the time on their own.
+    show({
+      ...SUMMARY,
+      baseline_p_value: 0.03,
+      configurations_tried: 10,
+      family_wise_p_value: 0.2626,
+    })
+    expect(screen.getByText(/1 in 4/)).toBeInTheDocument()
+    expect(screen.queryByText(/1 in 33/)).not.toBeInTheDocument()
+  })
+
+  it('says how many configurations the odds cover', () => {
+    show({
+      ...SUMMARY,
+      baseline_p_value: 0.03,
+      configurations_tried: 10,
+      family_wise_p_value: 0.2626,
+    })
+    expect(screen.getByText(/across 10 configurations tried here/)).toBeInTheDocument()
+  })
+
+  it('leaves a first run reading as a single test', () => {
+    show({ ...SUMMARY, baseline_p_value: 0.03, configurations_tried: 1, family_wise_p_value: 0.03 })
+    expect(screen.getByText(/1 in 33/)).toBeInTheDocument()
+    expect(screen.queryByText(/configurations tried/)).not.toBeInTheDocument()
   })
 })

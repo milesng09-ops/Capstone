@@ -546,3 +546,63 @@ describe('repainting keeps up with the pointer', () => {
     raf.mockRestore()
   })
 })
+
+describe('taking a backtest range off the chart', () => {
+  const selection = {
+    symbol: 'NQ',
+    start_time: 900_000,
+    end_time: 903_600,
+    source_interval: '1h' as const,
+  }
+  const testWindow = { start_time: 900_000, end_time: 903_600 }
+
+  it('clears the setup when its tab is pressed', () => {
+    const { canvas, onSelectionChange } = setup({ selection })
+
+    canvas.parentElement!.dispatchEvent(pointer('pointerdown', 20, 12))
+
+    expect(onSelectionChange).toHaveBeenCalledWith(null)
+  })
+
+  it('clears the test window from its own tab, not the setup', () => {
+    const { canvas, onSelectionChange, onTestWindowChange } = setup({
+      selection,
+      testWindow,
+    })
+
+    canvas.parentElement!.dispatchEvent(pointer('pointerdown', 20, 30))
+
+    expect(onTestWindowChange).toHaveBeenCalledWith(null)
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('does not clear anything when the press lands elsewhere', () => {
+    const { canvas, onSelectionChange } = setup({ selection })
+
+    canvas.parentElement!.dispatchEvent(pointer('pointerdown', 300, 200))
+
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('leaves a drawing under the tab alone', () => {
+    // The tab is small and deliberately placed; losing it to whatever happens
+    // to lie under the corner would put the user back where they started.
+    const { canvas, onSelectionChange, onSelectDrawing } = setup({
+      selection,
+      drawings: [{ ...level, price: 12 }],
+    })
+
+    canvas.parentElement!.dispatchEvent(pointer('pointerdown', 20, 12))
+
+    expect(onSelectionChange).toHaveBeenCalledWith(null)
+    expect(onSelectDrawing).not.toHaveBeenCalled()
+  })
+
+  it('offers no tabs on a comparison chart, which defines no ranges', () => {
+    const { canvas, onSelectionChange } = setup({ selection, allowSelection: false })
+
+    canvas.parentElement!.dispatchEvent(pointer('pointerdown', 20, 12))
+
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+})

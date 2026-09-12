@@ -59,7 +59,11 @@ import { magnetPrice, nearestBarTime, snapWithinBars } from '@/lib/chart'
 import {
   handlePositions,
   hitKey,
+  hitTestChips,
   hitTestDrawings,
+  rangeChip,
+  CHIP_HEIGHT_PX,
+  type RangeChip,
   projectDrawing,
   resizeDrawing,
   translateDrawing,
@@ -354,6 +358,31 @@ export function ChartOverlay({
   // flight may already have invalidated.
   const projectedRef = useRef<ProjectedPosition[]>([])
 
+  /*
+   * The dismiss tabs on the backtest ranges.
+   *
+   * Stacked at the pane's left rather than at each band's own edge: the two
+   * commonly start within a few pixels of each other, and two tabs sharing a
+   * corner are two targets you cannot tell apart. Fixed, they are always in
+   * the same place and always separate.
+   *
+   * Computed here rather than inside `draw` because their position depends on
+   * nothing the chart projects -- only on which ranges exist. That keeps what
+   * is clickable defined even in a frame that painted nothing.
+   */
+  const rangeChips = useMemo<RangeChip[]>(() => {
+    if (!allowSelection) return []
+    const chips: RangeChip[] = []
+    if (selection) chips.push(rangeChip('selection', 'setup', 6, 6))
+    if (testWindow) {
+      chips.push(rangeChip('window', 'test window', 6, 6 + CHIP_HEIGHT_PX + 4))
+    }
+    return chips
+  }, [allowSelection, selection, testWindow])
+
+  const chipsRef = useRef<RangeChip[]>(rangeChips)
+  chipsRef.current = rangeChips
+
   // ---- rendering -------------------------------------------------------
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -424,6 +453,15 @@ export function ChartOverlay({
 
     if (selection) {
       paintSelection(ctx, selection, xOf, height, palette.accent)
+    }
+
+    for (const chip of rangeChips) {
+      paintRangeChip(
+        ctx,
+        chip,
+        palette,
+        chip.kind === 'selection' ? palette.accent : palette.muted,
+      )
     }
 
     if (ict && ictSettings.showSmt) {
@@ -510,6 +548,7 @@ export function ChartOverlay({
     ictSettings.showSwings,
     selectedDrawingId,
     selectedTradeId,
+    rangeChips,
     selection,
     testWindow,
     tool,
@@ -639,7 +678,10 @@ export function ChartOverlay({
       // React renders should not cost a render.
       if (!hit) {
         const { x, y } = offsetOf(event)
-        parent.style.cursor = hitTestPositions(projectedRef.current, x, y) ? 'pointer' : ''
+        const clickable =
+          hitTestChips(chipsRef.current, x, y) != null ||
+          hitTestPositions(projectedRef.current, x, y) != null
+        parent.style.cursor = clickable ? 'pointer' : ''
       }
     }
 
@@ -653,6 +695,24 @@ export function ChartOverlay({
       // The legend floats in this same element. Pressing a badge or the fit
       // button is not a press on the chart and should not disturb anything.
       if (event.target instanceof Element && event.target.closest('button, a, input')) {
+        return
+      }
+
+      // A range tab is tested before anything else on the surface. It is
+      // small, deliberately placed, and the only way to take a band off the
+      // chart by pointer -- losing it to a drawing that happens to lie under
+      // the corner would put the user straight back where they started.
+      const rect = canvas.getBoundingClientRect()
+      const chip = hitTestChips(
+        chipsRef.current,
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+      )
+      if (chip) {
+        event.preventDefault()
+        event.stopPropagation()
+        if (chip.kind === 'selection') onSelectionChange(null)
+        else onTestWindowChange(null)
         return
       }
 
@@ -734,6 +794,8 @@ export function ChartOverlay({
     hitTestAt,
     onSelectDrawing,
     onSelectTrade,
+    onSelectionChange,
+    onTestWindowChange,
     pointAt,
     updateDrag,
     updateHover,
@@ -1074,6 +1136,53 @@ function paintGap(
   ctx.lineWidth = 1
   ctx.setLineDash(gap.filled ? [3, 3] : [])
   ctx.strokeRect(left + 0.5, top + 0.5, Math.max(1, right - left) - 1, height - 1)
+  ctx.restore()
+}
+
+/**
+ * A range's tab: what it is, and a cross that removes it.
+ *
+ * Drawn on the canvas rather than as a DOM button because it has to sit in
+ * the chart's own coordinate space over the candles, and because everything
+ * else on this surface is already painted here -- a floating element would be
+ * a second layer to keep in step with the first.
+ */
+function paintRangeChip(
+  ctx: CanvasRenderingContext2D,
+  chip: RangeChip,
+  palette: ChartPalette,
+  accent: string,
+) {
+  ctx.save()
+
+  ctx.globalAlpha = 0.88
+  ctx.fillStyle = palette.background
+  ctx.fillRect(chip.x, chip.y, chip.width, chip.height)
+
+  ctx.globalAlpha = 0.75
+  ctx.strokeStyle = accent
+  ctx.lineWidth = 1
+  ctx.strokeRect(chip.x + 0.5, chip.y + 0.5, chip.width - 1, chip.height - 1)
+
+  ctx.globalAlpha = 0.95
+  ctx.fillStyle = palette.text
+  ctx.font = '9px ui-monospace, monospace'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(chip.label, chip.x + 5, chip.y + chip.height / 2)
+
+  // The cross, drawn as two strokes rather than as a glyph so it lands on
+  // exact pixels at any device ratio.
+  const crossX = chip.x + chip.width - 9
+  const middle = chip.y + chip.height / 2
+  ctx.strokeStyle = palette.text
+  ctx.lineWidth = 1.2
+  ctx.beginPath()
+  ctx.moveTo(crossX - 3, middle - 3)
+  ctx.lineTo(crossX + 3, middle + 3)
+  ctx.moveTo(crossX + 3, middle - 3)
+  ctx.lineTo(crossX - 3, middle + 3)
+  ctx.stroke()
+
   ctx.restore()
 }
 

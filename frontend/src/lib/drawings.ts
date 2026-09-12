@@ -365,3 +365,77 @@ export function resizeDrawing(
 
   return { ...drawing, from, to }
 }
+
+// --------------------------------------------------------------------------
+// Range chips
+// --------------------------------------------------------------------------
+
+/**
+ * The dismiss tab on a backtest range.
+ *
+ * From the review call, about the two range tools: *"I don't know what this
+ * is. I don't think anybody uses this, but... I just clicked on it and...
+ * can't be deleted, or even selected."*
+ *
+ * He was right, and it was not a drawing bug. The setup band and the test
+ * window are painted on the same canvas as the drawings and sit in the same
+ * rail, but they are not drawings: clicking one selects nothing, and Delete
+ * had nothing to act on. The only way out was Escape before releasing, or
+ * knowing to drag a fresh range over the old one.
+ *
+ * So each range gets a tab that says what it is and takes it off the chart.
+ * The geometry lives here, next to the drawing hit tests, so that what is
+ * painted and what is clickable are computed once from the same numbers.
+ */
+export type RangeKind = 'selection' | 'window'
+
+export interface RangeChip {
+  kind: RangeKind
+  label: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export const CHIP_HEIGHT_PX = 15
+/** Padding inside the tab, and the gap before the cross. */
+const CHIP_PAD_PX = 5
+/** Width of the cross glyph, reserved so the label never runs into it. */
+const CHIP_CLOSE_PX = 9
+
+/** Lay out a range's tab at the left edge of the band it labels. */
+export function rangeChip(
+  kind: RangeKind,
+  label: string,
+  left: number,
+  top: number,
+): RangeChip {
+  return {
+    kind,
+    label,
+    x: left,
+    y: top,
+    // The same monospace metric the note tool uses, for the same reason: the
+    // box can be computed from the character count without measuring, and
+    // both sides of the question agree because they use one number.
+    width: label.length * TEXT_CHAR_PX + CHIP_PAD_PX * 2 + CHIP_CLOSE_PX,
+    height: CHIP_HEIGHT_PX,
+  }
+}
+
+/** The tab under the pointer, if any. Later chips sit on top. */
+export function hitTestChips(chips: RangeChip[], x: number, y: number): RangeChip | null {
+  for (let index = chips.length - 1; index >= 0; index -= 1) {
+    const chip = chips[index]
+    if (
+      x >= chip.x &&
+      x <= chip.x + chip.width &&
+      y >= chip.y &&
+      y <= chip.y + chip.height
+    ) {
+      return chip
+    }
+  }
+  return null
+}

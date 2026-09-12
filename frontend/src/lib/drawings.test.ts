@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  CHIP_HEIGHT_PX,
   HANDLE_RADIUS_PX,
   HIT_TOLERANCE_PX,
   distanceToSegment,
+  hitTestChips,
+  rangeChip,
   handlePositions,
   hitKey,
   hitTestDrawing,
@@ -270,5 +273,42 @@ describe('resizeDrawing', () => {
     }
     expect(resizeDrawing(level, point, { time: 1, price: 1 })).toBe(level)
     expect(resizeDrawing(line, { id: 'line', part: 'body' }, { time: 1, price: 1 })).toBe(line)
+  })
+})
+
+describe('the dismiss tab on a backtest range', () => {
+  /*
+   * From the review call: "I don't know what this is. I don't think anybody
+   * uses this, but... I just clicked on it and... can't be deleted, or even
+   * selected." The setup band and the test window are painted on the drawing
+   * canvas and held in the drawing rail, but they are not drawings -- so
+   * nothing selected them and Delete had nothing to act on.
+   */
+  const setup = rangeChip('selection', 'setup', 6, 6)
+  const window = rangeChip('window', 'test window', 6, 25)
+
+  it('sizes the tab from its label', () => {
+    expect(window.width).toBeGreaterThan(setup.width)
+    expect(setup.height).toBe(CHIP_HEIGHT_PX)
+  })
+
+  it('is hit inside its box', () => {
+    expect(hitTestChips([setup], 20, 12)?.kind).toBe('selection')
+  })
+
+  it('is not hit outside it', () => {
+    expect(hitTestChips([setup], 20, 30)).toBeNull()
+    expect(hitTestChips([setup], setup.x + setup.width + 2, 12)).toBeNull()
+  })
+
+  it('keeps the two tabs apart even though both bands start at the left', () => {
+    // Stacked rather than placed at each band's own edge: two tabs sharing a
+    // corner are two targets you cannot tell apart.
+    expect(hitTestChips([setup, window], 20, 12)?.kind).toBe('selection')
+    expect(hitTestChips([setup, window], 20, 30)?.kind).toBe('window')
+  })
+
+  it('finds nothing when no range is on the chart', () => {
+    expect(hitTestChips([], 20, 12)).toBeNull()
   })
 })

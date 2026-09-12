@@ -54,9 +54,32 @@ export function useDrawingShortcuts(): void {
       }
 
       if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (!state.selectedDrawingId) return
-        event.preventDefault()
-        state.removeDrawing(state.selectedDrawingId)
+        if (state.selectedDrawingId) {
+          event.preventDefault()
+          state.removeDrawing(state.selectedDrawingId)
+          return
+        }
+        /*
+         * With no drawing picked, Delete falls through to the backtest
+         * ranges, newest first.
+         *
+         * They are painted on the same canvas and held in the same rail as
+         * the drawings, so "get rid of this" is the same intent -- but they
+         * are not drawings, nothing selects them, and Delete used to have
+         * nothing to act on. That is the whole of *"I just clicked on it
+         * and... can't be deleted, or even selected"* from the review call.
+         * The setup goes before the window because it is the one that is
+         * almost always drawn last.
+         */
+        if (state.selection) {
+          event.preventDefault()
+          state.setSelection(null)
+          return
+        }
+        if (state.testWindow) {
+          event.preventDefault()
+          state.setTestWindow(null)
+        }
         return
       }
 

@@ -12,7 +12,7 @@
  * what "snap" or "zone" means to someone opening this for the first time.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   BoxSelect,
@@ -66,16 +66,29 @@ const TOOL_ICONS: Record<ToolMode, LucideIcon> = {
 /**
  * Pointer, then the two ranges a backtest is made of, then the shapes.
  *
- * The ranges sit next to each other because they are read as a pair: what to
- * look for, and where to look for it.
+ * Three groups with a rule between them, because they are three different
+ * kinds of thing and the middle one is the one that caused trouble: the
+ * ranges are not drawings, and sitting flush against the shapes they read as
+ * though they were. The ranges are a pair -- what to look for, and where to
+ * look for it -- so they stay together.
+ *
+ * Every tool the overlay implements is listed. Five of them (ray, level from
+ * here, arrow, time marker, note) shipped with icons, hit tests and paint
+ * code but no button, which made them reachable by nothing at all.
  */
-const TOOL_ORDER: ToolMode[] = [
-  'cursor',
-  'select',
-  'window',
-  'trendline',
-  'horizontal',
-  'rectangle',
+const TOOL_GROUPS: ToolMode[][] = [
+  ['cursor'],
+  ['select', 'window'],
+  [
+    'trendline',
+    'ray',
+    'arrow',
+    'horizontal',
+    'horizontal_ray',
+    'vertical',
+    'rectangle',
+    'text',
+  ],
 ]
 
 export function ToolRail({ footer }: { footer?: ReactNode }) {
@@ -99,23 +112,28 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
       aria-label="Drawing tools"
       className="panel flex w-10 shrink-0 flex-col items-center gap-0.5 overflow-y-auto border-r border-border py-1.5"
     >
-      {TOOL_ORDER.map((mode) => {
-        const Icon = TOOL_ICONS[mode]
-        return (
-          <Button
-            key={mode}
-            size="icon"
-            variant="toolbar"
-            data-active={tool === mode}
-            onClick={() => setTool(mode)}
-            title={`${TOOL_LABELS[mode]} - ${TOOL_HINTS[mode]}`}
-            aria-label={TOOL_LABELS[mode]}
-            aria-pressed={tool === mode}
-          >
-            <Icon size={15} />
-          </Button>
-        )
-      })}
+      {TOOL_GROUPS.map((group, index) => (
+        <Fragment key={group[0]}>
+          {index > 0 && <RailDivider />}
+          {group.map((mode) => {
+            const Icon = TOOL_ICONS[mode]
+            return (
+              <Button
+                key={mode}
+                size="icon"
+                variant="toolbar"
+                data-active={tool === mode}
+                onClick={() => setTool(mode)}
+                title={`${TOOL_LABELS[mode]} - ${TOOL_HINTS[mode]}`}
+                aria-label={TOOL_LABELS[mode]}
+                aria-pressed={tool === mode}
+              >
+                <Icon size={15} />
+              </Button>
+            )
+          })}
+        </Fragment>
+      ))}
 
       <RailDivider />
 

@@ -36,6 +36,7 @@ import {
 import {
   broadcastCrosshair,
   broadcastLogicalRange,
+  broadcastTimeJump,
   isApplyingSync,
   registerChart,
 } from '@/lib/chartSync'
@@ -170,6 +171,14 @@ export function useChartInstance({
     }
     chart.subscribeCrosshairMove(handleCrosshair)
 
+    // A click says "take me to this moment" -- which is not what the
+    // logical-range link says, and is the one Miles asked for by name.
+    const handleClick = (param: { time?: unknown }) => {
+      if (typeof param.time !== 'number' || isApplyingSync()) return
+      broadcastTimeJump(id, fromChartTime(param.time))
+    }
+    chart.subscribeClick(handleClick)
+
     const unregister = registerChart(id, {
       applyCrosshair: (time) => {
         const target = seriesRef.current
@@ -186,6 +195,25 @@ export function useChartInstance({
       },
       applyLogicalRange: (range) => {
         timeScale.setVisibleLogicalRange(range)
+      },
+      /*
+       * Scroll so a moment is centred, keeping the zoom.
+       *
+       * Resolved through this chart's *own* candles, which is the whole
+       * point: the logical-range link matches bar indices, and two markets
+       * do not hold the same number of bars, so the same index is a
+       * different instant on each. Working from the timestamp puts both
+       * panes on the same moment however far their bar counts have drifted.
+       */
+      jumpToTime: (time) => {
+        const current = timeScale.getVisibleLogicalRange()
+        const logical = logicalFromTime(candlesRef.current, time)
+        if (!current || logical == null) return
+        const span = current.to - current.from
+        timeScale.setVisibleLogicalRange({
+          from: (logical - span / 2) as Logical,
+          to: (logical + span / 2) as Logical,
+        })
       },
       // Through a ref because `resetView` is defined below this effect and
       // must not become one of its dependencies -- naming it here directly
@@ -206,6 +234,7 @@ export function useChartInstance({
       unregister()
       timeScale.unsubscribeVisibleLogicalRangeChange(handleRangeChange)
       chart.unsubscribeCrosshairMove(handleCrosshair)
+      chart.unsubscribeClick(handleClick)
       chart.remove()
       chartRef.current = null
       seriesRef.current = null

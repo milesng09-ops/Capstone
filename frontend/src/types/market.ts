@@ -302,6 +302,31 @@ export interface ChartSettings {
   bearColor: string | null
 }
 
+/**
+ * What the charts share with each other.
+ *
+ * Three separate switches rather than one, because they are three different
+ * claims and a trader wants them independently. From the review call: the
+ * crosshair one matters most -- reading an SMT divergence means having the
+ * cursor on *the same candle* on NQ and on ES, and without it you are
+ * comparing different moments and inventing divergences that are not there.
+ *
+ * `time` is the scroll and zoom. `interval` is whether every pane is on the
+ * same bar size; with it off, each market keeps its own, which is how you
+ * read structure on the weekly against entries on the 3-minute.
+ */
+export interface ChartSync {
+  interval: boolean
+  crosshair: boolean
+  time: boolean
+}
+
+export const DEFAULT_CHART_SYNC: ChartSync = {
+  interval: true,
+  crosshair: true,
+  time: true,
+}
+
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   showGrid: true,
   showVolume: true,

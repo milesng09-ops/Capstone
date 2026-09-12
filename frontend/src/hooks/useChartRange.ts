@@ -31,6 +31,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { useWorkspace } from '@/store/workspace'
+import { MAX_RANGE_DAYS, type Interval } from '@/types/market'
 
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
@@ -69,9 +70,20 @@ function useHourBucket(): number {
   return bucket
 }
 
-export function useChartRange(): ChartRange {
+/**
+ * The window to load, optionally held to what one interval can carry.
+ *
+ * The stored range is clamped against the *shared* interval, which is the
+ * only one there is while the charts are linked. Unlinked, a pane may be on
+ * something far finer -- 180 days of 1-minute bars is a request the backend
+ * refuses outright -- so a pane passes its own interval and gets a window it
+ * can actually load. Without the argument the behaviour is unchanged, which
+ * is what the panels that are about the primary chart want.
+ */
+export function useChartRange(interval?: Interval): ChartRange {
   const rangeDays = useWorkspace((state) => state.rangeDays)
   const hour = useHourBucket()
+  const days = interval ? Math.min(rangeDays, MAX_RANGE_DAYS[interval]) : rangeDays
 
-  return useMemo(() => buildRange(rangeDays, hour * HOUR_MS), [rangeDays, hour])
+  return useMemo(() => buildRange(days, hour * HOUR_MS), [days, hour])
 }

@@ -34,22 +34,17 @@ function reachOf(interval: Interval): string {
   return `${days}d history`
 }
 
-export function IntervalPicker() {
-  const interval = useWorkspace((state) => state.interval)
-  const setInterval = useWorkspace((state) => state.setInterval)
-  const favourites = useWorkspace((state) => state.favouriteIntervals)
-  const toggleFavourite = useWorkspace((state) => state.toggleFavouriteInterval)
-
-  const [open, setOpen] = useState(false)
+/** Close on a press outside the box, or on Escape. */
+function useDismiss(open: boolean, close: () => void) {
   const boxRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (!open) return
     const away = (event: MouseEvent) => {
-      if (!boxRef.current?.contains(event.target as Node)) setOpen(false)
+      if (!boxRef.current?.contains(event.target as Node)) close()
     }
     const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key === 'Escape') close()
     }
     window.addEventListener('mousedown', away)
     window.addEventListener('keydown', escape)
@@ -57,7 +52,114 @@ export function IntervalPicker() {
       window.removeEventListener('mousedown', away)
       window.removeEventListener('keydown', escape)
     }
-  }, [open])
+  }, [open, close])
+
+  return boxRef
+}
+
+/**
+ * The full list, grouped, with a pin against each.
+ *
+ * Shared by the top bar and by a single chart pane, so the two can never
+ * offer different timeframes -- which they would within a release of each
+ * other if this were written twice.
+ */
+function IntervalMenu({
+  value,
+  onPick,
+  pinnable,
+}: {
+  value: Interval
+  onPick: (interval: Interval) => void
+  pinnable: boolean
+}) {
+  const favourites = useWorkspace((state) => state.favouriteIntervals)
+  const toggleFavourite = useWorkspace((state) => state.toggleFavouriteInterval)
+
+  return (
+    <>
+      {INTERVAL_GROUPS.map((group) => (
+        <div key={group.label} className="mb-2 last:mb-0">
+          <div className="label-caps px-1 pb-1">{group.label}</div>
+          <div className="space-y-px">
+            {group.intervals.map((item) => (
+              <IntervalRow
+                key={item}
+                interval={item}
+                active={item === value}
+                pinned={favourites.includes(item)}
+                pinnable={pinnable}
+                onPick={() => onPick(item)}
+                onPin={() => toggleFavourite(item)}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+      {pinnable && (
+        <p className="border-t border-border px-1 pt-2 text-2xs text-muted">
+          Pin the ones you use to keep them in the bar.
+        </p>
+      )}
+    </>
+  )
+}
+
+/**
+ * One pane's own timeframe, shown on the chart.
+ *
+ * Only reachable while the interval link is off -- with it on there is one
+ * timeframe and it belongs in the top bar, and a second control that silently
+ * changed every pane would be a lie about what it does.
+ */
+export function PaneIntervalButton({
+  value,
+  onChange,
+}: {
+  value: Interval
+  onChange: (interval: Interval) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const boxRef = useDismiss(open, () => setOpen(false))
+
+  return (
+    <div ref={boxRef} className="pointer-events-auto relative">
+      <button
+        type="button"
+        onClick={() => setOpen((was) => !was)}
+        aria-expanded={open}
+        title={`${INTERVAL_LABELS[value]} bars on this chart — ${reachOf(value)}`}
+        className={cn(
+          'rounded px-1 text-xs text-muted-foreground transition-colors hover:bg-[hsl(var(--accent))] hover:text-foreground',
+          open && 'bg-[hsl(var(--accent))] text-foreground',
+        )}
+      >
+        {INTERVAL_LABELS[value]}
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full z-40 mt-1 w-60 rounded-md border border-border bg-[hsl(var(--popover))] p-2 text-left shadow-lg">
+          <IntervalMenu
+            value={value}
+            pinnable={false}
+            onPick={(item) => {
+              onChange(item)
+              setOpen(false)
+            }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function IntervalPicker() {
+  const interval = useWorkspace((state) => state.interval)
+  const setInterval = useWorkspace((state) => state.setInterval)
+  const favourites = useWorkspace((state) => state.favouriteIntervals)
+
+  const [open, setOpen] = useState(false)
+  const boxRef = useDismiss(open, () => setOpen(false))
 
   /*
    * An interval chosen from the menu but not pinned still has to show as
@@ -95,29 +197,14 @@ export function IntervalPicker() {
 
       {open && (
         <div className="absolute left-0 top-full z-40 mt-1 w-60 rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg">
-          {INTERVAL_GROUPS.map((group) => (
-            <div key={group.label} className="mb-2 last:mb-0">
-              <div className="label-caps px-1 pb-1">{group.label}</div>
-              <div className="space-y-px">
-                {group.intervals.map((item) => (
-                  <IntervalRow
-                    key={item}
-                    interval={item}
-                    active={item === interval}
-                    pinned={favourites.includes(item)}
-                    onPick={() => {
-                      setInterval(item)
-                      setOpen(false)
-                    }}
-                    onPin={() => toggleFavourite(item)}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
-          <p className="border-t border-border px-1 pt-2 text-2xs text-muted">
-            Pin the ones you use to keep them in the bar.
-          </p>
+          <IntervalMenu
+            value={interval}
+            pinnable
+            onPick={(item) => {
+              setInterval(item)
+              setOpen(false)
+            }}
+          />
         </div>
       )}
     </div>
@@ -128,12 +215,15 @@ function IntervalRow({
   interval,
   active,
   pinned,
+  pinnable,
   onPick,
   onPin,
 }: {
   interval: Interval
   active: boolean
   pinned: boolean
+  /** Pinning belongs to the top bar; a pane's menu only chooses. */
+  pinnable: boolean
   onPick: () => void
   onPin: () => void
 }) {
@@ -162,6 +252,7 @@ function IntervalRow({
         */}
         <span className="text-2xs text-muted">{reachOf(interval)}</span>
       </button>
+      {pinnable && (
       <button
         type="button"
         onClick={onPin}
@@ -175,6 +266,7 @@ function IntervalRow({
       >
         {pinned ? <Pin size={12} /> : <PinOff size={12} />}
       </button>
+      )}
     </div>
   )
 }

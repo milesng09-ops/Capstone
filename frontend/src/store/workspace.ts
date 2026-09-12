@@ -33,17 +33,20 @@ import {
 } from '@/types/backtest'
 import {
   DEFAULT_CHART_SETTINGS,
+  DEFAULT_CHART_SYNC,
   DEFAULT_FAVOURITE_INTERVALS,
   INTERVALS,
   MAX_RANGE_DAYS,
 } from '@/types/market'
 import type {
   ChartSettings,
+  ChartSync,
   Interval,
   SelectionRange,
   SymbolKey,
   TimeWindow,
 } from '@/types/market'
+import { setSyncModes } from '@/lib/chartSync'
 import { setFormattingTimeZone } from '@/utils/format'
 import {
   DEFAULT_EXCHANGE_ZONE,
@@ -117,6 +120,16 @@ interface WorkspaceState {
    * is only which ones are one click away.
    */
   favouriteIntervals: Interval[]
+  /** Which of the three links between the charts are live. */
+  chartSync: ChartSync
+  /**
+   * Per-market intervals, used only while the interval link is off.
+   *
+   * Kept rather than discarded when the link is switched back on, so turning
+   * it off again returns each pane to the bar size it was on instead of
+   * making the arrangement something you have to rebuild every time.
+   */
+  intervalOverrides: Partial<Record<SymbolKey, Interval>>
 
   // ---- layout ---------------------------------------------------------
   /** Which side panel is docked, or `null` when the column is closed. */
@@ -197,6 +210,8 @@ interface WorkspaceState {
   toggleCompareSymbol: (symbol: SymbolKey) => void
   setInterval: (interval: Interval) => void
   toggleFavouriteInterval: (interval: Interval) => void
+  updateChartSync: (patch: Partial<ChartSync>) => void
+  setSymbolInterval: (symbol: SymbolKey, interval: Interval) => void
   setSidePanel: (panel: SidePanel | null) => void
   setResultsOpen: (open: boolean) => void
   setSidebarRatio: (ratio: number) => void
@@ -268,6 +283,8 @@ export const useWorkspace = create<WorkspaceState>()(
       interval: '1h',
       rangeDays: 180,
       favouriteIntervals: DEFAULT_FAVOURITE_INTERVALS,
+      chartSync: DEFAULT_CHART_SYNC,
+      intervalOverrides: {},
 
       sidePanel: 'strategy',
       resultsOpen: true,
@@ -361,6 +378,24 @@ export const useWorkspace = create<WorkspaceState>()(
             favouriteIntervals: INTERVALS.filter((item) => next.includes(item)),
           }
         }),
+
+      updateChartSync: (patch) =>
+        set((state) => {
+          const chartSync = { ...state.chartSync, ...patch }
+          // The broadcasts read a module variable rather than the store, so
+          // it has to move in the same breath as the state -- the same
+          // arrangement, and the same reason, as the time zone below.
+          setSyncModes(chartSync)
+          return { chartSync }
+        }),
+
+      setSymbolInterval: (symbol, interval) =>
+        set((state) => ({
+          intervalOverrides: { ...state.intervalOverrides, [symbol]: interval },
+          // A selection names a run of candles on one interval, so it cannot
+          // survive that interval changing under the primary chart.
+          selection: symbol === state.primarySymbol ? null : state.selection,
+        })),
 
       setRangeDays: (rangeDays) =>
         set((state) => ({
@@ -575,6 +610,8 @@ export const useWorkspace = create<WorkspaceState>()(
         interval: state.interval,
         rangeDays: state.rangeDays,
         favouriteIntervals: state.favouriteIntervals,
+        chartSync: state.chartSync,
+        intervalOverrides: state.intervalOverrides,
         chartLayout: state.chartLayout,
         sidePanel: state.sidePanel,
         resultsOpen: state.resultsOpen,
@@ -610,6 +647,11 @@ setFormattingTimeZone(
   resolveTimeZone(useWorkspace.getState().timeZone, useWorkspace.getState().exchangeZone),
 )
 
+// Same argument for the sync links: they are read from a module variable on a
+// path that runs on every mouse move, so a restored setting has to reach it
+// before the first crosshair event rather than on the next toggle.
+setSyncModes(useWorkspace.getState().chartSync)
+
 /**
  * Subscribe to the active time zone, already resolved to an IANA name.
  *
@@ -622,6 +664,21 @@ export function useTimeZone(): string {
   const zone = useWorkspace((state) => state.timeZone)
   const exchangeZone = useWorkspace((state) => state.exchangeZone)
   return resolveTimeZone(zone, exchangeZone)
+}
+
+/**
+ * The interval one pane is on.
+ *
+ * With the interval link live every pane answers with the shared one, which
+ * is what makes switching timeframe a single decision. With it off each
+ * market keeps its own -- structure on the weekly, entries on the 3-minute --
+ * falling back to the shared interval for any pane never set individually.
+ */
+export function useSymbolInterval(symbol: SymbolKey): Interval {
+  const shared = useWorkspace((state) => state.interval)
+  const linked = useWorkspace((state) => state.chartSync.interval)
+  const override = useWorkspace((state) => state.intervalOverrides[symbol])
+  return linked ? shared : (override ?? shared)
 }
 
 /** Every symbol the workspace currently charts, primary first. */

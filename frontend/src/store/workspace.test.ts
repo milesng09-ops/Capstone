@@ -7,13 +7,32 @@
 
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { longestRange, useWorkspace } from '@/store/workspace'
+import { renderHook } from '@testing-library/react'
+
+import { longestRange, useSymbolInterval, useWorkspace } from '@/store/workspace'
 import type { Drawing } from '@/types/drawing'
 import {
+  DEFAULT_CHART_SYNC,
   DEFAULT_FAVOURITE_INTERVALS,
   INTERVALS,
   MAX_RANGE_DAYS,
 } from '@/types/market'
+import { syncModes } from '@/lib/chartSync'
+import type { SymbolKey } from '@/types/market'
+
+/**
+ * What `useSymbolInterval` answers for one pane, right now.
+ *
+ * The hook itself is rendered rather than its rule being restated here: a
+ * local copy of the logic would pass whether or not the component under the
+ * chart agrees with it, which is the only thing worth knowing.
+ */
+function intervalFor(symbol: SymbolKey) {
+  const { result, unmount } = renderHook(() => useSymbolInterval(symbol))
+  const value = result.current
+  unmount()
+  return value
+}
 import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
 
 function level(id: string, price = 100, symbol = 'NQ'): Drawing {
@@ -253,6 +272,68 @@ describe('how much history an interval can carry', () => {
     useWorkspace.getState().setInterval('1m')
 
     expect(useWorkspace.getState().rangeDays).toBe(7)
+  })
+})
+
+describe('the interval link', () => {
+  beforeEach(() => {
+    useWorkspace.setState({
+      interval: '1h',
+      chartSync: DEFAULT_CHART_SYNC,
+      intervalOverrides: {},
+      primarySymbol: 'NQ',
+    })
+  })
+
+  it('gives every chart the shared interval while it is linked', () => {
+    useWorkspace.getState().setSymbolInterval('ES', '1w')
+
+    // Stored, but not in effect: the link is what decides.
+    expect(useWorkspace.getState().intervalOverrides.ES).toBe('1w')
+    expect(intervalFor('ES')).toBe('1h')
+  })
+
+  it('lets each chart keep its own once the link is off', () => {
+    useWorkspace.getState().setSymbolInterval('ES', '1w')
+    useWorkspace.getState().updateChartSync({ interval: false })
+
+    expect(intervalFor('ES')).toBe('1w')
+    // A pane never set individually still follows the shared one.
+    expect(intervalFor('NQ')).toBe('1h')
+  })
+
+  it('remembers each pane across a relink', () => {
+    // Otherwise the arrangement is something you rebuild every time you
+    // glance at the shared view.
+    useWorkspace.getState().updateChartSync({ interval: false })
+    useWorkspace.getState().setSymbolInterval('ES', '1w')
+    useWorkspace.getState().updateChartSync({ interval: true })
+    useWorkspace.getState().updateChartSync({ interval: false })
+
+    expect(intervalFor('ES')).toBe('1w')
+  })
+
+  it('drops a selection when the primary chart changes interval', () => {
+    // A selection names a run of candles at one bar size; it cannot survive
+    // that bar size changing underneath it.
+    useWorkspace.setState({
+      selection: { symbol: 'NQ', start_time: 1, end_time: 2, source_interval: '1h' },
+    })
+
+    useWorkspace.getState().setSymbolInterval('ES', '1w')
+    expect(useWorkspace.getState().selection).not.toBeNull()
+
+    useWorkspace.getState().setSymbolInterval('NQ', '4h')
+    expect(useWorkspace.getState().selection).toBeNull()
+  })
+
+  it('pushes the links to the broadcast layer, not just into state', () => {
+    // The broadcasts read a module variable rather than the store, because
+    // crosshair movement fires on every mouse move. A toggle that only
+    // reached the store would be a switch that visibly did nothing.
+    useWorkspace.getState().updateChartSync({ crosshair: false })
+
+    expect(syncModes().crosshair).toBe(false)
   })
 })
 

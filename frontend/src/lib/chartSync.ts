@@ -23,8 +23,32 @@ export interface SyncedChart {
   applyCrosshair: (time: number | null) => void
   /** Match another chart's horizontal scroll and zoom. */
   applyLogicalRange: (range: LogicalRange) => void
+  /** Scroll so a given moment is in view, without changing the zoom. */
+  jumpToTime: (time: number) => void
   /** Put the whole series back in view, on both axes. */
   resetView: () => void
+}
+
+/**
+ * Which of the three links are live.
+ *
+ * A module variable rather than a hook, for the same reason the registry is:
+ * crosshair movement fires on every mouse move, and reading a store from
+ * inside that path would re-render the workspace dozens of times a second.
+ * The store pushes changes in here instead.
+ */
+let modes = { interval: true, crosshair: true, time: true }
+
+export function setSyncModes(next: {
+  interval: boolean
+  crosshair: boolean
+  time: boolean
+}): void {
+  modes = next
+}
+
+export function syncModes(): { interval: boolean; crosshair: boolean; time: boolean } {
+  return modes
 }
 
 const charts = new Map<string, SyncedChart>()
@@ -40,7 +64,7 @@ export function registerChart(id: string, handle: SyncedChart): () => void {
 }
 
 export function broadcastCrosshair(sourceId: string, time: number | null): void {
-  if (applying) return
+  if (applying || !modes.crosshair) return
   applying = true
   try {
     for (const [id, chart] of charts) {
@@ -53,12 +77,35 @@ export function broadcastCrosshair(sourceId: string, time: number | null): void 
 }
 
 export function broadcastLogicalRange(sourceId: string, range: LogicalRange): void {
-  if (applying) return
+  if (applying || !modes.time) return
   applying = true
   try {
     for (const [id, chart] of charts) {
       if (id === sourceId) continue
       chart.applyLogicalRange(range)
+    }
+  } finally {
+    applying = false
+  }
+}
+
+/**
+ * Send every other chart to a moment in market time.
+ *
+ * Deliberately separate from the logical-range link, which matches *bar
+ * indices*. Two markets do not hold the same number of bars -- on this
+ * project's own cache ES held 2,967 hourly bars and NQ 2,965 -- so logical
+ * index 100 is a different instant on each, and the drift grows with every
+ * bar one vendor has and the other does not. Clicking a candle says "take me
+ * to *this moment*", which is the question the index link cannot answer.
+ */
+export function broadcastTimeJump(sourceId: string, time: number): void {
+  if (applying || !modes.time) return
+  applying = true
+  try {
+    for (const [id, chart] of charts) {
+      if (id === sourceId) continue
+      chart.jumpToTime(time)
     }
   } finally {
     applying = false

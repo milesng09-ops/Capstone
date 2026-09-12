@@ -433,6 +433,8 @@ function ChartSettingsMenu() {
 export function ChartSettingsBody() {
   const settings = useWorkspace((state) => state.chartSettings)
   const update = useWorkspace((state) => state.updateChartSettings)
+  const sync = useWorkspace((state) => state.chartSync)
+  const updateSync = useWorkspace((state) => state.updateChartSync)
 
   return (
     <div className="space-y-2">
@@ -457,6 +459,37 @@ export function ChartSettingsBody() {
         value={settings.bearColor}
         onChange={(bearColor) => update({ bearColor })}
       />
+
+      {/*
+        Three separate links, because they are three different claims. The
+        crosshair is the one that matters most: reading an SMT divergence
+        means having the cursor on the *same candle* on both markets, and
+        without that you are comparing different moments and inventing
+        divergences that are not there.
+      */}
+      <div className="border-t border-border pt-2">
+        <div className="label-caps pb-1">Link charts</div>
+        <SettingRow
+          label="Crosshair"
+          checked={sync.crosshair}
+          onChange={(crosshair) => updateSync({ crosshair })}
+        />
+        <SettingRow
+          label="Time"
+          checked={sync.time}
+          onChange={(time) => updateSync({ time })}
+        />
+        <SettingRow
+          label="Interval"
+          checked={sync.interval}
+          onChange={(interval) => updateSync({ interval })}
+        />
+        <p className="pt-1 text-[10px] leading-snug text-muted">
+          {sync.interval
+            ? 'Every chart is on the same bar size.'
+            : 'Each chart keeps its own bar size; set it on the chart.'}
+        </p>
+      </div>
     </div>
   )
 }

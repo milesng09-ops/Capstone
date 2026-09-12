@@ -5,6 +5,7 @@ import { Maximize2 } from 'lucide-react'
 
 import { ChartSettingsBody } from '@/components/chart/ToolRail'
 
+import { PaneIntervalButton } from '@/components/layout/IntervalPicker'
 import { ChartOverlay } from '@/components/chart/ChartOverlay'
 import { DrawingActions } from '@/components/chart/DrawingActions'
 import { useChartInstance } from '@/components/chart/useChartInstance'
@@ -19,7 +20,7 @@ import {
   findTrade,
   tradesForSymbol,
 } from '@/lib/trades'
-import { useChartedSymbols, useWorkspace } from '@/store/workspace'
+import { useChartedSymbols, useSymbolInterval, useWorkspace } from '@/store/workspace'
 import type { DrawingDraft } from '@/types/drawing'
 import {
   INTERVAL_LABELS,
@@ -40,8 +41,14 @@ interface Props {
 }
 
 export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Props) {
-  const range = useChartRange()
-  const interval = useWorkspace((state) => state.interval)
+  // With the interval link off this pane keeps its own bar size, which is
+  // how structure on the weekly is read against entries on the 3-minute.
+  const interval = useSymbolInterval(symbol)
+  // Held to what this pane's own interval can carry: 180 days of 1-minute
+  // bars is a request the backend refuses outright.
+  const range = useChartRange(interval)
+  const intervalLinked = useWorkspace((state) => state.chartSync.interval)
+  const setSymbolInterval = useWorkspace((state) => state.setSymbolInterval)
   const ictSettings = useWorkspace((state) => state.ict)
   const tool = useWorkspace((state) => state.tool)
   const drawingColor = useWorkspace((state) => state.drawingColor)
@@ -177,7 +184,14 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
       <div className="chart-legend pointer-events-none absolute left-2 top-1.5 z-20 flex flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
           <span className="text-xs font-semibold tracking-tight">{symbol}</span>
-          <span className="text-muted-foreground">{INTERVAL_LABELS[interval]}</span>
+          {intervalLinked ? (
+            <span className="text-muted-foreground">{INTERVAL_LABELS[interval]}</span>
+          ) : (
+            <PaneIntervalButton
+              value={interval}
+              onChange={(next) => setSymbolInterval(symbol, next)}
+            />
+          )}
 
           {last && (
             <span className={cn('numeric', directionClass(changePercent))}>

@@ -9,7 +9,7 @@
  */
 
 import { fireEvent, render } from '@testing-library/react'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChartOverlay } from '@/components/chart/ChartOverlay'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
@@ -35,6 +35,8 @@ const nearbyBars: Candle[] = [
   { symbol: 'NQ', time: 500, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 },
 ]
 
+const notifyListeners = new Set<() => void>()
+
 const handle: ChartHandle = {
   timeToX: (ms) => ms,
   priceToY: (price) => price,
@@ -42,7 +44,10 @@ const handle: ChartHandle = {
   yToPrice: (y) => y,
   timeToXFree: (ms) => ms,
   xToTimeFree: (x) => x,
-  subscribe: () => () => {},
+  subscribe: (listener: () => void) => {
+    notifyListeners.add(listener)
+    return () => notifyListeners.delete(listener)
+  },
   palette: () => ({
     background: '#000000',
     text: '#ffffff',
@@ -493,5 +498,51 @@ describe('clicking a trade', () => {
     fireEvent(window, pointer('pointerup', 100, 150))
 
     expect(onSelectTrade).not.toHaveBeenCalled()
+  })
+})
+
+describe('repainting keeps up with the pointer', () => {
+  /**
+   * "It takes a minute to be there, and that's really annoying" -- from the
+   * review call, about dragging the price scale.
+   *
+   * The chart notifies on every step of a pan, and a gesture adds its own
+   * moves on top. Painting synchronously for each did the same work several
+   * times inside one frame, none of which the screen ever showed.
+   */
+  beforeEach(() => {
+    notifyListeners.clear()
+  })
+
+  it('collapses a burst of chart notifications into one repaint', async () => {
+    const frames: FrameRequestCallback[] = []
+    const raf = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb) => {
+        frames.push(cb)
+        return frames.length
+      })
+
+    setup({ tool: 'cursor' })
+
+    // Mounting schedules its own first paint. Run it, so the burst below is
+    // measured from a clean slate rather than against a frame already latched.
+    for (const frame of frames.splice(0)) frame(0)
+    raf.mockClear()
+
+    // Twenty notifications, as a single drag across the pane produces.
+    const listener = [...notifyListeners][0]
+    expect(listener).toBeTypeOf('function')
+    for (let i = 0; i < 20; i += 1) listener()
+
+    // One frame asked for, not twenty.
+    expect(raf).toHaveBeenCalledTimes(1)
+
+    // Once the frame runs, the next burst may ask for another.
+    frames[0]?.(0)
+    listener()
+    expect(raf).toHaveBeenCalledTimes(2)
+
+    raf.mockRestore()
   })
 })

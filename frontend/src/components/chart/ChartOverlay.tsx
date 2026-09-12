@@ -257,15 +257,60 @@ export function ChartOverlay({
    */
   const pressRef = useRef<{ x: number; y: number; tradeId: string | null } | null>(null)
 
-  const updatePending = useCallback((value: PendingGesture | null) => {
-    pendingRef.current = value
-    setPending(value)
+  /**
+   * One repaint per animation frame, however many events asked for it.
+   *
+   * The chart notifies on every step of a pan and a price-scale drag, and a
+   * gesture adds a move event of its own on top. Painting synchronously for
+   * each of those did the same work several times inside one frame, none of
+   * which the screen ever showed -- which is what "it takes a minute to be
+   * there" looks like from the outside.
+   */
+  const drawRef = useRef<() => void>(() => {})
+  const frameRef = useRef(0)
+  const scheduleDraw = useCallback(() => {
+    if (frameRef.current) return
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = 0
+      drawRef.current()
+    })
   }, [])
 
-  const updateDrag = useCallback((value: ActiveDrag | null) => {
-    dragRef.current = value
-    setDrag(value)
-  }, [])
+  useEffect(
+    () => () => {
+      if (frameRef.current) window.cancelAnimationFrame(frameRef.current)
+    },
+    [],
+  )
+
+  /**
+   * The ref is the truth; the state only records whether a gesture is running.
+   *
+   * `draw` reads the refs, so re-rendering React on every pointer move bought
+   * nothing and cost a full render of the overlay per move. The state is still
+   * needed -- the cursor and the Escape handler ask whether a gesture exists,
+   * and `hit` is fixed for the life of one -- so it is written on the
+   * transitions only, not on every frame of the movement between them.
+   */
+  const updatePending = useCallback(
+    (value: PendingGesture | null) => {
+      const wasRunning = pendingRef.current != null
+      pendingRef.current = value
+      if (wasRunning !== (value != null)) setPending(value)
+      scheduleDraw()
+    },
+    [scheduleDraw],
+  )
+
+  const updateDrag = useCallback(
+    (value: ActiveDrag | null) => {
+      const wasRunning = dragRef.current != null
+      dragRef.current = value
+      if (wasRunning !== (value != null)) setDrag(value)
+      scheduleDraw()
+    },
+    [scheduleDraw],
+  )
 
   const updateHover = useCallback((value: DrawingHit | null) => {
     hoverRef.current = value
@@ -336,8 +381,24 @@ export function ChartOverlay({
     const palette = handle.palette()
     const yOf = handle.priceToY
 
+    /*
+     * What the pane can actually show, as a pair of timestamps.
+     *
+     * The detectors run over the whole loaded history, and on a 180-day
+     * hourly ES chart that is six hundred fair value gaps. Painting all of
+     * them every frame meant six hundred binary searches through the candles
+     * and six hundred sets of canvas calls, almost all of it landing far
+     * outside the pane. Two conversions here turn that into one integer
+     * comparison apiece.
+     */
+    const viewFrom = handle.xToTimeFree(0)
+    const viewTo = handle.xToTimeFree(width)
+    const onScreen = (start: number, end: number) =>
+      viewFrom == null || viewTo == null || (end >= viewFrom && start <= viewTo)
+
     if (ict && ictSettings.showGaps) {
       for (const gap of ict.fair_value_gaps) {
+        if (!onScreen(gap.start_time, gap.end_time)) continue
         paintGap(ctx, gap, xOf, yOf, width, palette.bull, palette.bear)
       }
     }
@@ -349,6 +410,7 @@ export function ChartOverlay({
       paintEvidenceWindow(ctx, evidence.window, xOf, height, palette)
       if (!ictSettings.showGaps) {
         for (const gap of evidence.gaps) {
+          if (!onScreen(gap.start_time, gap.end_time)) continue
           paintGap(ctx, gap, xOf, yOf, width, palette.bull, palette.bear)
         }
       }
@@ -366,12 +428,14 @@ export function ChartOverlay({
 
     if (ict && ictSettings.showSmt) {
       for (const divergence of ict.smt_divergences) {
+        if (!onScreen(divergence.start_time, divergence.end_time)) continue
         paintSmt(ctx, divergence, xOf, yOf, palette.bull, palette.bear)
       }
     }
 
     if (ict && ictSettings.showSwings) {
       for (const point of ict.swing_points) {
+        if (!onScreen(point.time, point.time)) continue
         paintSwing(ctx, point, xOf, yOf, palette.muted)
       }
     }
@@ -379,11 +443,13 @@ export function ChartOverlay({
     if (evidence) {
       if (!ictSettings.showSmt) {
         for (const divergence of evidence.divergences) {
+          if (!onScreen(divergence.start_time, divergence.end_time)) continue
           paintSmt(ctx, divergence, xOf, yOf, palette.bull, palette.bear)
         }
       }
       if (!ictSettings.showSwings) {
         for (const point of evidence.swings) {
+          if (!onScreen(point.time, point.time)) continue
           paintSwing(ctx, point, xOf, yOf, palette.muted)
         }
       }
@@ -452,11 +518,13 @@ export function ChartOverlay({
   ])
 
   // Redraw on pan, zoom and resize -- the chart notifies us imperatively so
-  // that scrolling does not re-render the React tree.
-  useEffect(() => handle.subscribe(draw), [handle, draw])
+  // that scrolling does not re-render the React tree, and the frame scheduler
+  // collapses a burst of notifications into the one paint the screen can use.
+  drawRef.current = draw
+  useEffect(() => handle.subscribe(scheduleDraw), [handle, scheduleDraw])
   useEffect(() => {
-    draw()
-  }, [draw, pending, drag, hover])
+    scheduleDraw()
+  }, [draw, hover, scheduleDraw])
 
   // ---- hit-testing -----------------------------------------------------
   const hitTestAt = useCallback(

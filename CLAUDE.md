@@ -27,4 +27,4 @@ cd frontend && npm run test
 ```
 
 `npm run typecheck` runs `tsc --noEmit`; `npm run dev` starts Vite. The suite
-is 225 tests across 14 files.
+is 226 tests across 14 files.

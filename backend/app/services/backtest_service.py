@@ -750,6 +750,11 @@ class BacktestService:
             candles, request.trade.model_copy(update={"allow_overlapping_trades": True})
         )
 
+        # Win rate asks only whether a trade finished up, so magnitude leaves
+        # the objective: a match landing in a volatile stretch no longer
+        # scores well merely for the size of the move it caught.
+        want_win_rate = request.learning.objective == "win_rate"
+
         def label(starts: list[int]) -> tuple[list[int], np.ndarray]:
             """What each window actually paid, dropping any that cannot run."""
 
@@ -766,7 +771,12 @@ class BacktestService:
                     for index in starts
                 ]
             )
-            paid = {int(trade.pattern_match_id): trade.net_return for trade in trades}
+            paid = {
+                int(trade.pattern_match_id): (
+                    float(trade.net_return > 0) if want_win_rate else trade.net_return
+                )
+                for trade in trades
+            }
             kept = [index for index in starts if index in paid]
             return kept, np.array([paid[index] for index in kept], dtype=np.float64)
 
@@ -852,7 +862,7 @@ class BacktestService:
             outcomes=train_outcomes,
             starting_weights=defaults,
             top_k=top_k,
-            objective="expectancy",
+            objective=request.learning.objective,
             valid_mask=mask_for(train_starts),
         )
         learned = (

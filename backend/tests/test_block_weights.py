@@ -501,3 +501,47 @@ class TestTheCoarseFitSearchesTheWholeSpace:
         )
         assert fitted.weights == BLOCK_WEIGHTS
         assert fitted.labelled_windows == 0
+
+
+class TestTheObjectiveIsCarriedNotAssumed:
+    def test_a_binary_outcome_scores_as_a_rate(self):
+        """Win rate is the same machinery with a different label.
+
+        Nothing in the fit changes: outcomes arrive as 1.0 for a trade that
+        finished up and 0.0 otherwise, so the score is a fraction rather than
+        a return, and magnitude leaves the objective entirely.
+        """
+
+        names, _, _, projection = setup(count=60)
+        rng = np.random.default_rng(30)
+        wins = (rng.random(projection[0].shape[0]) > 0.5).astype(float)
+        fitted = fit_group_weights(
+            block_names=names,
+            groups=BLOCK_GROUPS,
+            group_order=GROUP_ORDER,
+            dots=projection[0],
+            query_norms=projection[1],
+            candidate_norms=projection[2],
+            outcomes=wins,
+            starting_weights={name: BLOCK_WEIGHTS[name] for name in names},
+            top_k=10,
+            objective="win_rate",
+        )
+        assert fitted.objective == "win_rate"
+        assert 0.0 <= fitted.train_score <= 1.0
+        assert 0.0 <= fitted.default_score <= 1.0
+
+    def test_the_reported_objective_is_whatever_was_asked_for(self):
+        names, _, _, projection = setup()
+        outcomes = np.random.default_rng(31).normal(size=projection[0].shape[0])
+        fitted = fit_block_weights(
+            block_names=names,
+            dots=projection[0],
+            query_norms=projection[1],
+            candidate_norms=projection[2],
+            outcomes=outcomes,
+            starting_weights={name: BLOCK_WEIGHTS[name] for name in names},
+            top_k=10,
+            objective="win_rate",
+        )
+        assert fitted.objective == "win_rate"

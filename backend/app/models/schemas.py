@@ -247,6 +247,14 @@ class LearningSettings(BaseModel):
     #: block weights. Fewer parameters against a noisy objective, and a space
     #: small enough to enumerate rather than walk.
     grouped: bool = False
+    #: What the fit is asked to maximise across the top matches.
+    #:
+    #: ``expectancy`` is mean net return, which is what the tool reports --
+    #: but it rewards magnitude, so matches landing in volatile stretches
+    #: score well whether or not they resemble anything. ``win_rate`` counts
+    #: only whether each trade finished up, which removes magnitude from the
+    #: objective entirely.
+    objective: Literal["expectancy", "win_rate"] = "expectancy"
 
 
 class LearnedWeightsOut(BaseModel):

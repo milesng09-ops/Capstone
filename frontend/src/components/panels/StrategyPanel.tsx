@@ -26,6 +26,7 @@ import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
 import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
 import type {
   DetectorFilters,
+  LearningSettings,
   Direction,
   EntryType,
   StopLossType,
@@ -454,6 +455,19 @@ export function StrategyPanel() {
           checked={learning.enabled}
           onChange={(enabled) => updateLearning({ enabled })}
         />
+
+        {learning.enabled && (
+          <SelectField<LearningSettings['objective']>
+            label="Fit for"
+            hint="Expectancy is mean net return, which rewards big moves. Win rate counts only whether a trade finished up."
+            value={learning.objective}
+            options={[
+              { value: 'expectancy', label: 'Expectancy' },
+              { value: 'win_rate', label: 'Win rate' },
+            ]}
+            onChange={(objective) => updateLearning({ objective })}
+          />
+        )}
 
         {learning.enabled && (
           <ToggleField

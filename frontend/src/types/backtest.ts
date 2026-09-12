@@ -89,6 +89,12 @@ export interface LearningSettings {
    * small enough to enumerate rather than walk.
    */
   grouped: boolean
+  /**
+   * What the fit maximises. `expectancy` is mean net return — what the tool
+   * reports, but it rewards magnitude. `win_rate` counts only whether each
+   * trade finished up.
+   */
+  objective: 'expectancy' | 'win_rate'
 }
 
 export const DEFAULT_LEARNING_SETTINGS: LearningSettings = {
@@ -96,6 +102,7 @@ export const DEFAULT_LEARNING_SETTINGS: LearningSettings = {
   train_fraction: 0.5,
   query_samples: 60,
   grouped: false,
+  objective: 'expectancy',
 }
 
 /** A fitted weight set and what it is worth. The whole model: seven numbers. */

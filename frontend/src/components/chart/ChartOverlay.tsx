@@ -390,13 +390,24 @@ export function ChartOverlay({
     // is written once on release rather than on every frame.
     const preview = dragRef.current?.preview ?? null
     const hoveredId = hoverRef.current?.id ?? null
+    let offData = 0
     for (const drawing of drawings) {
       const shown = preview && preview.id === drawing.id ? preview : drawing
-      paintDrawing(ctx, shown, xOfDrawing, yOf, width, height, {
+      const painted = paintDrawing(ctx, shown, xOfDrawing, yOf, width, height, {
         selected: shown.id === selectedDrawingId,
         hovered: shown.id === hoveredId,
         background: palette.background,
       })
+      if (!painted) offData += 1
+    }
+
+    // A drawing that cannot be placed is not painted, and until now that was
+    // the whole story: it simply was not there, with nothing to say whether it
+    // had been deleted, had moved, or was sitting outside the candles this
+    // interval loaded. "I don't know if the line disappeared or what's going
+    // on" is a fair reading of silence. Say it instead.
+    if (offData > 0) {
+      paintOffDataNote(ctx, offData, height, palette)
     }
 
     const gesture = pendingRef.current
@@ -1242,11 +1253,11 @@ function paintDrawing(
   width: number,
   height: number,
   { selected, hovered, background }: DrawingStyle,
-) {
+): boolean {
   // Painted from the same projection the pointer is tested against, so a grip
   // is never drawn somewhere it cannot actually be grabbed.
   const projected = projectDrawing(drawing, xOf, yOf)
-  if (!projected) return
+  if (!projected) return false
 
   const priceLabel = drawing.kind === 'horizontal' ? drawing.price.toFixed(2) : null
 
@@ -1348,6 +1359,7 @@ function paintDrawing(
   }
 
   ctx.restore()
+  return true
 }
 
 function paintPending(
@@ -1461,4 +1473,38 @@ function paintArrowhead(
   ctx.lineTo(x2 - size * Math.cos(angle + spread), y2 - size * Math.sin(angle + spread))
   ctx.closePath()
   ctx.fill()
+}
+
+/**
+ * A note that some drawings exist but have nowhere to go on this chart.
+ *
+ * Bottom-left, quiet, and counted rather than named: the point is to replace
+ * silence with a fact, not to put a list on the chart.
+ */
+function paintOffDataNote(
+  ctx: CanvasRenderingContext2D,
+  count: number,
+  height: number,
+  palette: ChartPalette,
+) {
+  const label =
+    count === 1
+      ? '1 drawing outside the loaded candles'
+      : `${count} drawings outside the loaded candles`
+
+  ctx.save()
+  ctx.font = '10px ui-monospace, monospace'
+  ctx.textBaseline = 'bottom'
+  const textWidth = ctx.measureText(label).width
+
+  ctx.globalAlpha = 0.9
+  ctx.fillStyle = palette.background
+  ctx.fillRect(6, height - 22, textWidth + 12, 16)
+  ctx.globalAlpha = 1
+  ctx.strokeStyle = palette.muted
+  ctx.lineWidth = 1
+  ctx.strokeRect(6.5, height - 21.5, textWidth + 11, 15)
+  ctx.fillStyle = palette.muted
+  ctx.fillText(label, 12, height - 9)
+  ctx.restore()
 }

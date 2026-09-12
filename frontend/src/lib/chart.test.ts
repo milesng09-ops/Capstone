@@ -284,3 +284,73 @@ describe('magnetPrice', () => {
     expect(magnetPrice([], 1_000, 100)).toBeNull()
   })
 })
+
+describe('a drawing keeps its place when the interval changes', () => {
+  /**
+   * The behaviour Miles could not get: draw on the 1-hour, switch to another
+   * interval, and find the line somewhere else entirely.
+   *
+   * Drawings are stored in market coordinates, so the claim the module makes
+   * is that the *same* timestamp lands at the same point in the series
+   * whatever bar size is showing it. Nothing tested that, and the docstring
+   * has asserted it since the file was written.
+   *
+   * The fraction of the series is what "the same place on the chart" means:
+   * logical units count bars, so an hourly series and a four-hourly one over
+   * the same window have different totals and only the proportion is
+   * comparable.
+   */
+  const HOUR = 3_600_000
+  const START = 1_780_000_000_000 - (1_780_000_000_000 % (4 * HOUR))
+
+  function series(stepHours: number, count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+      symbol: 'ES',
+      time: START + index * stepHours * HOUR,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100,
+      volume: 1,
+    }))
+  }
+
+  // The same 40-hour window at two bar sizes, as the cache serves it.
+  const hourly = series(1, 41)
+  const fourHourly = series(4, 11)
+
+  function fraction(candles: ReturnType<typeof series>, ms: number) {
+    const logical = logicalFromTime(candles, ms)
+    return logical == null ? null : logical / (candles.length - 1)
+  }
+
+  it('puts a time at the same point in the series on either interval', () => {
+    const drawnAt = START + 20 * HOUR // halfway, and a valid open on both
+    expect(fraction(hourly, drawnAt)).toBeCloseTo(0.5, 6)
+    expect(fraction(fourHourly, drawnAt)).toBeCloseTo(0.5, 6)
+  })
+
+  it('holds for a time that is not a bar open on the coarser interval', () => {
+    // 15:00 is an hourly open and sits inside a four-hour bar. Interpolating
+    // within that bar is what keeps the line where it was drawn instead of
+    // jumping to the bar's edge.
+    const drawnAt = START + 15 * HOUR
+    expect(fraction(hourly, drawnAt)).toBeCloseTo(15 / 40, 6)
+    expect(fraction(fourHourly, drawnAt)).toBeCloseTo(15 / 40, 6)
+  })
+
+  it('agrees across every hour of the window, not just the convenient ones', () => {
+    for (let hour = 0; hour <= 40; hour += 1) {
+      const at = START + hour * HOUR
+      const onHourly = fraction(hourly, at)
+      const onFourHourly = fraction(fourHourly, at)
+      expect(onFourHourly).toBeCloseTo(onHourly as number, 6)
+    }
+  })
+
+  it('reports nothing rather than a position when the series is empty', () => {
+    // What Miles actually hit: the quota was gone, the interval loaded no
+    // candles, and a drawing projected against nothing went anywhere at all.
+    expect(logicalFromTime([], START)).toBeNull()
+  })
+})

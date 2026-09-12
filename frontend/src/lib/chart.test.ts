@@ -4,6 +4,7 @@ import {
   chartOptions,
   indexOfBar,
   logicalFromTime,
+  magnetPrice,
   medianBarSpacingMs,
   nearestBarTime,
   readChartPalette,
@@ -237,5 +238,49 @@ describe('timeAxisOptions', () => {
       'en-GB',
     )
     expect(label).toBe('15 Jan')
+  })
+})
+
+describe('magnetPrice', () => {
+  /**
+   * The magnet exists so "this low took that low" can be drawn as the exact
+   * claim it is. Every assertion here is really the same one: the point lands
+   * on a level the candle actually printed, not near it.
+   */
+  const bar = {
+    symbol: 'ES',
+    time: 1_000,
+    open: 100,
+    high: 110,
+    low: 90,
+    close: 105,
+    volume: 1,
+  }
+  const candles = [bar]
+
+  it('pulls a price onto the nearest of the four levels', () => {
+    expect(magnetPrice(candles, 1_000, 108)).toBe(110)
+    expect(magnetPrice(candles, 1_000, 92)).toBe(90)
+    expect(magnetPrice(candles, 1_000, 101)).toBe(100)
+    expect(magnetPrice(candles, 1_000, 104)).toBe(105)
+  })
+
+  it('offers the open and close, not only the wick ends', () => {
+    // People draw from bodies as readily as from extremes, so two candidates
+    // would make the magnet fight the user half the time.
+    expect(magnetPrice(candles, 1_000, 100.4)).toBe(100)
+    expect(magnetPrice(candles, 1_000, 105.2)).toBe(105)
+  })
+
+  it('lands exactly on the level rather than close to it', () => {
+    const snapped = magnetPrice(candles, 1_000, 89.9999)
+    expect(snapped).toBe(90)
+  })
+
+  it('declines when there is no candle at that time', () => {
+    // Off the end of the data there is nothing to snap to, and inventing a
+    // level there would move the point somewhere the market never traded.
+    expect(magnetPrice(candles, 9_999, 100)).toBeNull()
+    expect(magnetPrice([], 1_000, 100)).toBeNull()
   })
 })

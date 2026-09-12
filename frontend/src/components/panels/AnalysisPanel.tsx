@@ -285,7 +285,9 @@ function DrawingsSection() {
                   <span className="numeric ml-auto shrink-0 text-muted-foreground">
                     {drawing.kind === 'horizontal'
                       ? formatPrice(drawing.price)
-                      : formatDateTime(drawing.from.time)}
+                      : drawing.kind === 'vertical'
+                        ? formatDateTime(drawing.time)
+                        : formatDateTime(drawing.from.time)}
                   </span>
                 </button>
                 <Button

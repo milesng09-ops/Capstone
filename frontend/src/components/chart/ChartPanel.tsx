@@ -43,6 +43,8 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   const ictSettings = useWorkspace((state) => state.ict)
   const tool = useWorkspace((state) => state.tool)
   const drawingColor = useWorkspace((state) => state.drawingColor)
+  const drawingWidth = useWorkspace((state) => state.drawingWidth)
+  const magnet = useWorkspace((state) => state.magnet)
   const allDrawings = useWorkspace((state) => state.drawings)
   const selectedDrawingId = useWorkspace((state) => state.selectedDrawingId)
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
@@ -272,6 +274,8 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           evidence={evidence}
           tool={tool}
           drawingColor={drawingColor}
+          drawingWidth={drawingWidth}
+          magnet={magnet}
           selectedDrawingId={selectedDrawingId}
           snapToSwings={snapToSwings}
           allowSelection={isPrimary}

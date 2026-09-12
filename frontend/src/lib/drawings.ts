@@ -16,7 +16,7 @@
  * responds, which is when you actually want to drag it somewhere.
  */
 
-import type { Drawing, DrawingPoint } from '@/types/drawing'
+import { hasTwoPoints, type Drawing, type DrawingPoint } from '@/types/drawing'
 
 /** Pixel slack around a line before the pointer counts as being on it. */
 export const HIT_TOLERANCE_PX = 6
@@ -42,9 +42,10 @@ export type DrawingHit =
 /** A drawing reduced to screen coordinates. */
 export type ProjectedDrawing =
   | { id: string; kind: 'horizontal'; y: number }
+  | { id: string; kind: 'vertical'; x: number }
   | {
       id: string
-      kind: 'trendline' | 'rectangle'
+      kind: 'trendline' | 'rectangle' | 'ray' | 'arrow'
       /** `from.time`, `from.price`, `to.time`, `to.price`, in pixels. */
       x1: number
       y1: number
@@ -83,6 +84,11 @@ export function projectDrawing(
     return y == null ? null : { id: drawing.id, kind: 'horizontal', y }
   }
 
+  if (drawing.kind === 'vertical') {
+    const x = xOf(drawing.time)
+    return x == null ? null : { id: drawing.id, kind: 'vertical', x }
+  }
+
   const x1 = xOf(drawing.from.time)
   const y1 = yOf(drawing.from.price)
   const x2 = xOf(drawing.to.time)
@@ -101,13 +107,15 @@ interface Corner {
 
 /** Corner handles, paired with the stored anchors each one edits. */
 function cornersOf(
-  item: Extract<ProjectedDrawing, { kind: 'trendline' | 'rectangle' }>,
+  item: Extract<ProjectedDrawing, { kind: 'trendline' | 'rectangle' | 'ray' | 'arrow' }>,
 ): Corner[] {
   const ends: Corner[] = [
     { x: item.x1, y: item.y1, timeAnchor: 'from', priceAnchor: 'from' },
     { x: item.x2, y: item.y2, timeAnchor: 'to', priceAnchor: 'to' },
   ]
-  if (item.kind === 'trendline') return ends
+  // A ray and an arrow are grabbed at their two stored points like a trend
+  // line; only a rectangle has corners that mix the anchors.
+  if (item.kind !== 'rectangle') return ends
 
   // A rectangle also has the two off-diagonal corners, which mix the anchors.
   return [
@@ -119,7 +127,9 @@ function cornersOf(
 
 /** Where to paint the grips on a selected drawing. */
 export function handlePositions(item: ProjectedDrawing): { x: number; y: number }[] {
-  if (item.kind === 'horizontal') return []
+  // A level and a time marker span a whole axis, so there is no end to grab:
+  // they are moved by their body or not at all.
+  if (item.kind === 'horizontal' || item.kind === 'vertical') return []
   return cornersOf(item).map(({ x, y }) => ({ x, y }))
 }
 
@@ -138,6 +148,11 @@ export function hitTestDrawing(
     return Math.abs(y - item.y) <= HIT_TOLERANCE_PX ? { id: item.id, part: 'body' } : null
   }
 
+  if (item.kind === 'vertical') {
+    // The mirror of a level: full height, so only horizontal distance counts.
+    return Math.abs(x - item.x) <= HIT_TOLERANCE_PX ? { id: item.id, part: 'body' } : null
+  }
+
   for (const corner of cornersOf(item)) {
     if (Math.hypot(corner.x - x, corner.y - y) <= HANDLE_RADIUS_PX) {
       return {
@@ -149,7 +164,11 @@ export function hitTestDrawing(
     }
   }
 
-  if (item.kind === 'trendline') {
+  if (item.kind !== 'rectangle') {
+    // Trend line, ray and arrow are all grabbed along the drawn segment. A
+    // ray continues past `to` on screen, but its body stays the segment the
+    // two handles define: grabbing the extension would mean dragging a line
+    // by a part of it that has no anchor to move.
     return distanceToSegment(x, y, item.x1, item.y1, item.x2, item.y2) <= HIT_TOLERANCE_PX
       ? { id: item.id, part: 'body' }
       : null
@@ -220,7 +239,13 @@ export function hitKey(hit: DrawingHit | null): string {
 // Transforms -- market coordinates, not pixels
 // --------------------------------------------------------------------------
 
-/** Shift a whole drawing. A level ignores the time component; it has none. */
+/**
+ * Shift a whole drawing.
+ *
+ * The two single-axis shapes each ignore the delta they have no coordinate
+ * for: a level has no time, a time marker has no price. Applying both to
+ * either would invent a movement the shape cannot express.
+ */
 export function translateDrawing(
   drawing: Drawing,
   deltaTime: number,
@@ -228,6 +253,9 @@ export function translateDrawing(
 ): Drawing {
   if (drawing.kind === 'horizontal') {
     return { ...drawing, price: drawing.price + deltaPrice }
+  }
+  if (drawing.kind === 'vertical') {
+    return { ...drawing, time: drawing.time + deltaTime }
   }
   return {
     ...drawing,
@@ -254,7 +282,7 @@ export function resizeDrawing(
   hit: DrawingHit,
   point: DrawingPoint,
 ): Drawing {
-  if (drawing.kind === 'horizontal' || hit.part !== 'point') return drawing
+  if (!hasTwoPoints(drawing) || hit.part !== 'point') return drawing
 
   const from = { ...drawing.from }
   const to = { ...drawing.to }

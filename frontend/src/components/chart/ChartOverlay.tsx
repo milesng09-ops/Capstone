@@ -55,7 +55,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { nearestBarTime, snapWithinBars } from '@/lib/chart'
+import { magnetPrice, nearestBarTime, snapWithinBars } from '@/lib/chart'
 import {
   handlePositions,
   hitKey,
@@ -76,7 +76,7 @@ import {
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import type { Trade } from '@/types/backtest'
 import type { Candle, Interval, SelectionRange, TimeWindow } from '@/types/market'
-import { isDragTool, isRangeTool } from '@/types/drawing'
+import { hasTwoPoints, isDragTool, isPointTool, isRangeTool } from '@/types/drawing'
 import type { Drawing, DrawingDraft, DrawingPoint, ToolMode } from '@/types/drawing'
 import type { FairValueGap, IctAnalysis, IctSettings, SwingPoint } from '@/types/ict'
 import type { ChartPalette } from '@/lib/chart'
@@ -105,13 +105,17 @@ const MIN_DRAG_PX = 4
  * and `gesture.moved` already answers it.
  */
 function isVisiblySized(
-  kind: 'trendline' | 'rectangle',
+  kind: 'trendline' | 'rectangle' | 'ray' | 'arrow',
   from: DrawingPoint,
   to: DrawingPoint,
 ): boolean {
   const spansTime = from.time !== to.time
   const spansPrice = from.price !== to.price
-  return kind === 'trendline' ? spansTime || spansPrice : spansTime && spansPrice
+  // A zone needs extent on both axes or it is a line pretending to be a box.
+  // The line-like shapes need only one: a perfectly flat trend line is a
+  // legitimate thing to draw, and a ray needs a direction, which either axis
+  // can supply.
+  return kind === 'rectangle' ? spansTime && spansPrice : spansTime || spansPrice
 }
 
 /** Narrowest a position box may be drawn, so a one-bar trade is still visible. */
@@ -139,8 +143,10 @@ interface Props {
   evidence: TradeEvidence | null
   tool: ToolMode
   drawingColor: string
+  drawingWidth: number
   selectedDrawingId: string | null
   snapToSwings: boolean
+  magnet: boolean
   /** Only the primary chart defines the backtest selection. */
   allowSelection: boolean
   onCreateDrawing: (drawing: DrawingDraft) => void
@@ -198,8 +204,10 @@ export function ChartOverlay({
   evidence,
   tool,
   drawingColor,
+  drawingWidth,
   selectedDrawingId,
   snapToSwings,
+  magnet,
   allowSelection,
   onCreateDrawing,
   onUpdateDrawing,
@@ -384,7 +392,7 @@ export function ChartOverlay({
     const hoveredId = hoverRef.current?.id ?? null
     for (const drawing of drawings) {
       const shown = preview && preview.id === drawing.id ? preview : drawing
-      paintDrawing(ctx, shown, xOfDrawing, yOf, width, {
+      paintDrawing(ctx, shown, xOfDrawing, yOf, width, height, {
         selected: shown.id === selectedDrawingId,
         hovered: shown.id === hoveredId,
         background: palette.background,
@@ -455,6 +463,15 @@ export function ChartOverlay({
       let time = snapWithinBars(candles, rawTime) ?? rawTime
       let price = rawPrice
 
+      // The magnet: pull the price onto the nearest of the bar's own four
+      // levels. Applied before the swing snap, which is the stronger claim --
+      // a swing point is a specific bar *and* a specific price, so when one is
+      // in range it should win outright rather than be nudged off its level.
+      if (magnet) {
+        const level = magnetPrice(candles, time, price)
+        if (level != null) price = level
+      }
+
       // Snapping to a swing point is what makes "connect these two highs"
       // land exactly on the highs instead of near them.
       // Only snap to markers the chart is actually showing. Detectors run on
@@ -476,7 +493,7 @@ export function ChartOverlay({
         y,
       }
     },
-    [candles, handle, ict, ictSettings.showSwings, xOf],
+    [candles, handle, ict, ictSettings.showSwings, magnet, xOf],
   )
 
   /**
@@ -673,7 +690,7 @@ export function ChartOverlay({
       // stored, selectable and invisible. Refuse the write and leave the
       // drawing as it was, which is still on screen to try again from.
       const shape = active.preview
-      if (shape.kind !== 'horizontal' && !isVisiblySized(shape.kind, shape.from, shape.to)) {
+      if (hasTwoPoints(shape) && !isVisiblySized(shape.kind, shape.from, shape.to)) {
         return
       }
       onUpdateDrawing(active.original.id, shape)
@@ -760,7 +777,7 @@ export function ChartOverlay({
     // A click without a drag is almost always a misfire, not a zero-width
     // shape, so it is discarded. A level is the exception: it has only one
     // coordinate, so pressing and releasing in place *is* the whole gesture.
-    if (!gesture.moved && tool !== 'horizontal') {
+    if (!gesture.moved && !isPointTool(tool)) {
       onGestureComplete(false)
       return
     }
@@ -770,7 +787,16 @@ export function ChartOverlay({
         kind: 'horizontal',
         symbol,
         color: drawingColor,
+        width: drawingWidth,
         price: gesture.current.price,
+      })
+    } else if (tool === 'vertical') {
+      onCreateDrawing({
+        kind: 'vertical',
+        symbol,
+        color: drawingColor,
+        width: drawingWidth,
+        time: gesture.current.time,
       })
     } else if (isRangeTool(tool)) {
       // A range has to be made of real bars, so a drag that runs off the end
@@ -801,7 +827,12 @@ export function ChartOverlay({
       } else {
         onTestWindowChange({ start_time: start, end_time: end })
       }
-    } else if (tool === 'trendline' || tool === 'rectangle') {
+    } else if (
+      tool === 'trendline' ||
+      tool === 'rectangle' ||
+      tool === 'ray' ||
+      tool === 'arrow'
+    ) {
       // Measured on the *snapped* endpoints, not on the raw pointer path.
       // `moved` above is a pixel test taken before snapping, and snapping can
       // pull two distinct positions onto one market point -- the bar snap
@@ -817,6 +848,7 @@ export function ChartOverlay({
         kind: tool,
         symbol,
         color: drawingColor,
+        width: drawingWidth,
         from: gesture.start,
         to: gesture.current,
       })
@@ -1208,6 +1240,7 @@ function paintDrawing(
   xOf: XConverter,
   yOf: YConverter,
   width: number,
+  height: number,
   { selected, hovered, background }: DrawingStyle,
 ) {
   // Painted from the same projection the pointer is tested against, so a grip
@@ -1220,7 +1253,9 @@ function paintDrawing(
   ctx.save()
   ctx.strokeStyle = drawing.color
   ctx.fillStyle = drawing.color
-  ctx.lineWidth = selected ? 2.5 : hovered ? 2.1 : 1.6
+  // Selection and hover *add* to the chosen width rather than replacing it,
+  // so a deliberately hairline level stays hairline when you pick it up.
+  ctx.lineWidth = drawing.width + (selected ? 0.9 : hovered ? 0.5 : 0)
   ctx.setLineDash([])
 
   if (projected.kind === 'horizontal') {
@@ -1236,12 +1271,13 @@ function paintDrawing(
       ctx.textBaseline = 'bottom'
       ctx.fillText(priceLabel, 4, y - 2)
     }
-  } else if (projected.kind === 'trendline') {
+  } else if (projected.kind === 'vertical') {
+    const x = projected.x
     ctx.beginPath()
-    ctx.moveTo(projected.x1, projected.y1)
-    ctx.lineTo(projected.x2, projected.y2)
+    ctx.moveTo(x + 0.5, 0)
+    ctx.lineTo(x + 0.5, height)
     ctx.stroke()
-  } else {
+  } else if (projected.kind === 'rectangle') {
     const left = Math.min(projected.x1, projected.x2)
     const top = Math.min(projected.y1, projected.y2)
     // A floor, as every other rectangle painter in this file has: a zone that
@@ -1253,6 +1289,47 @@ function paintDrawing(
     ctx.fillRect(left, top, boxWidth, boxHeight)
     ctx.globalAlpha = 1
     ctx.strokeRect(left + 0.5, top + 0.5, boxWidth, boxHeight)
+
+    if (drawing.kind === 'rectangle' && drawing.midline) {
+      // Dashed, because it is a level *implied* by the zone rather than an
+      // edge of it, and the two should not read as the same kind of line.
+      const middle = top + boxHeight / 2
+      ctx.save()
+      ctx.setLineDash([4, 3])
+      ctx.globalAlpha = 0.9
+      ctx.beginPath()
+      ctx.moveTo(left, middle + 0.5)
+      ctx.lineTo(left + boxWidth, middle + 0.5)
+      ctx.stroke()
+      ctx.restore()
+    }
+  } else {
+    // Trend line, ray and arrow: one segment, differing only in what happens
+    // at the ends.
+    let { x2, y2 } = projected
+    const { x1, y1 } = projected
+
+    if (projected.kind === 'ray') {
+      // Continue past the second point to the right edge, keeping the slope.
+      const runX = x2 - x1
+      const runY = y2 - y1
+      if (runX > 0) {
+        const scale = (width - x1) / runX
+        if (scale > 1) {
+          x2 = x1 + runX * scale
+          y2 = y1 + runY * scale
+        }
+      }
+    }
+
+    ctx.beginPath()
+    ctx.moveTo(x1, y1)
+    ctx.lineTo(x2, y2)
+    ctx.stroke()
+
+    if (projected.kind === 'arrow') {
+      paintArrowhead(ctx, x1, y1, x2, y2, drawing.width)
+    }
   }
 
   // Grips appear on selection rather than on hover, so that the shape you
@@ -1362,4 +1439,26 @@ function findSnapTarget(
   }
 
   return best
+}
+
+/** The head of an arrow, sized from the line it terminates. */
+function paintArrowhead(
+  ctx: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  lineWidth: number,
+) {
+  const angle = Math.atan2(y2 - y1, x2 - x1)
+  // Scaled to the stroke so a heavy line does not end in a pinhead.
+  const size = 6 + lineWidth * 2
+  const spread = Math.PI / 7
+
+  ctx.beginPath()
+  ctx.moveTo(x2, y2)
+  ctx.lineTo(x2 - size * Math.cos(angle - spread), y2 - size * Math.sin(angle - spread))
+  ctx.lineTo(x2 - size * Math.cos(angle + spread), y2 - size * Math.sin(angle + spread))
+  ctx.closePath()
+  ctx.fill()
 }

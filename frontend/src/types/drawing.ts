@@ -8,7 +8,13 @@
  * 4-hour: the anchor is the market, not the screen.
  */
 
-export type DrawingKind = 'trendline' | 'horizontal' | 'rectangle'
+export type DrawingKind =
+  | 'trendline'
+  | 'horizontal'
+  | 'rectangle'
+  | 'ray'
+  | 'vertical'
+  | 'arrow'
 
 /**
  * Active pointer mode. `cursor` hands the mouse back to the chart.
@@ -30,6 +36,9 @@ interface DrawingBase {
   /** Drawings belong to one chart; NQ annotations do not show up on ES. */
   symbol: string
   color: string
+  /** Stroke thickness in pixels. Selection and hover add to it rather than
+   *  replacing it, so a deliberately hairline level stays hairline. */
+  width: number
   createdAt: number
 }
 
@@ -51,9 +60,49 @@ export interface RectangleDrawing extends DrawingBase {
   kind: 'rectangle'
   from: DrawingPoint
   to: DrawingPoint
+  /**
+   * Draw the line halfway up the zone.
+   *
+   * Not decoration: the midpoint of an imbalance is a level in its own right
+   * -- consequent encroachment -- and is traded as one, which is why the
+   * backend already computes it for every fair value gap it finds.
+   */
+  midline?: boolean
 }
 
-export type Drawing = TrendlineDrawing | HorizontalDrawing | RectangleDrawing
+/**
+ * A line from one point through another, continuing to the right edge.
+ *
+ * The difference from a trend line is the whole point of having both: a trend
+ * line answers "what happened between these two bars", a ray answers "where
+ * does this go next", and only the second keeps meaning as new candles print.
+ */
+export interface RayDrawing extends DrawingBase {
+  kind: 'ray'
+  from: DrawingPoint
+  to: DrawingPoint
+}
+
+/** A moment running the full height -- a session open, a news release. */
+export interface VerticalDrawing extends DrawingBase {
+  kind: 'vertical'
+  time: number
+}
+
+/** A trend line that says which way to read it. */
+export interface ArrowDrawing extends DrawingBase {
+  kind: 'arrow'
+  from: DrawingPoint
+  to: DrawingPoint
+}
+
+export type Drawing =
+  | TrendlineDrawing
+  | HorizontalDrawing
+  | RectangleDrawing
+  | RayDrawing
+  | VerticalDrawing
+  | ArrowDrawing
 
 /**
  * A drawing before it has been given an id.
@@ -73,6 +122,9 @@ export const TOOL_LABELS: Record<ToolMode, string> = {
   trendline: 'Trend line',
   horizontal: 'Level',
   rectangle: 'Zone',
+  ray: 'Ray',
+  vertical: 'Time marker',
+  arrow: 'Arrow',
 }
 
 export const TOOL_HINTS: Record<ToolMode, string> = {
@@ -86,6 +138,26 @@ export const TOOL_HINTS: Record<ToolMode, string> = {
     'Esc cancels.',
   horizontal: 'Press to preview a level, release to place it. Esc cancels.',
   rectangle: 'Drag to mark a zone. Esc cancels.',
+  ray: 'Two points, then it carries on to the right edge. Esc cancels.',
+  vertical: 'Press to preview a moment, release to place it. Esc cancels.',
+  arrow: 'Drag from one point to another. Esc cancels.',
+}
+
+/** Stroke widths offered. Small set: a thickness picker is not a design tool. */
+export const DRAWING_WIDTHS = [1, 2, 3, 4] as const
+
+export const DEFAULT_DRAWING_WIDTH = 2
+
+/** True for the shapes stored as a pair of market points. */
+export function hasTwoPoints(
+  drawing: Drawing,
+): drawing is TrendlineDrawing | RectangleDrawing | RayDrawing | ArrowDrawing {
+  return (
+    drawing.kind === 'trendline' ||
+    drawing.kind === 'rectangle' ||
+    drawing.kind === 'ray' ||
+    drawing.kind === 'arrow'
+  )
 }
 
 /** Palette offered when drawing. Kept small so charts stay readable. */
@@ -115,4 +187,9 @@ export function isDragTool(tool: ToolMode): boolean {
 /** True for the range tools, which are meaningful only on the primary chart. */
 export function isRangeTool(tool: ToolMode): boolean {
   return tool === 'select' || tool === 'window'
+}
+
+/** Tools that place a single point rather than sweeping a range. */
+export function isPointTool(tool: ToolMode): boolean {
+  return tool === 'horizontal' || tool === 'vertical'
 }

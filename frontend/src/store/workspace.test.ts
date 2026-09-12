@@ -12,7 +12,8 @@ import type { Drawing } from '@/types/drawing'
 import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
 
 function level(id: string, price = 100, symbol = 'NQ'): Drawing {
-  return { id, kind: 'horizontal', symbol, color: '#818cf8', createdAt: 0, price }
+  return { id, kind: 'horizontal', symbol, color: '#818cf8',
+  width: 2, createdAt: 0, price }
 }
 
 const ids = () => useWorkspace.getState().drawings.map((drawing) => drawing.id)

@@ -13,16 +13,21 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Trash2 } from 'lucide-react'
+import { SeparatorHorizontal, Trash2 } from 'lucide-react'
 
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import { Button } from '@/components/ui/primitives'
 import { useWorkspace } from '@/store/workspace'
-import { DRAWING_COLORS, TOOL_LABELS, type Drawing } from '@/types/drawing'
+import {
+  DRAWING_COLORS,
+  DRAWING_WIDTHS,
+  TOOL_LABELS,
+  type Drawing,
+} from '@/types/drawing'
 import { cn } from '@/utils/cn'
 
 /** Roughly the bar's own size, used to keep it inside the pane. */
-const BAR_WIDTH_PX = 150
+const BAR_WIDTH_PX = 230
 const BAR_HEIGHT_PX = 26
 
 interface Props {
@@ -116,6 +121,56 @@ export function DrawingActions({ handle, drawings }: Props) {
 
           <span className="h-3.5 w-px bg-border" />
 
+          {/*
+            * Thickness, as a set of increasingly heavy strokes rather than a
+            * number: the choice is visual, so the control shows the outcome.
+            */}
+          {DRAWING_WIDTHS.map((value) => (
+            <button
+              key={value}
+              type="button"
+              aria-label={`Line width ${value}`}
+              aria-pressed={value === drawing.width}
+              onClick={() => updateDrawing(drawing.id, { width: value })}
+              className={cn(
+                'flex h-4 w-4 items-center justify-center rounded transition-colors',
+                value === drawing.width
+                  ? 'bg-[hsl(var(--panel-raised))]'
+                  : 'hover:bg-[hsl(var(--panel-raised))]',
+              )}
+            >
+              <span
+                className="w-2.5 rounded-full bg-current"
+                style={{ height: value }}
+              />
+            </button>
+          ))}
+
+          {drawing.kind === 'rectangle' && (
+            <>
+              <span className="h-3.5 w-px bg-border" />
+              <button
+                type="button"
+                aria-label="Midpoint line"
+                aria-pressed={Boolean(drawing.midline)}
+                title="Show the line halfway up the zone -- the level the midpoint itself is"
+                onClick={() =>
+                  updateDrawing(drawing.id, { midline: !drawing.midline })
+                }
+                className={cn(
+                  'flex h-4 w-5 items-center justify-center rounded transition-colors',
+                  drawing.midline
+                    ? 'bg-[hsl(var(--panel-raised))] text-foreground'
+                    : 'text-muted-foreground hover:bg-[hsl(var(--panel-raised))]',
+                )}
+              >
+                <SeparatorHorizontal size={11} />
+              </button>
+            </>
+          )}
+
+          <span className="h-3.5 w-px bg-border" />
+
           <Button
             size="icon"
             variant="ghost"
@@ -143,6 +198,13 @@ function anchorFor(drawing: Drawing, handle: ChartHandle): Anchor | null {
   if (drawing.kind === 'horizontal') {
     const y = handle.priceToY(drawing.price)
     return y == null ? null : { x: BAR_WIDTH_PX / 2 + 8, y }
+  }
+
+  if (drawing.kind === 'vertical') {
+    // The mirror of a level: it has a time and no price, so the toolbar sits
+    // at the top of the line rather than beside it.
+    const x = handle.timeToXFree(drawing.time)
+    return x == null ? null : { x, y: 8 }
   }
 
   const x1 = handle.timeToXFree(drawing.from.time)

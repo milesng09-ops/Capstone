@@ -26,6 +26,7 @@ const line: TrendlineDrawing = {
   kind: 'trendline',
   symbol: 'NQ',
   color: '#818cf8',
+  width: 2,
   createdAt: 0,
   from: { time: 1_000, price: 100 },
   to: { time: 2_000, price: 200 },
@@ -36,6 +37,7 @@ const zone: RectangleDrawing = {
   kind: 'rectangle',
   symbol: 'NQ',
   color: '#22d3ee',
+  width: 2,
   createdAt: 0,
   from: { time: 1_000, price: 200 },
   to: { time: 2_000, price: 100 },
@@ -46,6 +48,7 @@ const level: HorizontalDrawing = {
   kind: 'horizontal',
   symbol: 'NQ',
   color: '#f59e0b',
+  width: 2,
   createdAt: 0,
   price: 150,
 }

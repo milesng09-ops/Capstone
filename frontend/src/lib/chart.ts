@@ -425,3 +425,44 @@ export function indexOfBar(candles: Candle[], ms: number): number {
   }
   return -1
 }
+
+
+/**
+ * The nearest of a candle's four prices to `price`, or `null` if there is no
+ * candle at `time`.
+ *
+ * This is the magnet. Marking out an SMT divergence means saying "this low
+ * took that low", and a low is an exact number -- so placing the endpoint by
+ * eye means zooming in until the pixel under the cursor happens to be the
+ * right one. Snapping to the open, high, low or close removes the aiming
+ * entirely: put the pointer near the level and it lands *on* it.
+ *
+ * Four candidates rather than two, because an open or a close is a level
+ * people draw from as readily as a wick end.
+ *
+ * Nearest is measured in price. The price scale is monotonic, so on a linear
+ * axis that is the same ordering as nearest-in-pixels, and the axis is linear
+ * here.
+ */
+export function magnetPrice(
+  candles: Candle[],
+  time: number,
+  price: number,
+): number | null {
+  const index = indexOfBar(candles, time)
+  if (index < 0) return null
+
+  const candle = candles[index]
+  const levels = [candle.open, candle.high, candle.low, candle.close]
+
+  let best = levels[0]
+  let bestDistance = Math.abs(price - best)
+  for (const level of levels.slice(1)) {
+    const distance = Math.abs(price - level)
+    if (distance < bestDistance) {
+      best = level
+      bestDistance = distance
+    }
+  }
+  return best
+}

@@ -14,6 +14,7 @@ import { persist } from 'zustand/middleware'
 
 import {
   DEFAULT_DRAWING_COLOR,
+  DEFAULT_DRAWING_WIDTH,
   type Drawing,
   type ToolMode,
 } from '@/types/drawing'
@@ -117,6 +118,9 @@ interface WorkspaceState {
   // ---- drawing --------------------------------------------------------
   tool: ToolMode
   drawingColor: string
+  drawingWidth: number
+  /** Snap drawing points to the nearest open, high, low or close. */
+  magnet: boolean
   drawings: Drawing[]
   selectedDrawingId: string | null
   snapToSwings: boolean
@@ -169,6 +173,8 @@ interface WorkspaceState {
 
   setTool: (tool: ToolMode) => void
   setDrawingColor: (color: string) => void
+  setDrawingWidth: (width: number) => void
+  toggleMagnet: () => void
   addDrawing: (drawing: Drawing) => void
   updateDrawing: (id: string, patch: Partial<Drawing>) => void
   removeDrawing: (id: string) => void
@@ -235,6 +241,8 @@ export const useWorkspace = create<WorkspaceState>()(
 
       tool: 'cursor',
       drawingColor: DEFAULT_DRAWING_COLOR,
+      drawingWidth: DEFAULT_DRAWING_WIDTH,
+      magnet: true,
       drawings: [],
       selectedDrawingId: null,
       snapToSwings: true,
@@ -333,6 +341,8 @@ export const useWorkspace = create<WorkspaceState>()(
           selectedDrawingId: tool === 'cursor' ? state.selectedDrawingId : null,
         })),
       setDrawingColor: (drawingColor) => set({ drawingColor }),
+      setDrawingWidth: (drawingWidth) => set({ drawingWidth }),
+      toggleMagnet: () => set((state) => ({ magnet: !state.magnet })),
 
       addDrawing: (drawing) =>
         set((state) => ({
@@ -507,6 +517,8 @@ export const useWorkspace = create<WorkspaceState>()(
         ict: state.ict,
         drawings: state.drawings,
         drawingColor: state.drawingColor,
+        drawingWidth: state.drawingWidth,
+        magnet: state.magnet,
         snapToSwings: state.snapToSwings,
         rules: state.rules,
         search: state.search,

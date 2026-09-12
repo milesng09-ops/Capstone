@@ -18,12 +18,16 @@ import {
   BoxSelect,
   CalendarRange,
   Magnet,
+  Waypoints,
   Minus,
   MousePointer2,
   Palette,
   Redo2,
   Slash,
   Square,
+  MoveUpRight,
+  ArrowUpRight,
+  SeparatorVertical,
   Trash2,
   Undo2,
 } from 'lucide-react'
@@ -46,6 +50,9 @@ const TOOL_ICONS: Record<ToolMode, LucideIcon> = {
   trendline: Slash,
   horizontal: Minus,
   rectangle: Square,
+  ray: MoveUpRight,
+  vertical: SeparatorVertical,
+  arrow: ArrowUpRight,
 }
 
 /**
@@ -67,6 +74,8 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
   const tool = useWorkspace((state) => state.tool)
   const drawingColor = useWorkspace((state) => state.drawingColor)
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
+  const magnet = useWorkspace((state) => state.magnet)
+  const toggleMagnet = useWorkspace((state) => state.toggleMagnet)
   const showSwings = useWorkspace((state) => state.ict.showSwings)
   const drawingCount = useWorkspace((state) => state.drawings.length)
 
@@ -103,10 +112,30 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
       <ColorPicker value={drawingColor} onChange={setDrawingColor} />
 
       {/*
-        Snapping only reaches swing points the chart is drawing, so with them
-        hidden -- which is the default -- this control has nothing to act on.
-        Left merely lit it was a switch that visibly did nothing; disabled and
-        explained, it says what to turn on to make it work.
+        The magnet every charting platform means by the word: drawing points
+        land on a bar's open, high, low or close instead of wherever the
+        pointer happened to be. Marking "this low took that low" is an exact
+        claim about exact numbers, and without it the only way to make the
+        endpoint land on the low is to zoom until one pixel is one tick.
+      */}
+      <Button
+        size="icon"
+        variant="toolbar"
+        data-active={magnet}
+        onClick={toggleMagnet}
+        title="Magnet — snap drawing points to a candle's open, high, low or close"
+        aria-label="Magnet"
+        aria-pressed={magnet}
+      >
+        <Magnet size={15} />
+      </Button>
+
+      {/*
+        A *different* snap, and deliberately a different control: this one
+        reaches only the swing points the chart is drawing, so with them
+        hidden -- which is the default -- it has nothing to act on. Left merely
+        lit it was a switch that visibly did nothing; disabled and explained,
+        it says what to turn on to make it work.
       */}
       <Button
         size="icon"
@@ -122,7 +151,7 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
         aria-label="Snap to swing points"
         aria-pressed={snapToSwings && showSwings}
       >
-        <Magnet size={15} />
+        <Waypoints size={15} />
       </Button>
 
       <RailDivider />

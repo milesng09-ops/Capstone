@@ -60,6 +60,7 @@ const level: Drawing = {
   kind: 'horizontal',
   symbol: 'NQ',
   color: '#818cf8',
+  width: 2,
   createdAt: 0,
   price: 150,
 }
@@ -80,6 +81,8 @@ function setup(overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {}) {
     evidence: null,
     tool: 'cursor' as const,
     drawingColor: '#818cf8',
+    drawingWidth: 2,
+    magnet: false,
     selectedDrawingId: null,
     snapToSwings: false,
     allowSelection: true,

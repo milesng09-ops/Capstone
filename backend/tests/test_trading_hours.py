@@ -16,7 +16,11 @@ import pytest
 
 from app.providers.base import ProviderDataError
 from app.providers.massive_provider import MassiveProvider
-from app.providers.trading_hours import has_trading_session, is_trading_minute
+from app.providers.trading_hours import (
+    empty_response_indicts_provider,
+    has_trading_session,
+    is_trading_minute,
+)
 
 CHICAGO = ZoneInfo("America/Chicago")
 
@@ -152,6 +156,80 @@ class TestProviderTreatsClosureAsAnAnswer:
             await provider.get_bars(
                 "ES", "1h", local(2026, 9, 2, 9), local(2026, 9, 2, 15)
             )
+
+
+# --------------------------------------------------------------------------
+# Open, but only barely
+# --------------------------------------------------------------------------
+class TestASliverOfOpenMarketDoesNotIndictAProvider:
+    """The window a coverage back-fill asks for, and what it may conclude.
+
+    `has_trading_session` sees only open-or-shut.  These windows are open, for
+    less time than a single bar covers, which is the case that used to demote
+    a working provider.
+    """
+
+    #: The exact window that broke ES: the tail of the expiring June contract,
+    #: Friday 15:00 CT to the Sunday reopen.  One open hour in thirty-eight.
+    EXPIRING_TAIL = (ms(local(2026, 6, 5, 15)), ms(local(2026, 6, 7, 4, 59)))
+
+    def test_the_window_really_does_hold_one_open_hour(self):
+        # Guards the fixture itself: if the calendar ever changes underneath
+        # this test, the cases below would pass for the wrong reason.
+        start, end = self.EXPIRING_TAIL
+        assert has_trading_session(start, end) is True
+
+    def test_one_absent_hourly_bar_is_not_an_outage(self):
+        start, end = self.EXPIRING_TAIL
+        assert empty_response_indicts_provider(start, end, "1h") is False
+
+    def test_the_same_window_still_indicts_at_a_finer_interval(self):
+        # One open hour is twelve 5-minute bars. Missing all twelve is not a
+        # single absent bar, so the concession does not apply.
+        start, end = self.EXPIRING_TAIL
+        assert empty_response_indicts_provider(start, end, "5m") is True
+
+    def test_a_closed_window_is_still_excused(self):
+        assert (
+            empty_response_indicts_provider(
+                ms(local(2026, 9, 5, 0)), ms(local(2026, 9, 5, 9)), "1h"
+            )
+            is False
+        )
+
+    def test_a_real_outage_still_fails_loudly(self):
+        # A full trading day empty is empty across every bar in the window.
+        assert (
+            empty_response_indicts_provider(
+                ms(local(2026, 9, 2, 9)), ms(local(2026, 9, 2, 15)), "1h"
+            )
+            is True
+        )
+
+
+class TestTheProviderSurvivesTheBackFillSliver:
+    @pytest.mark.anyio
+    async def test_the_expiring_contract_tail_does_not_demote_massive(
+        self, monkeypatch
+    ):
+        """The regression: ES stuck loading because one hour had no bar.
+
+        Three contract segments had already returned thousands of bars. The
+        back-fill then asked for this sliver, got nothing, and the chain
+        marked Massive unhealthy for two minutes over it.
+        """
+
+        provider = MassiveProvider(api_key="test-key")
+
+        async def no_rows(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr(provider, "_fetch_contract", no_rows)
+
+        bars = await provider.get_bars(
+            "ES", "1h", local(2026, 6, 5, 15), local(2026, 6, 7, 4, 59)
+        )
+        assert bars == []
 
 
 @pytest.fixture

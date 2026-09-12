@@ -30,7 +30,7 @@ from app.providers.base import (
     ProviderUnavailableError,
 )
 from app.providers.instruments import get_instrument, list_instruments
-from app.providers.trading_hours import has_trading_session
+from app.providers.trading_hours import empty_response_indicts_provider
 from app.services.normalization import normalize_candles
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,9 @@ class YahooProvider(MarketDataProvider):
             raw_rows.extend(rows)
 
         candles = normalize_candles(instrument.symbol, raw_rows)
-        if not candles and _window_is_open(start, end, instrument.timezone):
+        if not candles and _empty_is_a_failure(
+            start, end, interval, instrument.timezone
+        ):
             raise ProviderDataError(
                 f"Yahoo returned no bars for {ticker} {interval}", provider=self.name
             )
@@ -214,9 +216,14 @@ class YahooProvider(MarketDataProvider):
         return rows
 
 
-def _window_is_open(start: datetime, end: datetime, tz_name: str) -> bool:
-    """Whether the market traded at any point in ``[start, end)``."""
+def _empty_is_a_failure(
+    start: datetime, end: datetime, interval: str, tz_name: str
+) -> bool:
+    """Whether an empty response over ``[start, end)`` indicts the provider."""
 
-    return has_trading_session(
-        int(start.timestamp() * 1000), int(end.timestamp() * 1000), tz_name=tz_name
+    return empty_response_indicts_provider(
+        int(start.timestamp() * 1000),
+        int(end.timestamp() * 1000),
+        interval,
+        tz_name=tz_name,
     )

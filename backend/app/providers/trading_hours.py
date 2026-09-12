@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.providers.futures_calendar import EXCHANGE_TIMEZONE
+from app.utils.intervals import HOUR_MS, interval_ms
 
 #: Hour, in exchange-local time, at which a new trading day opens.  The CME
 #: equity-index session runs Sun 17:00 CT to Fri 16:00 CT, so 17:00 is both the
@@ -156,3 +157,37 @@ def trading_hours_between(
         cursor += step
 
     return hours
+
+
+def empty_response_indicts_provider(
+    start_ms: int,
+    end_ms: int,
+    interval: str,
+    *,
+    tz_name: str = EXCHANGE_TIMEZONE,
+) -> bool:
+    """Whether "no bars" over this window is evidence the provider is broken.
+
+    :func:`has_trading_session` answers the first question -- was the market
+    open at all -- and a closed window excuses an empty response.  That leaves
+    a third case it cannot see: a window the market was open for, but only
+    barely.
+
+    A coverage back-fill asks for exactly those slivers.  Having fetched a
+    contract's whole stretch, the service re-asks for the few edges that did
+    not arrive, and one of them lands on the last open hour of an expiring
+    contract -- an hour the vendor has no bar for, and never will.  Treating
+    that as an outage marked a provider that had just returned thousands of
+    bars unhealthy for two minutes and demoted the symbol to the fallback,
+    which is how a chart ends up stuck loading over one absent bar.
+
+    So an empty answer only indicts a provider when the window held more open
+    market than a single bar could cover.  At or below that the response is
+    excused, the caller leaves the range uncovered, and the chart shows an
+    honest gap.  This is deliberately the smallest possible concession: one
+    bar is the least an empty response can be wrong by, so a genuine outage --
+    which is empty across every bar in the window -- still fails loudly.
+    """
+
+    open_hours = trading_hours_between(start_ms, end_ms, tz_name=tz_name)
+    return open_hours * HOUR_MS > interval_ms(interval)

@@ -31,6 +31,8 @@ import {
   Type,
   SeparatorVertical,
   Settings2,
+  Maximize2,
+  Minimize2,
   Trash2,
   Undo2,
 } from 'lucide-react'
@@ -81,6 +83,8 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
   const drawingColor = useWorkspace((state) => state.drawingColor)
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
   const magnet = useWorkspace((state) => state.magnet)
+  const focusMode = useWorkspace((state) => state.focusMode)
+  const toggleFocusMode = useWorkspace((state) => state.toggleFocusMode)
   const toggleMagnet = useWorkspace((state) => state.toggleMagnet)
   const showSwings = useWorkspace((state) => state.ict.showSwings)
   const drawingCount = useWorkspace((state) => state.drawings.length)
@@ -114,6 +118,23 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
       })}
 
       <RailDivider />
+
+      {/*
+        "The screen is a bit small." Both panels already closed one at a time;
+        this closes them together and gives them back, without asking anyone
+        to remember what had been open.
+      */}
+      <Button
+        size="icon"
+        variant="toolbar"
+        data-active={focusMode}
+        onClick={toggleFocusMode}
+        title={focusMode ? 'Show the panels again (F or Esc)' : 'Just the charts (F)'}
+        aria-label="Focus on the charts"
+        aria-pressed={focusMode}
+      >
+        {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+      </Button>
 
       <ChartSettingsMenu />
 
@@ -327,8 +348,6 @@ function ColorPicker({
  * the data.
  */
 function ChartSettingsMenu() {
-  const settings = useWorkspace((state) => state.chartSettings)
-  const update = useWorkspace((state) => state.updateChartSettings)
   const [open, setOpen] = useState(false)
   const boxRef = useRef<HTMLDivElement | null>(null)
 
@@ -363,30 +382,49 @@ function ChartSettingsMenu() {
       </Button>
 
       {open && (
-        <div className="absolute left-full top-0 z-40 ml-1 w-44 space-y-2 rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg">
-          <SettingRow
-            label="Grid lines"
-            checked={settings.showGrid}
-            onChange={(showGrid) => update({ showGrid })}
-          />
-          <SettingRow
-            label="Volume"
-            checked={settings.showVolume}
-            onChange={(showVolume) => update({ showVolume })}
-          />
-
-          <CandleColorRow
-            label="Up candles"
-            value={settings.bullColor}
-            onChange={(bullColor) => update({ bullColor })}
-          />
-          <CandleColorRow
-            label="Down candles"
-            value={settings.bearColor}
-            onChange={(bearColor) => update({ bearColor })}
-          />
+        <div className="absolute left-full top-0 z-40 ml-1 w-44 rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg">
+          <ChartSettingsBody />
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * The settings themselves, independent of how they were reached.
+ *
+ * Miles asked for these on right-click, which is where every charting
+ * platform puts them. They are also on the rail, because a right-click menu
+ * is invisible until you try it. Same controls either way -- two doors, one
+ * room, and no second copy to drift out of step with the first.
+ */
+export function ChartSettingsBody() {
+  const settings = useWorkspace((state) => state.chartSettings)
+  const update = useWorkspace((state) => state.updateChartSettings)
+
+  return (
+    <div className="space-y-2">
+      <SettingRow
+        label="Grid lines"
+        checked={settings.showGrid}
+        onChange={(showGrid) => update({ showGrid })}
+      />
+      <SettingRow
+        label="Volume"
+        checked={settings.showVolume}
+        onChange={(showVolume) => update({ showVolume })}
+      />
+
+      <CandleColorRow
+        label="Up candles"
+        value={settings.bullColor}
+        onChange={(bullColor) => update({ bullColor })}
+      />
+      <CandleColorRow
+        label="Down candles"
+        value={settings.bearColor}
+        onChange={(bearColor) => update({ bearColor })}
+      />
     </div>
   )
 }

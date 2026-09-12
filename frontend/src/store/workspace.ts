@@ -128,6 +128,16 @@ interface WorkspaceState {
   /** Snap drawing points to the nearest open, high, low or close. */
   magnet: boolean
   chartSettings: ChartSettings
+  /**
+   * Everything but the candles, hidden at once.
+   *
+   * Deliberately an override rather than a state change: it does not write to
+   * `sidePanel` or `resultsOpen`, so leaving focus restores exactly the
+   * workspace you had rather than a default someone guessed at. Not persisted
+   * either -- a full-screen chart is a thing you do for a minute, and coming
+   * back tomorrow to an app that appears to have lost its panels is not.
+   */
+  focusMode: boolean
   drawings: Drawing[]
   selectedDrawingId: string | null
   snapToSwings: boolean
@@ -183,6 +193,7 @@ interface WorkspaceState {
   setDrawingWidth: (width: number) => void
   toggleMagnet: () => void
   updateChartSettings: (patch: Partial<ChartSettings>) => void
+  toggleFocusMode: () => void
   addDrawing: (drawing: Drawing) => void
   updateDrawing: (id: string, patch: Partial<Drawing>) => void
   removeDrawing: (id: string) => void
@@ -252,6 +263,7 @@ export const useWorkspace = create<WorkspaceState>()(
       drawingWidth: DEFAULT_DRAWING_WIDTH,
       magnet: true,
       chartSettings: DEFAULT_CHART_SETTINGS,
+      focusMode: false,
       drawings: [],
       selectedDrawingId: null,
       snapToSwings: true,
@@ -354,6 +366,7 @@ export const useWorkspace = create<WorkspaceState>()(
       toggleMagnet: () => set((state) => ({ magnet: !state.magnet })),
       updateChartSettings: (patch) =>
         set((state) => ({ chartSettings: { ...state.chartSettings, ...patch } })),
+      toggleFocusMode: () => set((state) => ({ focusMode: !state.focusMode })),
 
       addDrawing: (drawing) =>
         set((state) => ({

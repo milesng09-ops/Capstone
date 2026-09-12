@@ -18,7 +18,7 @@
  * fixed here.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ChevronUp, PanelRightClose, SlidersHorizontal, Radar, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -60,12 +60,43 @@ export function Workspace() {
   // should keep forgetting.
   const tab = useWorkspace((state) => state.sidePanel)
   const setTab = useWorkspace((state) => state.setSidePanel)
-  const resultsOpen = useWorkspace((state) => state.resultsOpen)
+  const storedResultsOpen = useWorkspace((state) => state.resultsOpen)
   const setResultsOpen = useWorkspace((state) => state.setResultsOpen)
   const sidebarRatio = useWorkspace((state) => state.sidebarRatio)
   const setSidebarRatio = useWorkspace((state) => state.setSidebarRatio)
   const chartRatio = useWorkspace((state) => state.chartRatio)
   const setChartRatio = useWorkspace((state) => state.setChartRatio)
+  const focusMode = useWorkspace((state) => state.focusMode)
+  const toggleFocusMode = useWorkspace((state) => state.toggleFocusMode)
+
+  /*
+   * "The screen is a bit small" -- from the review call, while collapsing
+   * panels one at a time to see more candles. Both already closed
+   * individually; what was missing was closing them together and getting
+   * them back without having to remember what had been open.
+   *
+   * F toggles, Escape leaves. Escape only leaves, never enters, so the key
+   * that means "get me out of this" cannot put you into something.
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const typing =
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable
+      if (typing || event.metaKey || event.ctrlKey || event.altKey) return
+
+      if (event.key === 'f' || event.key === 'F') {
+        event.preventDefault()
+        toggleFocusMode()
+      } else if (event.key === 'Escape' && useWorkspace.getState().focusMode) {
+        toggleFocusMode()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [toggleFocusMode])
 
   /**
    * Below this width the panel cannot share the row with a chart -- a split
@@ -96,7 +127,10 @@ export function Workspace() {
   // Narrowing no longer has to remember and restore anything: the stored
   // choice is simply not consulted while there is no room for a column, and
   // is still there when there is again.
-  const dockedPanel = tab != null && !narrow
+  // Focus hides, it does not close: `tab` and `resultsOpen` keep their stored
+  // values so leaving focus puts back the workspace that was there.
+  const resultsOpen = storedResultsOpen && !focusMode
+  const dockedPanel = tab != null && !narrow && !focusMode
   const sheetPanel = sheetTab != null && narrow
 
   // One pair of rail buttons drives whichever of the two exists.

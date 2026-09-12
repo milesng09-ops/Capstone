@@ -1,7 +1,9 @@
 /** One instrument's chart: candles, overlays and a legend laid over them. */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Maximize2 } from 'lucide-react'
+
+import { ChartSettingsBody } from '@/components/chart/ToolRail'
 
 import { ChartOverlay } from '@/components/chart/ChartOverlay'
 import { DrawingActions } from '@/components/chart/DrawingActions'
@@ -163,6 +165,8 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
       )}
     >
       <div ref={containerRef} className="absolute inset-0" />
+
+      <ChartContextMenu />
 
       {/*
        * The legend sits over the candles instead of in a title bar above them.
@@ -327,3 +331,65 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     </div>
   )
 }
+
+/**
+ * Appearance settings on right-click, where charting platforms put them.
+ *
+ * The same controls the rail button opens, not a second copy: one set of
+ * inputs reached two ways cannot drift out of step with itself.
+ *
+ * Placed at the pointer and nudged back inside the pane when the click lands
+ * near an edge -- a menu that opens half off-screen is worse than no menu.
+ */
+function ChartContextMenu() {
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  const paneRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const pane = paneRef.current?.parentElement
+    if (!pane) return
+
+    const open = (event: MouseEvent) => {
+      event.preventDefault()
+      const box = pane.getBoundingClientRect()
+      setAt({
+        x: Math.min(event.clientX - box.left, Math.max(0, box.width - MENU_W_PX)),
+        y: Math.min(event.clientY - box.top, Math.max(0, box.height - MENU_H_PX)),
+      })
+    }
+    const close = () => setAt(null)
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAt(null)
+    }
+
+    pane.addEventListener('contextmenu', open)
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', escape)
+    return () => {
+      pane.removeEventListener('contextmenu', open)
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', escape)
+    }
+  }, [])
+
+  return (
+    <div ref={paneRef} className="pointer-events-none absolute inset-0 z-40">
+      {at && (
+        <div
+          role="menu"
+          aria-label="Chart appearance"
+          // Stop the window-level mousedown that closes it from firing for
+          // clicks inside it.
+          onMouseDown={(event) => event.stopPropagation()}
+          className="pointer-events-auto absolute w-44 rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg"
+          style={{ left: at.x, top: at.y }}
+        >
+          <ChartSettingsBody />
+        </div>
+      )}
+    </div>
+  )
+}
+
+const MENU_W_PX = 176
+const MENU_H_PX = 168

@@ -71,6 +71,19 @@ class Settings(BaseSettings):
     # ---- Limits (cost controls) -----------------------------------------
     max_symbols_per_workspace: int = 3
     max_bars_per_request: int = 20_000
+    #: Shortest gap between two fetches of the same series' forming tail.
+    #:
+    #: One view of one market is several requests -- the candles, and the
+    #: detections, which fetch the correlated market too for SMT.  A two-chart
+    #: workspace therefore asks for six series on every change of timeframe,
+    #: and each one used to poke the provider for the tail, because the tail is
+    #: never recorded as covered.  Against a quota of five calls a minute that
+    #: is more than a minute's budget for a single click.
+    #:
+    #: Shorter than the client's own 60-second staleness window, so it
+    #: collapses the requests that make up one view without ever delaying a
+    #: refresh the user would otherwise have seen.
+    fresh_tail_min_seconds: float = 15.0
     max_intraday_history_days: int = 730
     max_pattern_matches: int = 25
     max_candidate_windows: int = 250_000

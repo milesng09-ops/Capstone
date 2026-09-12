@@ -16,6 +16,7 @@ so three charts opening at once produce one provider call, not three.
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ from app.providers.trading_hours import (
 from app.services.aggregation_service import aggregate_candles
 from app.services.cache_service import (
     align_range,
+    fresh_horizon,
     cacheable_end,
     edge_padding_ms,
     estimate_bar_count,
@@ -154,6 +156,10 @@ class CandleService:
     def __init__(self, provider: AutomaticFallbackProvider | None = None) -> None:
         self._provider = provider or AutomaticFallbackProvider()
         self._locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+        #: Per series: when its forming tail was last fetched, on the
+        #: monotonic clock, and the freshness horizon in force at that moment.
+        #: See :meth:`_settled_gaps_only` for why both are needed.
+        self._tail_fetched: dict[tuple[str, str], tuple[float, int]] = {}
 
     @property
     def provider(self) -> AutomaticFallbackProvider:
@@ -273,6 +279,60 @@ class CandleService:
         )
 
     # ------------------------------------------------------------------
+    def _tail_fetch(self, symbol: str, store_interval: str) -> int | None:
+        """The horizon the tail was last fetched against, if that was recent.
+
+        The tail is never recorded as covered -- that is the whole freshness
+        policy, and it is what keeps the bar currently forming up to date. The
+        cost is that *every* request asks the provider for it again, and one
+        view of one market is several requests: the candles, and the
+        detections, which fetch the correlated market as well so it has
+        something to read SMT against. A two-chart workspace therefore asked
+        for six series on a change of timeframe and poked the provider six
+        times for the same handful of forming bars. Against a quota of five
+        calls a minute that is more than a minute's budget for one click, and
+        a 4h request was measured at 150.8 seconds end to end because of it.
+
+        Monotonic rather than wall clock: this is "how long since we asked",
+        which must not jump when the system clock is corrected.
+        """
+
+        recorded = self._tail_fetched.get((symbol, store_interval))
+        if recorded is None:
+            return None
+        when, horizon = recorded
+        if (time.monotonic() - when) >= get_settings().fresh_tail_min_seconds:
+            return None
+        return horizon
+
+    def _settled_gaps_only(
+        self, symbol: str, store_interval: str, gaps: list[TimeRange]
+    ) -> list[TimeRange]:
+        """Drop gaps that are nothing but a tail we have just fetched.
+
+        A gap is only dropped when it lies entirely beyond the horizon **as
+        it stood at the last fetch**, which is the subtlety this turns on.
+        The horizon is ``now`` minus a couple of bars, so it moves forward
+        with the wall clock: a gap that begins exactly where the last fetch
+        stopped recording coverage is the tail, and a second later the
+        present horizon has moved past its start, making it look like missing
+        history. Measured against the horizon it was actually fetched at, it
+        is what it is -- and anything reaching back before that really is
+        history, however far forward it also runs.
+        """
+
+        horizon = self._tail_fetch(symbol, store_interval)
+        if horizon is None:
+            return gaps
+        settled = [gap for gap in gaps if gap.start < horizon]
+        if len(settled) == len(gaps):
+            return gaps
+        logger.debug(
+            "Reusing the tail of %s %s, fetched moments ago", symbol, store_interval
+        )
+        return settled
+
+    # ------------------------------------------------------------------
     async def _ensure_cached(
         self,
         symbol: str,
@@ -286,6 +346,8 @@ class CandleService:
         gaps = await anyio.to_thread.run_sync(
             self._compute_gaps, symbol, store_interval, window, force_refresh
         )
+        if not force_refresh:
+            gaps = self._settled_gaps_only(symbol, store_interval, gaps)
 
         if not gaps:
             provider_name = (
@@ -301,6 +363,13 @@ class CandleService:
             )
 
         gaps = merge_adjacent(gaps, store_interval)
+        # Marked on the attempt rather than on success. A provider that just
+        # refused is the last one worth asking again a tenth of a second
+        # later, and the caller reports the range as unfilled either way.
+        horizon = fresh_horizon(store_interval)
+        if any(gap.end > horizon for gap in gaps):
+            self._tail_fetched[(symbol, store_interval)] = (time.monotonic(), horizon)
+
         provider_name = self._preferred_provider()
         fallback_reason: str | None = None
         quality = "delayed"

@@ -115,11 +115,24 @@ def align_range(requested: TimeRange, interval: str) -> TimeRange:
     return TimeRange(align_down(requested.start, interval), align_up(requested.end, interval))
 
 
+def fresh_horizon(interval: str) -> int:
+    """Where the settled past ends and the forming tail begins.
+
+    Everything after this is deliberately never recorded as covered, so it is
+    asked for again on the next request -- which is what keeps the bar
+    currently forming up to date.  Naming it makes the other half of that
+    policy expressible: a gap lying entirely beyond this point is not missing
+    history, it is the tail, and refetching it twice in the same breath buys
+    nothing.
+    """
+
+    return now_ms() - FRESH_TAIL_BARS * interval_ms(interval)
+
+
 def cacheable_end(requested_end: int, interval: str) -> int:
     """The latest timestamp we are willing to record as permanently covered."""
 
-    horizon = now_ms() - FRESH_TAIL_BARS * interval_ms(interval)
-    return min(requested_end, horizon)
+    return min(requested_end, fresh_horizon(interval))
 
 
 def estimate_bar_count(

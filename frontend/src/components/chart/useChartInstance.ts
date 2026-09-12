@@ -37,6 +37,7 @@ import {
   broadcastCrosshair,
   broadcastLogicalRange,
   broadcastTimeJump,
+  withoutSync,
   isApplyingSync,
   registerChart,
 } from '@/lib/chartSync'
@@ -374,8 +375,12 @@ export function useChartInstance({
    * about.
    */
   const resetView = useCallback(() => {
-    seriesRef.current?.priceScale().applyOptions({ autoScale: true })
-    chartRef.current?.timeScale().fitContent()
+    // Local, and silent. See `withoutSync` for why a refit must not reach
+    // the other charts: it is computed from the bars *this* pane holds.
+    withoutSync(() => {
+      seriesRef.current?.priceScale().applyOptions({ autoScale: true })
+      chartRef.current?.timeScale().fitContent()
+    })
   }, [])
   resetViewRef.current = resetView
 

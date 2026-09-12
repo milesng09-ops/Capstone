@@ -133,3 +133,27 @@ export function resetAllCharts(): void {
 export function isApplyingSync(): boolean {
   return applying
 }
+
+/**
+ * Run something without letting it reach the other charts.
+ *
+ * For a refit, which is the one operation that is emphatically *local*. A
+ * refit computes a range from the bars this chart is holding, and a chart
+ * changing interval holds different bars from its neighbour for as long as
+ * the two fetches take to land -- so broadcasting one puts a 25-bar weekly
+ * range onto a chart still showing 2,900 hourly candles, or the reverse.
+ * Found by switching to the weekly view: both panes ended up scrolled to a
+ * sliver at the right edge, and pressing R fixed them.
+ *
+ * The flag is saved and restored rather than cleared, so this nests inside
+ * `resetAllCharts`, which sets it for the whole sweep.
+ */
+export function withoutSync<T>(run: () => T): T {
+  const was = applying
+  applying = true
+  try {
+    return run()
+  } finally {
+    applying = was
+  }
+}

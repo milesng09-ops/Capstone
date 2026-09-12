@@ -21,6 +21,7 @@ import {
   registerChart,
   resetAllCharts,
   setSyncModes,
+  withoutSync,
   type SyncedChart,
 } from '@/lib/chartSync'
 
@@ -171,5 +172,47 @@ describe('a chart that has gone away', () => {
     off()
     broadcastCrosshair('a', 2)
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('a refit', () => {
+  it('does not reach the other charts', () => {
+    /*
+     * A refit is computed from the bars *this* chart holds, and a chart
+     * changing interval holds different bars from its neighbour for as long
+     * as the two fetches take to land. Broadcasting one puts a 25-bar weekly
+     * range onto a chart still showing 2,900 hourly candles.
+     *
+     * Found by switching to the weekly view in the browser: both panes ended
+     * up scrolled to a sliver at the right edge, and pressing R fixed them.
+     */
+    withoutSync(() => broadcastLogicalRange('a', range))
+
+    expect(b.calls.applyLogicalRange).toEqual([])
+  })
+
+  it('leaves the link working afterwards', () => {
+    withoutSync(() => broadcastLogicalRange('a', range))
+    broadcastLogicalRange('a', range)
+
+    expect(b.calls.applyLogicalRange).toEqual([[range]])
+  })
+
+  it('nests inside a reset of every chart', () => {
+    // `resetAllCharts` suppresses for the whole sweep, and each chart's own
+    // refit suppresses again inside it. Restoring rather than clearing is
+    // what stops the inner one re-opening the link half way through.
+    const inner: SyncedChart = {
+      ...chart(),
+      resetView: () => {
+        withoutSync(() => {})
+        broadcastLogicalRange('inner', range)
+      },
+    }
+    detach.push(registerChart('inner', inner))
+
+    resetAllCharts()
+
+    expect(b.calls.applyLogicalRange).toEqual([])
   })
 })

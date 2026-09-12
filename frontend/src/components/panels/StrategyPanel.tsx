@@ -20,6 +20,7 @@ import { BoxSelect, CalendarRange, Play, RotateCcw, X } from 'lucide-react'
 import { PositionSizing } from '@/components/panels/PositionSizing'
 import { NumberField, SelectField, ToggleField } from '@/components/ui/fields'
 import { Badge, Button, Disclosure, Spinner } from '@/components/ui/primitives'
+import { StrategyStart } from '@/components/panels/StrategyStart'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars } from '@/hooks/useMarketData'
 import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
@@ -184,6 +185,13 @@ export function StrategyPanel() {
      */
     <div className="flex h-full flex-col p-3">
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      {/*
+        Before the setup, because it is what you reach for when you do not
+        yet know what you are testing -- and after it in the flow, since
+        neither a preset nor a description says which candles to look at.
+      */}
+      <StrategyStart />
+
       {/* ---- the setup ---- */}
       <Disclosure
         label="Selected setup"

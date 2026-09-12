@@ -1,0 +1,320 @@
+/**
+ * Turning a written description into a strategy.
+ *
+ * Miles asked for an AI strategy builder that reads a description or a set of
+ * example trades. This is the first half, and it is worth being plain about
+ * what it is: **a grammar, not a model.** Nothing here calls a language
+ * model. It recognises the phrases traders actually write -- "long, 1% stop,
+ * 2R, only in a fair value gap" -- and maps each to the setting it names.
+ *
+ * That choice is the point rather than a shortcut. This app's whole argument
+ * is that a result has to show its working, and a form filled in by something
+ * that cannot say *why* is the same defect one step earlier: you would be
+ * running a backtest on settings you did not choose and cannot audit. So
+ * every field this sets is reported with the words that set it, and every
+ * phrase it did not understand is reported too -- because the dangerous
+ * failure is not "it refused", it is "it quietly ignored the half of the
+ * sentence that mattered".
+ *
+ * A model can be put behind this later. What it would have to produce is
+ * exactly what `interpret` produces now, which is the useful part: a patch, a
+ * line-by-line account of where each value came from, and an honest list of
+ * what went unread.
+ */
+
+import {
+  DEFAULT_DETECTOR_FILTERS,
+  DEFAULT_TRADE_RULES,
+  type DetectorFilters,
+  type SearchConfig,
+  type TradeRules,
+} from '@/types/backtest'
+import { SYMBOLS, type SymbolKey } from '@/types/market'
+
+/** One thing the description asked for, and the words that asked for it. */
+export interface Understood {
+  /** The matched text, quoted back so the user can see what was read. */
+  phrase: string
+  /** Human name of the setting, e.g. "Stop loss". */
+  setting: string
+  /** Human form of the value, e.g. "1% below entry". */
+  value: string
+}
+
+export interface Interpretation {
+  rules: Partial<TradeRules>
+  search: Partial<SearchConfig>
+  detectors: Partial<DetectorFilters>
+  understood: Understood[]
+  /**
+   * Sentences with no recognised instruction in them.
+   *
+   * Reported rather than dropped: a description that mentions a condition
+   * this grammar has never heard of produces a strategy that is missing it,
+   * and the user has to be able to see that rather than discover it in a
+   * result.
+   */
+  unread: string[]
+}
+
+interface Rule {
+  /** What to look for. Must have at least one capture group when numeric. */
+  pattern: RegExp
+  apply: (match: RegExpMatchArray, into: Interpretation) => Understood | null
+}
+
+const NUMBER = String.raw`(\d+(?:\.\d+)?)`
+
+/**
+ * The grammar, in the order it is applied.
+ *
+ * Order matters in one place and is deliberate there: the reward-to-risk
+ * forms are tried before the plain percentage target, so "2R" is not read as
+ * a number with a stray letter after it.
+ */
+const RULES: Rule[] = [
+  // ---- direction --------------------------------------------------------
+  {
+    pattern: /\b(short|sell|bearish|downside)\b/,
+    apply: (match, into) => {
+      into.rules.direction = 'short'
+      return { phrase: match[0], setting: 'Direction', value: 'Short' }
+    },
+  },
+  {
+    pattern: /\b(long|buy|bullish|upside)\b/,
+    apply: (match, into) => {
+      into.rules.direction = 'long'
+      return { phrase: match[0], setting: 'Direction', value: 'Long' }
+    },
+  },
+
+  // ---- entry ------------------------------------------------------------
+  {
+    pattern: /\b(next open|next bar|following open|open of the next)\b/,
+    apply: (match, into) => {
+      into.rules.entry_type = 'next_open'
+      return { phrase: match[0], setting: 'Entry', value: "Next bar's open" }
+    },
+  },
+
+  // ---- stop -------------------------------------------------------------
+  {
+    pattern: new RegExp(String.raw`\b${NUMBER}\s*(?:x\s*)?atr\b[^.]{0,20}?stop|stop[^.]{0,20}?\b${NUMBER}\s*(?:x\s*)?atr\b`),
+    apply: (match, into) => {
+      const value = Number(match[1] ?? match[2])
+      into.rules.stop_loss_type = 'atr_multiple'
+      into.rules.stop_loss_value = value
+      return { phrase: match[0], setting: 'Stop loss', value: `${value} x ATR` }
+    },
+  },
+  {
+    pattern: /\bstop[^.]{0,24}?\b(pattern (?:low|high|extreme)|swing (?:low|high)|structure)\b/,
+    apply: (match, into) => {
+      into.rules.stop_loss_type = 'pattern_extreme'
+      into.rules.stop_loss_value = 0
+      return { phrase: match[0], setting: 'Stop loss', value: 'Beyond the pattern extreme' }
+    },
+  },
+  {
+    pattern: new RegExp(String.raw`\b${NUMBER}\s*%\s*stop\b|\bstop\s*(?:of|at|loss)?\s*${NUMBER}\s*%`),
+    apply: (match, into) => {
+      const value = Number(match[1] ?? match[2])
+      into.rules.stop_loss_type = 'percentage'
+      into.rules.stop_loss_value = value
+      return { phrase: match[0], setting: 'Stop loss', value: `${value}% from entry` }
+    },
+  },
+
+  // ---- target -----------------------------------------------------------
+  {
+    pattern: new RegExp(String.raw`\b${NUMBER}\s*r\b|\brisk[- ]?reward\s*(?:of)?\s*${NUMBER}|\b${NUMBER}\s*:\s*1\b`),
+    apply: (match, into) => {
+      const value = Number(match[1] ?? match[2] ?? match[3])
+      into.rules.take_profit_type = 'risk_reward'
+      into.rules.take_profit_value = value
+      return { phrase: match[0], setting: 'Target', value: `${value}x the risk` }
+    },
+  },
+  {
+    pattern: new RegExp(String.raw`\b(?:target|take profit|tp)\s*(?:of|at)?\s*${NUMBER}\s*%`),
+    apply: (match, into) => {
+      const value = Number(match[1])
+      into.rules.take_profit_type = 'percentage'
+      into.rules.take_profit_value = value
+      return { phrase: match[0], setting: 'Target', value: `${value}% from entry` }
+    },
+  },
+
+  // ---- holding ----------------------------------------------------------
+  {
+    pattern: new RegExp(String.raw`\b(?:hold|exit|close|out)[^.]{0,20}?${NUMBER}\s*bars?\b|\b${NUMBER}\s*bars?\b[^.]{0,12}?(?:max|maximum|at most)`),
+    apply: (match, into) => {
+      const value = Math.round(Number(match[1] ?? match[2]))
+      into.rules.maximum_holding_bars = value
+      return { phrase: match[0], setting: 'Maximum hold', value: `${value} bars` }
+    },
+  },
+
+  // ---- conditions -------------------------------------------------------
+  {
+    pattern: /\b(fair value gaps?|fvgs?|imbalances?)\b/,
+    apply: (match, into) => {
+      into.detectors.require_fair_value_gap = true
+      return { phrase: match[0], setting: 'Condition', value: 'Entry inside an unfilled gap' }
+    },
+  },
+  {
+    pattern: /\b(smt|divergences?)\b/,
+    apply: (match, into) => {
+      into.detectors.require_smt_divergence = true
+      return { phrase: match[0], setting: 'Condition', value: 'A confirmed SMT divergence' }
+    },
+  },
+  {
+    pattern: /\b(swing (?:point|high|low)s?|market structure|structure break)\b/,
+    apply: (match, into) => {
+      into.detectors.require_swing_point = true
+      return { phrase: match[0], setting: 'Condition', value: 'A confirmed swing point' }
+    },
+  },
+  {
+    pattern: new RegExp(String.raw`\bwithin\s*${NUMBER}\s*bars?\b`),
+    apply: (match, into) => {
+      const value = Math.round(Number(match[1]))
+      into.detectors.within_bars = value
+      return { phrase: match[0], setting: 'Condition age', value: `Within ${value} bars` }
+    },
+  },
+
+  // ---- search -----------------------------------------------------------
+  {
+    pattern: new RegExp(String.raw`\b(?:top|best|up to|at most)\s*${NUMBER}\s*(?:matches|instances|examples)\b`),
+    apply: (match, into) => {
+      const value = Math.round(Number(match[1]))
+      into.search.maximumMatches = value
+      return { phrase: match[0], setting: 'Matches', value: `At most ${value}` }
+    },
+  },
+  {
+    pattern: new RegExp(String.raw`\bsimilarity\s*(?:of|above|over|at least)?\s*${NUMBER}`),
+    apply: (match, into) => {
+      // Written either way round: "similarity 0.7" and "similarity 70".
+      const raw = Number(match[1])
+      const value = raw > 1 ? raw / 100 : raw
+      into.search.minimumSimilarity = value
+      return { phrase: match[0], setting: 'Similarity', value: `At least ${value.toFixed(2)}` }
+    },
+  },
+  {
+    pattern: new RegExp(String.raw`\b(?:last|past|over|previous)\s*${NUMBER}\s*(days?|weeks?|months?|years?)\b`),
+    apply: (match, into) => {
+      const count = Number(match[1])
+      const unit = match[2]
+      const days = unit.startsWith('week')
+        ? count * 7
+        : unit.startsWith('month')
+          ? count * 30
+          : unit.startsWith('year')
+            ? count * 365
+            : count
+      into.search.lookbackDays = Math.round(days)
+      return {
+        phrase: match[0],
+        setting: 'Lookback',
+        value: `${Math.round(days)} days`,
+      }
+    },
+  },
+]
+
+/**
+ * Split on sentence ends and on the commas traders use as clause breaks.
+ *
+ * A full stop only ends a sentence when a digit does not follow it.
+ * Splitting on every period cut "stop at 0.5%" into "stop at 0" and "5%",
+ * and the damage was quiet in the worst way: neither half matched any rule,
+ * so the stop was dropped *and* reported as text the grammar could not
+ * read. Every failing case was a decimal, which is what gave it away.
+ */
+function clausesOf(text: string): string[] {
+  return text
+    .split(/[;\n]+|\.(?!\d)|,(?=\s)/)
+    .map((clause) => clause.trim())
+    .filter(Boolean)
+}
+
+/**
+ * Markets named in the text.
+ *
+ * Separate from the grammar because a symbol can appear anywhere in any
+ * clause and is never the *only* thing a clause says -- "long NQ into a gap"
+ * names a market, a direction and a condition at once.
+ */
+function symbolsIn(text: string): SymbolKey[] {
+  const upper = text.toUpperCase()
+  return SYMBOLS.filter((symbol) => new RegExp(String.raw`\b${symbol}\b`).test(upper))
+}
+
+/**
+ * Read a description into a strategy patch.
+ *
+ * Case-insensitive throughout, and applied clause by clause so that the
+ * account of what was understood can quote the words responsible.
+ */
+export function interpret(text: string): Interpretation {
+  const into: Interpretation = {
+    rules: {},
+    search: {},
+    detectors: {},
+    understood: [],
+    unread: [],
+  }
+
+  const symbols = symbolsIn(text)
+  if (symbols.length > 0) {
+    into.search.searchSymbols = symbols
+    into.understood.push({
+      phrase: symbols.join(', '),
+      setting: 'Markets',
+      value: symbols.join(' and '),
+    })
+  }
+
+  for (const clause of clausesOf(text)) {
+    const lower = clause.toLowerCase()
+    let matchedHere = false
+
+    for (const rule of RULES) {
+      const match = lower.match(rule.pattern)
+      if (!match) continue
+      const understood = rule.apply(match, into)
+      if (understood) {
+        into.understood.push(understood)
+        matchedHere = true
+      }
+    }
+
+    // A clause that only named a market has still been read.
+    if (!matchedHere && symbolsIn(clause).length === 0) into.unread.push(clause)
+  }
+
+  return into
+}
+
+/**
+ * The whole strategy an interpretation describes, filled out from defaults.
+ *
+ * Same rule as the presets: a description replaces the strategy rather than
+ * editing it, so what is on the form is what the sentence says and nothing
+ * left over from before it.
+ */
+export function strategyFrom(interpretation: Interpretation): {
+  rules: TradeRules
+  detectors: DetectorFilters
+} {
+  return {
+    rules: { ...DEFAULT_TRADE_RULES, ...interpretation.rules },
+    detectors: { ...DEFAULT_DETECTOR_FILTERS, ...interpretation.detectors },
+  }
+}

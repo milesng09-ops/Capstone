@@ -91,6 +91,22 @@ export interface EquityPoint {
   drawdown: number
 }
 
+/**
+ * The same trade rules run at windows chosen at random from the pool the
+ * similarity search ranked. The reference point the win rate is read against:
+ * same candles, same costs, same stop and target, chance instead of
+ * resemblance.
+ */
+export interface BaselineSummary {
+  samples: number
+  trades_executed: number
+  win_rate: number
+  average_return: number
+  expectancy: number
+  /** Derived from the query, so a rerun reproduces this exact draw. */
+  seed: number
+}
+
 export interface BacktestSummary {
   total_matches: number
   trades_executed: number
@@ -114,6 +130,17 @@ export interface BacktestSummary {
   longest_winning_streak: number
   longest_losing_streak: number
   average_holding_bars: number
+  /** 95% Wilson interval around `win_rate`, in percent. */
+  win_rate_low: number
+  win_rate_high: number
+  /** `null` when there was not enough history to draw a baseline. */
+  baseline: BaselineSummary | null
+  /**
+   * P(a win rate at least this high | no edge over the baseline). Does not
+   * account for the setup being chosen by eye, nor for repeated attempts on
+   * the same selection.
+   */
+  baseline_p_value: number | null
   sample_size_warning: string | null
   same_bar_ambiguity_count: number
   equity_curve: EquityPoint[]

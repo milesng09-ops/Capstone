@@ -20,6 +20,13 @@ import anyio
 
 from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade
 from app.backtesting.metrics import compute_metrics
+from app.backtesting.significance import (
+    DEFAULT_BASELINE_SAMPLES,
+    baseline_inputs,
+    baseline_seed,
+    run_baseline,
+    summarise_baseline,
+)
 from app.config import get_settings
 from app.database.repository import create_backtest, get_matches, get_trades
 from app.database.session import session_scope
@@ -210,12 +217,28 @@ class BacktestService:
 
         all_trades.sort(key=lambda trade: trade.entry_time)
 
+        # ---- null baseline --------------------------------------------
+        # The same rules at windows drawn by chance rather than resemblance,
+        # so the win rate above has something to be read against.
+        baseline = await anyio.to_thread.run_sync(
+            lambda: self._draw_baseline(
+                request=request,
+                query_length=query.length,
+                required_future_bars=required_future_bars,
+                exclusion=exclusion,
+                primary=primary,
+                by_symbol=by_symbol,
+                series_by_symbol=series_by_symbol,
+            )
+        )
+
         summary = compute_metrics(
             all_trades,
             total_matches=len(found),
             skipped_matches=skipped_total,
             data_quality=self._data_quality_notes(series, usable, query, interval),
             extra_assumptions=self._extra_assumptions(query, request),
+            baseline=baseline,
         )
 
         # ---- persist ---------------------------------------------------
@@ -399,6 +422,65 @@ class BacktestService:
             "roll-adjusted; prices around contract rolls may jump."
         )
         return notes
+
+    def _draw_baseline(
+        self,
+        *,
+        request: BacktestRequest,
+        query_length: int,
+        required_future_bars: int,
+        exclusion: tuple[int, int],
+        primary: str,
+        by_symbol: dict,
+        series_by_symbol: dict,
+    ):
+        """The same rules at windows chosen by chance, pooled across symbols.
+
+        Draws are apportioned to each symbol by the share of matches it
+        contributed, so the null is sampled from the same mix of series the
+        matches came from.  A baseline drawn only from the primary would be a
+        different opportunity set whenever the reference symbol supplied any
+        of the matches.
+
+        The seed is derived from the selection and the rules, so the same
+        backtest reproduces the same baseline.  It is reported alongside the
+        figures for exactly that reason.
+        """
+
+        matched_total = sum(len(entries) for entries in by_symbol.values())
+        if not matched_total:
+            return None
+
+        seed = baseline_seed(
+            request.selection.start_time,
+            request.selection.end_time,
+            request.interval,
+            primary,
+            query_length,
+            request.trade.model_dump_json(),
+        )
+
+        trades = []
+        for symbol, entries in by_symbol.items():
+            share = len(entries) / matched_total
+            samples = max(1, round(DEFAULT_BASELINE_SAMPLES * share))
+            candles = series_by_symbol[symbol].candles
+            inputs = baseline_inputs(
+                candles,
+                window_length=query_length,
+                # Only the primary series holds the selection, so only it has
+                # a region to keep the baseline out of -- the same rule the
+                # search applies when it builds `exclude`.
+                exclude_ranges=[exclusion] if symbol == primary else [],
+                required_future_bars=required_future_bars,
+                samples=samples,
+                seed=seed,
+            )
+            trades.extend(run_baseline(candles, request.trade, inputs))
+
+        return summarise_baseline(
+            trades, samples=DEFAULT_BASELINE_SAMPLES, seed=seed
+        )
 
     @staticmethod
     def _extra_assumptions(query, request: BacktestRequest) -> list[str]:

@@ -164,13 +164,36 @@ export function ResultsPanel() {
 }
 
 function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']> }) {
+  // A run saved before the interval existed has no interval, and its stored
+  // summary defaults both bounds to zero. Rendering that as "0-0% at 95%"
+  // would state a certainty about an old result that was never computed, so
+  // the band and its caption are simply left off.
+  const hasInterval = summary.win_rate_high > summary.win_rate_low
+
   return (
-    <div className="grid shrink-0 grid-cols-2 gap-2 p-3 sm:grid-cols-4 xl:grid-cols-7">
-      <div className="col-span-2 rounded-md border border-primary/30 bg-primary/10 p-2.5 sm:col-span-1">
+    <div className="grid shrink-0 grid-cols-2 gap-2 p-3 sm:grid-cols-4 xl:grid-cols-8">
+      <div className="col-span-2 rounded-md border border-primary/30 bg-primary/10 p-2.5">
         <p className="label-caps">Win rate</p>
-        <p className="numeric mt-0.5 text-2xl font-semibold leading-none">
-          {formatNumber(summary.win_rate, 1)}%
-        </p>
+        <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <p className="numeric text-2xl font-semibold leading-none">
+            {formatNumber(summary.win_rate, 1)}%
+          </p>
+          {hasInterval && (
+            <p className="numeric text-2xs text-muted-foreground">
+              {formatNumber(summary.win_rate_low, 0)}&ndash;
+              {formatNumber(summary.win_rate_high, 0)}% at 95%
+            </p>
+          )}
+        </div>
+        {hasInterval && (
+          <ConfidenceBar
+            low={summary.win_rate_low}
+            high={summary.win_rate_high}
+            point={summary.win_rate}
+            baseline={summary.baseline?.win_rate ?? null}
+            caption={baselineCaption(summary)}
+          />
+        )}
         <p className="mt-1 text-2xs text-muted-foreground">
           {formatInteger(summary.wins)}W / {formatInteger(summary.losses)}L
           {summary.breakeven > 0 && ` / ${formatInteger(summary.breakeven)}F`}
@@ -214,6 +237,83 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
         value={formatRatio(summary.risk_reward_achieved)}
         hint="Average winner divided by average loser"
       />
+    </div>
+  )
+}
+
+/**
+ * The baseline in one line, under the band it is marked on.
+ *
+ * Two facts, in the order they should be read: what an arbitrary entry paid
+ * under these same rules, and how often chance alone matches the result. The
+ * second is deliberately phrased as odds rather than a p-value -- "1 in 3" is
+ * harder to mistake for a small number than "0.36".
+ */
+function baselineCaption(
+  summary: NonNullable<BacktestResult['summary']>,
+): string | null {
+  const baseline = summary.baseline
+  if (!baseline) return null
+
+  const head = `Random entry ${formatNumber(baseline.win_rate, 1)}%`
+  const p = summary.baseline_p_value
+  if (p == null) return head
+  if (p < 0.001) return `${head} · chance alone: under 1 in 1,000`
+  return `${head} · chance alone: 1 in ${formatInteger(Math.round(1 / p))}`
+}
+
+/**
+ * The win rate as a span rather than a point, with the random-entry baseline
+ * marked on the same scale. Seeing the two together is the whole argument:
+ * a band that sits clear of the marker is a result, one that straddles it is
+ * not, and the width says how much the sample can actually support.
+ */
+function ConfidenceBar({
+  low,
+  high,
+  point,
+  baseline,
+  caption,
+}: {
+  low: number
+  high: number
+  point: number
+  baseline: number | null
+  caption: string | null
+}) {
+  const clamp = (value: number) => Math.max(0, Math.min(100, value))
+  const left = clamp(low)
+  const width = Math.max(clamp(high) - left, 0.5)
+
+  return (
+    <div
+      className="mt-2"
+      title={
+        `95% of the time, the true win rate for this setup lies between ` +
+        `${formatNumber(low, 0)}% and ${formatNumber(high, 0)}%.` +
+        (baseline != null
+          ? ` Random entry pays ${formatNumber(baseline, 1)}%.`
+          : '')
+      }
+    >
+      <div className="relative h-1.5 w-full rounded-sm bg-border">
+        <div
+          className="absolute inset-y-0 rounded-sm bg-primary/50"
+          style={{ left: `${left}%`, width: `${width}%` }}
+        />
+        <div
+          className="absolute -inset-y-0.5 w-0.5 rounded-sm bg-primary"
+          style={{ left: `${clamp(point)}%` }}
+        />
+        {baseline != null && (
+          <div
+            className="absolute -inset-y-1 w-px bg-foreground"
+            style={{ left: `${clamp(baseline)}%` }}
+            aria-hidden
+          />
+        )}
+      </div>
+      {caption && <p className="mt-1 text-2xs text-muted-foreground">{caption}</p>}
     </div>
   )
 }

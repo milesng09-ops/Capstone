@@ -265,6 +265,23 @@ class EquityPoint(BaseModel):
     drawdown: float
 
 
+class BaselineSummary(BaseModel):
+    """The same trade rules run at randomly chosen windows.
+
+    The reference point the observed win rate is read against: same candles,
+    same costs, same stop and target, windows picked by chance rather than by
+    resemblance.
+    """
+
+    samples: int
+    trades_executed: int
+    win_rate: float
+    average_return: float
+    expectancy: float
+    #: Derived from the query, so a rerun reproduces this exact draw.
+    seed: int
+
+
 class BacktestSummary(BaseModel):
     total_matches: int
     trades_executed: int
@@ -291,6 +308,18 @@ class BacktestSummary(BaseModel):
     longest_winning_streak: int
     longest_losing_streak: int
     average_holding_bars: float
+    #: 95% Wilson interval around ``win_rate``, in percent. Quoting the rate
+    #: without it implies a precision the sample does not carry.
+    win_rate_low: float = 0.0
+    win_rate_high: float = 0.0
+    #: What the same rules paid at windows nobody chose. ``None`` when the
+    #: baseline could not be drawn -- too little history for the window.
+    baseline: BaselineSummary | None = None
+    #: P(a win rate at least this high | the setup has no edge over the
+    #: baseline). Small means chance alone rarely does this well. It does not
+    #: account for the setup being picked by eye, nor for repeated attempts on
+    #: the same window; both are named in ``assumptions``.
+    baseline_p_value: float | None = None
     sample_size_warning: str | None = None
     same_bar_ambiguity_count: int = 0
     equity_curve: list[EquityPoint] = Field(default_factory=list)

@@ -16,12 +16,30 @@ from __future__ import annotations
 import statistics
 
 from app.backtesting.engine import ASSUMPTIONS, SimulatedTrade
-from app.models.schemas import BacktestSummary, EquityPoint
+from app.backtesting.significance import (
+    Baseline,
+    binomial_tail_probability,
+    wilson_interval,
+)
+from app.models.schemas import BacktestSummary, BaselineSummary, EquityPoint
 
 #: Below this many trades the sample is too small to draw conclusions from.
 MINIMUM_SAMPLE_SIZE = 20
 
 STARTING_EQUITY = 100.0
+
+#: Added whenever a baseline was drawn. The p-value is the narrow answer to
+#: "would chance do this well"; these are the two things it cannot answer, and
+#: both push a result in the flattering direction.
+BASELINE_ASSUMPTIONS: list[str] = [
+    "The baseline runs the same rules at windows drawn at random from the same "
+    "candidate pool, so the gap between it and the result is what the "
+    "similarity search contributed.",
+    "Neither the interval nor the p-value corrects for the setup having been "
+    "chosen by eye from a chart whose outcome was already visible, nor for "
+    "repeated configurations tried against the same selection. Both inflate "
+    "any edge found.",
+]
 
 
 def compute_metrics(
@@ -31,8 +49,11 @@ def compute_metrics(
     skipped_matches: int,
     data_quality: list[str] | None = None,
     extra_assumptions: list[str] | None = None,
+    baseline: Baseline | None = None,
 ) -> BacktestSummary:
     assumptions = list(ASSUMPTIONS) + list(extra_assumptions or [])
+    if baseline is not None and baseline.trades_executed:
+        assumptions.extend(BASELINE_ASSUMPTIONS)
 
     if not trades:
         return BacktestSummary(
@@ -61,6 +82,10 @@ def compute_metrics(
                 "No trades were simulated. Loosen the similarity threshold, widen the "
                 "lookback range, or check that the trade rules are valid."
             ),
+            win_rate_low=0.0,
+            win_rate_high=0.0,
+            baseline=_baseline_out(baseline),
+            baseline_p_value=None,
             same_bar_ambiguity_count=0,
             equity_curve=[],
             assumptions=assumptions,
@@ -100,6 +125,16 @@ def compute_metrics(
             "indicative only."
         )
 
+    low, high = wilson_interval(len(winners), len(trades))
+    p_value = None
+    if baseline is not None and baseline.trades_executed:
+        p_value = round(
+            binomial_tail_probability(
+                len(winners), len(trades), baseline.win_rate / 100.0
+            ),
+            6,
+        )
+
     return BacktestSummary(
         total_matches=total_matches,
         trades_executed=len(trades),
@@ -124,6 +159,10 @@ def compute_metrics(
         average_holding_bars=round(
             statistics.fmean([trade.holding_bars for trade in trades]), 2
         ),
+        win_rate_low=low,
+        win_rate_high=high,
+        baseline=_baseline_out(baseline),
+        baseline_p_value=p_value,
         sample_size_warning=warning,
         same_bar_ambiguity_count=sum(1 for trade in trades if trade.same_bar_ambiguity),
         equity_curve=equity_curve,
@@ -176,3 +215,16 @@ def _longest_streak(values: list[float], *, positive: bool) -> int:
         current = current + 1 if matches else 0
         longest = max(longest, current)
     return longest
+
+
+def _baseline_out(baseline: Baseline | None) -> BaselineSummary | None:
+    if baseline is None or not baseline.trades_executed:
+        return None
+    return BaselineSummary(
+        samples=baseline.samples,
+        trades_executed=baseline.trades_executed,
+        win_rate=baseline.win_rate,
+        average_return=baseline.average_return,
+        expectancy=baseline.expectancy,
+        seed=baseline.seed,
+    )

@@ -9,7 +9,7 @@ way it fails is misleading: `pytest` collects most of the suite fine and only
 `ModuleNotFoundError: No module named 'sqlalchemy'`. That reads like two
 broken test files rather than the wrong interpreter, and a run that reports
 "84 passed" alongside those errors looks close enough to green to wave
-through. The real suite is 142 tests.
+through. The real suite is 153 tests.
 
 ```bash
 cd backend && .venv/Scripts/python.exe -m pytest tests -q

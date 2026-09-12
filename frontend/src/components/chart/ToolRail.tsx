@@ -28,6 +28,7 @@ import {
   MoveUpRight,
   ArrowUpRight,
   SeparatorVertical,
+  Settings2,
   Trash2,
   Undo2,
 } from 'lucide-react'
@@ -41,6 +42,7 @@ import {
   TOOL_LABELS,
   type ToolMode,
 } from '@/types/drawing'
+import { CANDLE_COLORS } from '@/types/market'
 import { cn } from '@/utils/cn'
 
 const TOOL_ICONS: Record<ToolMode, LucideIcon> = {
@@ -108,6 +110,8 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
       })}
 
       <RailDivider />
+
+      <ChartSettingsMenu />
 
       <ColorPicker value={drawingColor} onChange={setDrawingColor} />
 
@@ -306,6 +310,150 @@ function ColorPicker({
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * How the chart looks, as opposed to what is on it.
+ *
+ * A trader reads a chart they have set up to their own eye. Miles works on a
+ * white background with no grid and black-and-white candles; every glance at
+ * a chart dressed differently costs him a translation. None of this touches
+ * the data.
+ */
+function ChartSettingsMenu() {
+  const settings = useWorkspace((state) => state.chartSettings)
+  const update = useWorkspace((state) => state.updateChartSettings)
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const away = (event: MouseEvent) => {
+      if (!boxRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('mousedown', away)
+    window.addEventListener('keydown', escape)
+    return () => {
+      window.removeEventListener('mousedown', away)
+      window.removeEventListener('keydown', escape)
+    }
+  }, [open])
+
+  return (
+    <div ref={boxRef} className="relative">
+      <Button
+        size="icon"
+        variant="toolbar"
+        data-active={open}
+        onClick={() => setOpen((was) => !was)}
+        title="Chart appearance — grid, volume, candle colours"
+        aria-label="Chart appearance"
+        aria-expanded={open}
+      >
+        <Settings2 size={15} />
+      </Button>
+
+      {open && (
+        <div className="absolute left-full top-0 z-40 ml-1 w-44 space-y-2 rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg">
+          <SettingRow
+            label="Grid lines"
+            checked={settings.showGrid}
+            onChange={(showGrid) => update({ showGrid })}
+          />
+          <SettingRow
+            label="Volume"
+            checked={settings.showVolume}
+            onChange={(showVolume) => update({ showVolume })}
+          />
+
+          <CandleColorRow
+            label="Up candles"
+            value={settings.bullColor}
+            onChange={(bullColor) => update({ bullColor })}
+          />
+          <CandleColorRow
+            label="Down candles"
+            value={settings.bearColor}
+            onChange={(bearColor) => update({ bearColor })}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SettingRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between text-2xs">
+      <span>{label}</span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-3 w-3 accent-[hsl(var(--primary))]"
+      />
+    </label>
+  )
+}
+
+/** `null` follows the theme, which keeps tracking light and dark. */
+function CandleColorRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string | null
+  onChange: (value: string | null) => void
+}) {
+  return (
+    <div className="space-y-1">
+      <span className="text-2xs text-muted-foreground">{label}</span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          aria-pressed={value == null}
+          title="Follow the theme"
+          className={cn(
+            'h-4 rounded px-1 text-[9px] transition-colors',
+            value == null
+              ? 'bg-[hsl(var(--panel-raised))] text-foreground'
+              : 'text-muted-foreground hover:bg-[hsl(var(--panel-raised))]',
+          )}
+        >
+          auto
+        </button>
+        {CANDLE_COLORS.map((color) => (
+          <button
+            key={color}
+            type="button"
+            aria-label={`${label} ${color}`}
+            aria-pressed={color === value}
+            onClick={() => onChange(color)}
+            style={{ backgroundColor: color }}
+            className={cn(
+              'h-3.5 w-3.5 rounded-full border transition-transform',
+              color === value
+                ? 'scale-110 border-foreground'
+                : 'border-border hover:scale-110',
+            )}
+          />
+        ))}
+      </div>
     </div>
   )
 }

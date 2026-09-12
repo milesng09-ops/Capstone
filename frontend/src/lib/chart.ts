@@ -224,12 +224,20 @@ export function chartOptions(
   palette: ChartPalette,
   precision: number,
   zone: string,
+  showGrid = true,
 ): DeepPartial<ChartOptions> {
   const base = baseChartOptions(palette, precision)
   const axis = timeAxisOptions(zone)
   return {
     ...base,
     ...axis,
+    // Hidden rather than recoloured to the background: a transparent line is
+    // still a line the library lays out and paints, and the point of turning
+    // the grid off is to have nothing there.
+    grid: {
+      vertLines: { ...base.grid?.vertLines, visible: showGrid },
+      horzLines: { ...base.grid?.horzLines, visible: showGrid },
+    },
     timeScale: { ...base.timeScale, ...axis.timeScale },
     localization: { ...base.localization, ...axis.localization },
   }

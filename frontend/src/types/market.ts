@@ -208,3 +208,40 @@ export interface SelectionSummary {
   lowest: number
   volatility: number
 }
+
+
+/**
+ * How the chart itself looks, as opposed to what is on it.
+ *
+ * Traders read charts they have set up to their own eye -- Miles works on a
+ * white background with no grid and black-and-white candles -- and a chart
+ * that cannot be adjusted is one they have to translate in their head on
+ * every glance. None of this touches the data; it is the frame around it.
+ *
+ * `null` on a colour means "follow the theme", which is not the same as a
+ * colour that happens to match it today: the theme colour tracks light and
+ * dark, a stored one does not.
+ */
+export interface ChartSettings {
+  showGrid: boolean
+  showVolume: boolean
+  bullColor: string | null
+  bearColor: string | null
+}
+
+export const DEFAULT_CHART_SETTINGS: ChartSettings = {
+  showGrid: true,
+  showVolume: true,
+  bullColor: null,
+  bearColor: null,
+}
+
+/** Candle colour choices offered, beyond following the theme. */
+export const CANDLE_COLORS = [
+  '#22c55e',
+  '#ef4444',
+  '#e2e8f0',
+  '#0f172a',
+  '#3b82f6',
+  '#f59e0b',
+] as const

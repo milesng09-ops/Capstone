@@ -40,7 +40,7 @@ import {
   registerChart,
 } from '@/lib/chartSync'
 import { useTimeZone } from '@/store/workspace'
-import type { Candle } from '@/types/market'
+import type { Candle, ChartSettings } from '@/types/market'
 
 export interface ChartHandle {
   timeToX: (ms: number) => number | null
@@ -68,9 +68,18 @@ interface Options {
   precision: number
   /** Notified as the pointer moves over bars, for the OHLC readout. */
   onHoverBar?: (candle: Candle | null) => void
+  /** Grid, volume and candle colours. Applied live, never re-creating the chart. */
+  settings: ChartSettings
 }
 
-export function useChartInstance({ id, candles, interval, precision, onHoverBar }: Options) {
+export function useChartInstance({
+  id,
+  candles,
+  interval,
+  precision,
+  onHoverBar,
+  settings,
+}: Options) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -79,6 +88,11 @@ export function useChartInstance({ id, candles, interval, precision, onHoverBar 
   const listenersRef = useRef(new Set<() => void>())
   const candlesRef = useRef<Candle[]>(candles)
   const hoverRef = useRef(onHoverBar)
+  // Read through a ref inside the create effect so changing a setting adjusts
+  // the live chart rather than tearing it down and rebuilding it -- which
+  // would drop the visible range and every drawing's place on screen.
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
 
   const timeZone = useTimeZone()
   const zoneRef = useRef(timeZone)
@@ -102,7 +116,7 @@ export function useChartInstance({ id, candles, interval, precision, onHoverBar 
     const palette = readChartPalette()
     paletteRef.current = palette
 
-    const options = chartOptions(palette, precision, zoneRef.current)
+    const options = chartOptions(palette, precision, zoneRef.current, settingsRef.current.showGrid)
     const chart = createChart(container, {
       ...options,
       layout: {
@@ -286,6 +300,37 @@ export function useChartInstance({ id, candles, interval, precision, onHoverBar 
     },
     palette: () => paletteRef.current,
   })
+
+  // ---- appearance, applied live ---------------------------------------
+  useEffect(() => {
+    const chart = chartRef.current
+    const series = seriesRef.current
+    const volume = volumeRef.current
+    if (!chart || !series) return
+
+    const palette = paletteRef.current
+    chart.applyOptions({
+      grid: {
+        vertLines: { visible: settings.showGrid },
+        horzLines: { visible: settings.showGrid },
+      },
+    })
+
+    // `null` means follow the theme, which keeps tracking light and dark; a
+    // stored colour that merely matches today's theme would not.
+    const bull = settings.bullColor ?? palette.bull
+    const bear = settings.bearColor ?? palette.bear
+    series.applyOptions({
+      upColor: bull,
+      downColor: bear,
+      borderUpColor: bull,
+      borderDownColor: bear,
+      wickUpColor: bull,
+      wickDownColor: bear,
+    })
+
+    volume?.applyOptions({ visible: settings.showVolume })
+  }, [settings])
 
   /**
    * Put the whole series back in view, on both axes.

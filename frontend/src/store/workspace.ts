@@ -31,8 +31,14 @@ import {
   type LearningSettings,
   type TradeRules,
 } from '@/types/backtest'
-import { MAX_RANGE_DAYS } from '@/types/market'
-import type { Interval, SelectionRange, SymbolKey, TimeWindow } from '@/types/market'
+import { DEFAULT_CHART_SETTINGS, MAX_RANGE_DAYS } from '@/types/market'
+import type {
+  ChartSettings,
+  Interval,
+  SelectionRange,
+  SymbolKey,
+  TimeWindow,
+} from '@/types/market'
 import { setFormattingTimeZone } from '@/utils/format'
 import {
   DEFAULT_EXCHANGE_ZONE,
@@ -121,6 +127,7 @@ interface WorkspaceState {
   drawingWidth: number
   /** Snap drawing points to the nearest open, high, low or close. */
   magnet: boolean
+  chartSettings: ChartSettings
   drawings: Drawing[]
   selectedDrawingId: string | null
   snapToSwings: boolean
@@ -175,6 +182,7 @@ interface WorkspaceState {
   setDrawingColor: (color: string) => void
   setDrawingWidth: (width: number) => void
   toggleMagnet: () => void
+  updateChartSettings: (patch: Partial<ChartSettings>) => void
   addDrawing: (drawing: Drawing) => void
   updateDrawing: (id: string, patch: Partial<Drawing>) => void
   removeDrawing: (id: string) => void
@@ -243,6 +251,7 @@ export const useWorkspace = create<WorkspaceState>()(
       drawingColor: DEFAULT_DRAWING_COLOR,
       drawingWidth: DEFAULT_DRAWING_WIDTH,
       magnet: true,
+      chartSettings: DEFAULT_CHART_SETTINGS,
       drawings: [],
       selectedDrawingId: null,
       snapToSwings: true,
@@ -343,6 +352,8 @@ export const useWorkspace = create<WorkspaceState>()(
       setDrawingColor: (drawingColor) => set({ drawingColor }),
       setDrawingWidth: (drawingWidth) => set({ drawingWidth }),
       toggleMagnet: () => set((state) => ({ magnet: !state.magnet })),
+      updateChartSettings: (patch) =>
+        set((state) => ({ chartSettings: { ...state.chartSettings, ...patch } })),
 
       addDrawing: (drawing) =>
         set((state) => ({
@@ -519,6 +530,7 @@ export const useWorkspace = create<WorkspaceState>()(
         drawingColor: state.drawingColor,
         drawingWidth: state.drawingWidth,
         magnet: state.magnet,
+        chartSettings: state.chartSettings,
         snapToSwings: state.snapToSwings,
         rules: state.rules,
         search: state.search,

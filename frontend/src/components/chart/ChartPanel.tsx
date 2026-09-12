@@ -45,6 +45,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   const drawingColor = useWorkspace((state) => state.drawingColor)
   const drawingWidth = useWorkspace((state) => state.drawingWidth)
   const magnet = useWorkspace((state) => state.magnet)
+  const chartSettings = useWorkspace((state) => state.chartSettings)
   const allDrawings = useWorkspace((state) => state.drawings)
   const selectedDrawingId = useWorkspace((state) => state.selectedDrawingId)
   const snapToSwings = useWorkspace((state) => state.snapToSwings)
@@ -119,6 +120,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     interval,
     precision,
     onHoverBar: setHovered,
+    settings: chartSettings,
   })
 
   const handleCreate = useCallback(

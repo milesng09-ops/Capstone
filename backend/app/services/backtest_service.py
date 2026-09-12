@@ -24,7 +24,15 @@ from pydantic import ValidationError
 from app.analysis import find_fair_value_gaps, find_smt_divergences, find_swing_points
 from app.analysis.conditions import detectors_at_entry, unmet_condition
 from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade, entry_bar
+import numpy as np
+from dataclasses import replace
+
 from app.backtesting.attempts import configuration_key
+from app.learning.block_weights import (
+    block_projections,
+    fit_block_weights,
+    score_weights,
+)
 from app.backtesting.metrics import compute_metrics
 from app.backtesting.significance import (
     BASELINE_OVERSAMPLE,
@@ -48,6 +56,7 @@ from app.models.schemas import (
     BacktestRequest,
     BacktestResponse,
     BacktestSummary,
+    LearnedWeightsOut,
     PatternMatchOut,
     SelectionSpec,
     TradeOut,
@@ -55,15 +64,49 @@ from app.models.schemas import (
 from app.providers.instruments import get_instrument
 from app.services.candle_service import CandleService, get_candle_service
 from app.services.pattern_service import (
+    BLOCK_WEIGHTS,
     PatternError,
     PatternWindow,
+    build_block_matrices,
     build_query,
+    candles_to_arrays,
+    query_arrays,
+    sliding_view,
     find_similar_windows,
 )
 from app.utils.intervals import interval_ms
 from app.utils.timeutils import now_ms
 
 logger = logging.getLogger(__name__)
+
+
+#: Below this many labelled windows a fit is noise dressed as a model, so the
+#: run falls back to the hand-set weights and says it did.
+MINIMUM_TRAINING_WINDOWS = 40
+
+
+def _learned_out(learned, train_range):
+    """The fitted weights as the API reports them, or nothing."""
+
+    if learned is None or train_range is None:
+        return None
+    return LearnedWeightsOut(
+        weights={name: round(value, 4) for name, value in learned.weights.items()},
+        train_score=learned.train_score,
+        default_score=learned.default_score,
+        improved=learned.improved,
+        labelled_windows=learned.labelled_windows,
+        top_k=learned.top_k,
+        passes=learned.passes,
+        objective=learned.objective,
+        dropped_blocks=learned.dropped_blocks,
+        holdout_score=learned.holdout_score,
+        holdout_default_score=learned.holdout_default_score,
+        holdout_windows=learned.holdout_windows,
+        generalised=learned.generalised,
+        train_start=train_range[0],
+        train_end=train_range[1],
+    )
 
 
 class BacktestValidationError(ValueError):
@@ -172,11 +215,47 @@ class BacktestService:
                 "Widen the lookback range or reduce the maximum holding period."
             )
 
-        # ---- deterministic similarity search --------------------------
+        # ---- fitted weights, on history the result is not read from ----
         exclusion = (request.selection.start_time, request.selection.end_time)
+        learned = None
+        train_range: tuple[int, int] | None = None
+        if request.learning.enabled:
+            primary_series = next(
+                (item for item in usable if item.symbol == primary), None
+            )
+            if primary_series is not None:
+                learned, train_range = await anyio.to_thread.run_sync(
+                    lambda: self._fit_weights(
+                        request=request,
+                        candles=primary_series.candles,
+                        query=query,
+                        required_future_bars=required_future_bars,
+                        exclusion=exclusion,
+                        selection_candles=selection_candles,
+                    )
+                )
+        weights = learned.weights if learned is not None else None
+        if weights is not None:
+            # The query has to be measured with the same weights the
+            # candidates are, or the cosine is between two different spaces.
+            query = build_query(
+                selection_candles,
+                interval,
+                request.search.pattern_length,
+                min_length=settings.min_pattern_length,
+                max_length=settings.max_pattern_length,
+                weights=weights,
+            )
+
+        # ---- deterministic similarity search --------------------------
         found: list[tuple[_SymbolSeries, PatternWindow]] = []
         for item in usable:
             exclude = [exclusion] if item.symbol == primary else []
+            # Everything the weights were fitted on is off limits to the run
+            # that reports a result, on every symbol -- the fit read the
+            # primary, but the stretch itself is what must not be scored on.
+            if train_range is not None:
+                exclude = [*exclude, train_range]
             try:
                 windows = await anyio.to_thread.run_sync(
                     lambda item=item, exclude=exclude: find_similar_windows(
@@ -189,6 +268,7 @@ class BacktestService:
                         minimum_separation_bars=request.search.minimum_separation_bars,
                         required_future_bars=required_future_bars,
                         max_candidate_windows=settings.max_candidate_windows,
+                        weights=weights,
                     )
                 )
             except PatternError as exc:
@@ -289,6 +369,7 @@ class BacktestService:
             condition_filtered_matches=filtered_total,
             conditions_applied=self._conditions_applied(request),
             configurations_tried=configurations,
+            learned_weights=_learned_out(learned, train_range),
         )
 
         # ---- persist ---------------------------------------------------
@@ -593,6 +674,152 @@ class BacktestService:
             "by then, and the random-entry baseline is held to the same conditions."
         )
         return lines
+
+    def _fit_weights(
+        self,
+        *,
+        request: BacktestRequest,
+        candles: list[Candle],
+        query,
+        required_future_bars: int,
+        exclusion: tuple[int, int],
+        selection_candles: list[Candle],
+    ):
+        """Fit block weights on the earlier lookback, score them on the later.
+
+        The split is by time, not by shuffling. Shuffled folds would put a
+        window from March in training and the window overlapping it in test,
+        and price windows overlap by construction: the model would be scored
+        on bars it had already been shown. One chronological cut is the only
+        split that keeps the halves genuinely separate.
+
+        Both halves are labelled and both weight sets are scored on the
+        holdout, because the question worth answering is not "did the fit
+        improve on its own training data" -- it almost always does, with seven
+        free parameters -- but "does it still beat the hand-set numbers on data
+        it never saw". Without that second figure a fit that hurt would still
+        report `improved=True` and look like progress.
+
+        Returns ``(LearnedWeights | None, train_range)``.
+        """
+
+        search = request.search
+        span = search.lookback_end - search.lookback_start
+        if span <= 0:
+            return None, None
+        train_end = search.lookback_start + int(span * request.learning.train_fraction)
+        train_range = (search.lookback_start, train_end)
+
+        window_length = query.length
+        last_start = len(candles) - window_length - required_future_bars
+        if last_start < 0:
+            return None, None
+
+        arrays = candles_to_arrays(candles)
+        times = arrays["time"]
+        views = {
+            key: sliding_view(arrays[key], window_length)
+            for key in ("open", "high", "low", "close", "volume")
+        }
+
+        def eligible(in_training: bool) -> list[int]:
+            """Windows wholly inside one half, clear of the selection."""
+
+            out = []
+            for index in range(last_start + 1):
+                start_time = int(times[index])
+                end_time = int(times[index + window_length - 1])
+                if start_time < search.lookback_start or end_time > search.lookback_end:
+                    continue
+                inside = end_time <= train_end
+                if inside != in_training:
+                    continue
+                if start_time <= exclusion[1] and end_time >= exclusion[0]:
+                    continue
+                out.append(index)
+            return out
+
+        engine = BacktestEngine(
+            candles, request.trade.model_copy(update={"allow_overlapping_trades": True})
+        )
+
+        def label(starts: list[int]) -> tuple[list[int], np.ndarray]:
+            """What each window actually paid, dropping any that cannot run."""
+
+            if not starts:
+                return [], np.zeros(0)
+            trades, _ = engine.run(
+                [
+                    MatchInput(
+                        id=str(index),
+                        start_index=index,
+                        end_index=index + window_length - 1,
+                        similarity=0.0,
+                    )
+                    for index in starts
+                ]
+            )
+            paid = {int(trade.pattern_match_id): trade.net_return for trade in trades}
+            kept = [index for index in starts if index in paid]
+            return kept, np.array([paid[index] for index in kept], dtype=np.float64)
+
+        train_starts, train_outcomes = label(eligible(in_training=True))
+        if len(train_starts) < MINIMUM_TRAINING_WINDOWS:
+            logger.info(
+                "Not fitting weights: %d labelled training windows, fewer than %d",
+                len(train_starts),
+                MINIMUM_TRAINING_WINDOWS,
+            )
+            return None, None
+
+        query_blocks = build_block_matrices(*query_arrays(selection_candles, window_length))
+
+        def projections(starts: list[int]):
+            rows = np.array(starts, dtype=np.int64)
+            candidate_blocks = build_block_matrices(
+                views["open"][rows],
+                views["high"][rows],
+                views["low"][rows],
+                views["close"][rows],
+                views["volume"][rows],
+            )
+            names = [name for name in candidate_blocks if name in query_blocks]
+            return names, block_projections(query_blocks, candidate_blocks, names)
+
+        names, (dots, query_norms, candidate_norms) = projections(train_starts)
+        defaults = {name: BLOCK_WEIGHTS[name] for name in names}
+        top_k = min(request.search.maximum_matches, len(train_starts))
+
+        learned = fit_block_weights(
+            block_names=names,
+            dots=dots,
+            query_norms=query_norms,
+            candidate_norms=candidate_norms,
+            outcomes=train_outcomes,
+            starting_weights=defaults,
+            top_k=top_k,
+            objective="expectancy",
+        )
+
+        # ---- the number that decides whether to trust it ----------------
+        test_starts, test_outcomes = label(eligible(in_training=False))
+        if len(test_starts) >= MINIMUM_TRAINING_WINDOWS:
+            test_names, test_projection = projections(test_starts)
+            holdout = score_weights(
+                block_names=test_names,
+                projection=test_projection,
+                outcomes=test_outcomes,
+                top_k=min(top_k, len(test_starts)),
+            )
+            learned = replace(
+                learned,
+                holdout_score=round(holdout(learned.weights), 6),
+                holdout_default_score=round(holdout(defaults), 6),
+                holdout_windows=len(test_starts),
+            )
+
+        return learned, train_range
+
 
     def _configurations_tried(self, request: BacktestRequest) -> int:
         """Distinct configurations run against a window overlapping this one.

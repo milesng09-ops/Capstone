@@ -65,6 +65,45 @@ export const DEFAULT_DETECTOR_FILTERS: DetectorFilters = {
   swing_strength: 2,
 }
 
+/**
+ * Phase two: fit the similarity weights rather than take them as given.
+ *
+ * Off by default. When on, the lookback is split in two — the weights are
+ * fitted on the earlier part and the backtest runs on the later part, so the
+ * result is never read off the data the model was chosen on.
+ */
+export interface LearningSettings {
+  enabled: boolean
+  /** Share of the lookback used to fit; the rest is the out-of-sample half. */
+  train_fraction: number
+}
+
+export const DEFAULT_LEARNING_SETTINGS: LearningSettings = {
+  enabled: false,
+  train_fraction: 0.5,
+}
+
+/** A fitted weight set and what it is worth. The whole model: seven numbers. */
+export interface LearnedWeightsSummary {
+  weights: Record<string, number>
+  train_score: number
+  default_score: number
+  /** Beat the defaults on its own training data. Weak evidence alone. */
+  improved: boolean
+  labelled_windows: number
+  top_k: number
+  passes: number
+  objective: string
+  dropped_blocks: string[]
+  holdout_score: number | null
+  holdout_default_score: number | null
+  holdout_windows: number
+  /** The verdict that matters. `null` when there was no holdout to judge on. */
+  generalised: boolean | null
+  train_start: number
+  train_end: number
+}
+
 export interface BacktestRequest {
   symbols: string[]
   primary_symbol: string
@@ -73,6 +112,7 @@ export interface BacktestRequest {
   trade: TradeRules
   search: SearchSettings
   detectors: DetectorFilters
+  learning: LearningSettings
 }
 
 export interface PatternMatch {
@@ -172,6 +212,8 @@ export interface BacktestSummary {
    * Distinct configurations run against a window overlapping this one, this
    * run included. 1 means this is the first thing tried here.
    */
+  /** Present only when weights were fitted for this run. */
+  learned_weights: LearnedWeightsSummary | null
   configurations_tried: number
   /** Chance that *any* of those configurations looks this good by chance. */
   family_wise_p_value: number | null
@@ -280,4 +322,5 @@ export interface BacktestFormState {
   rules: TradeRules
   search: SearchConfig
   detectors: DetectorFilters
+  learning: LearningSettings
 }

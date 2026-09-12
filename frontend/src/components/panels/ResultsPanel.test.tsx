@@ -57,6 +57,7 @@ const SUMMARY: BacktestSummary = {
     seed: 10532413940444770088,
   },
   baseline_p_value: 0.355816,
+  learned_weights: null,
   configurations_tried: 1,
   family_wise_p_value: 0.355816,
   condition_filtered_matches: 0,
@@ -179,5 +180,58 @@ describe('once the same window has been asked more than once', () => {
     show({ ...SUMMARY, baseline_p_value: 0.03, configurations_tried: 1, family_wise_p_value: 0.03 })
     expect(screen.getByText(/1 in 33/)).toBeInTheDocument()
     expect(screen.queryByText(/configurations tried/)).not.toBeInTheDocument()
+  })
+})
+
+describe('when the similarity weights were fitted', () => {
+  const fit = {
+    weights: { normalised_close: 1, returns: 0, body: 0.6 },
+    train_score: 0.1413,
+    default_score: -0.0056,
+    improved: true,
+    labelled_windows: 1462,
+    top_k: 25,
+    passes: 2,
+    objective: 'expectancy',
+    dropped_blocks: ['returns'],
+    holdout_score: -0.1044,
+    holdout_default_score: -0.0702,
+    holdout_windows: 1434,
+    generalised: false,
+    train_start: 1,
+    train_end: 2,
+  }
+
+  it('leads with the holdout verdict, not the training one', () => {
+    // `improved` is true here. Leading with it would sell a fit that hurt.
+    show({ ...SUMMARY, learned_weights: fit })
+    expect(screen.getByText(/did not hold up/)).toBeInTheDocument()
+  })
+
+  it('shows both halves so the gap is visible', () => {
+    show({ ...SUMMARY, learned_weights: fit })
+    const banner = screen.getByText(/did not hold up/)
+    expect(banner.textContent).toMatch(/0\.141/)
+    expect(banner.textContent).toMatch(/-0\.104/)
+  })
+
+  it('prints the whole model', () => {
+    // Seven numbers is small enough to read, and a model you can read is one
+    // you can argue with.
+    show({ ...SUMMARY, learned_weights: fit })
+    expect(screen.getByText(/normalised close/)).toBeInTheDocument()
+  })
+
+  it('says so when the fit did hold up', () => {
+    show({
+      ...SUMMARY,
+      learned_weights: { ...fit, holdout_score: -0.02, generalised: true },
+    })
+    expect(screen.getByText(/beat the hand-set ones/)).toBeInTheDocument()
+  })
+
+  it('claims no verdict when there was no holdout to judge on', () => {
+    show({ ...SUMMARY, learned_weights: { ...fit, generalised: null } })
+    expect(screen.getByText(/too small to judge/)).toBeInTheDocument()
   })
 })

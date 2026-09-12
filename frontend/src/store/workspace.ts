@@ -20,12 +20,14 @@ import {
 import { DEFAULT_ICT_SETTINGS, type IctSettings } from '@/types/ict'
 import {
   DEFAULT_DETECTOR_FILTERS,
+  DEFAULT_LEARNING_SETTINGS,
   DEFAULT_SEARCH_CONFIG,
   DEFAULT_SIZING,
   DEFAULT_TRADE_RULES,
   type SearchConfig,
   type SizingConfig,
   type DetectorFilters,
+  type LearningSettings,
   type TradeRules,
 } from '@/types/backtest'
 import { MAX_RANGE_DAYS } from '@/types/market'
@@ -137,6 +139,7 @@ interface WorkspaceState {
   rules: TradeRules
   search: SearchConfig
   detectors: DetectorFilters
+  learning: LearningSettings
   /** Client-side only: the engine answers in percentages and sizes nothing. */
   sizing: SizingConfig
 
@@ -180,6 +183,7 @@ interface WorkspaceState {
   updateRules: (patch: Partial<TradeRules>) => void
   updateSearch: (patch: Partial<SearchConfig>) => void
   updateDetectors: (patch: Partial<DetectorFilters>) => void
+  updateLearning: (patch: Partial<LearningSettings>) => void
   updateSizing: (patch: Partial<SizingConfig>) => void
   resetStrategy: () => void
   setActiveBacktestId: (id: string | null) => void
@@ -242,6 +246,7 @@ export const useWorkspace = create<WorkspaceState>()(
       rules: DEFAULT_TRADE_RULES,
       search: DEFAULT_SEARCH_CONFIG,
       detectors: DEFAULT_DETECTOR_FILTERS,
+      learning: DEFAULT_LEARNING_SETTINGS,
       sizing: DEFAULT_SIZING,
       activeBacktestId: null,
       showTrades: true,
@@ -411,6 +416,8 @@ export const useWorkspace = create<WorkspaceState>()(
       updateSearch: (patch) => set((state) => ({ search: { ...state.search, ...patch } })),
       updateDetectors: (patch) =>
         set((state) => ({ detectors: { ...state.detectors, ...patch } })),
+      updateLearning: (patch) =>
+        set((state) => ({ learning: { ...state.learning, ...patch } })),
       updateSizing: (patch) => set((state) => ({ sizing: { ...state.sizing, ...patch } })),
 
       resetStrategy: () =>
@@ -418,6 +425,7 @@ export const useWorkspace = create<WorkspaceState>()(
           rules: DEFAULT_TRADE_RULES,
           search: DEFAULT_SEARCH_CONFIG,
           detectors: DEFAULT_DETECTOR_FILTERS,
+          learning: DEFAULT_LEARNING_SETTINGS,
         }),
 
       setActiveBacktestId: (activeBacktestId) =>
@@ -503,6 +511,7 @@ export const useWorkspace = create<WorkspaceState>()(
         rules: state.rules,
         search: state.search,
         detectors: state.detectors,
+        learning: state.learning,
         sizing: state.sizing,
         showTrades: state.showTrades,
       }),

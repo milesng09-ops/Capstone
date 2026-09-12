@@ -19,7 +19,7 @@ import { SegmentedControl } from '@/components/ui/fields'
 import { useBacktestResult } from '@/hooks/useBacktest'
 import { findMatch, findTrade } from '@/lib/trades'
 import { useTimeZone, useWorkspace } from '@/store/workspace'
-import type { BacktestResult } from '@/types/backtest'
+import type { BacktestResult, LearnedWeightsSummary } from '@/types/backtest'
 import { cn } from '@/utils/cn'
 import {
   directionClass,
@@ -121,6 +121,8 @@ export function ResultsPanel() {
       </header>
 
       <Headline summary={summary} />
+
+      {summary.learned_weights && <FittedWeights fit={summary.learned_weights} />}
 
       {summary.sample_size_warning && (
         <p className="mx-3 mb-2 flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-2xs leading-relaxed text-amber-300">
@@ -237,6 +239,61 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
         value={formatRatio(summary.risk_reward_achieved)}
         hint="Average winner divided by average loser"
       />
+    </div>
+  )
+}
+
+/**
+ * The fitted weights, led by the only verdict that decides anything.
+ *
+ * A fit beating the hand-set numbers on its own training data is close to
+ * guaranteed -- seven free parameters against a few dozen trades -- so
+ * `improved` is deliberately not the headline. What matters is whether it
+ * still wins on history it never saw, and when it does not, saying so plainly
+ * is the entire reason the lookback is split.
+ *
+ * The weights themselves are printed in full because they are the whole
+ * model. Seven numbers is small enough to read, and a model you can read is
+ * one you can argue with.
+ */
+function FittedWeights({ fit }: { fit: LearnedWeightsSummary }) {
+  const verdict =
+    fit.generalised == null
+      ? {
+          tone: 'border-border bg-[hsl(var(--panel-raised))] text-muted-foreground',
+          text: `Weights fitted on ${formatInteger(fit.labelled_windows)} earlier windows. The out-of-sample half was too small to judge whether they hold up.`,
+        }
+      : fit.generalised
+        ? {
+            tone: 'border-bull/30 bg-bull/10 text-bull',
+            text: `Fitted weights beat the hand-set ones on ${formatInteger(fit.holdout_windows)} windows they were never shown (${formatNumber(fit.holdout_score ?? 0, 3)} vs ${formatNumber(fit.holdout_default_score ?? 0, 3)} per trade).`,
+          }
+        : {
+            tone: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+            text: `Fitted weights did not hold up. They scored ${formatNumber(fit.train_score, 3)} against ${formatNumber(fit.default_score, 3)} for the hand-set ones on the data they were fitted to, then ${formatNumber(fit.holdout_score ?? 0, 3)} against ${formatNumber(fit.holdout_default_score ?? 0, 3)} on ${formatInteger(fit.holdout_windows)} windows they had never seen. That gap is the fit learning noise.`,
+          }
+
+  return (
+    <div className="mx-3 mb-2 flex flex-col gap-1.5">
+      <p
+        className={cn(
+          'flex items-start gap-1.5 rounded-md border px-2 py-1.5 text-2xs leading-relaxed',
+          verdict.tone,
+        )}
+      >
+        <TriangleAlert size={12} className="mt-0.5 shrink-0" />
+        {verdict.text}
+      </p>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 px-0.5 text-2xs text-muted-foreground">
+        {Object.entries(fit.weights).map(([name, value]) => (
+          <span key={name} className="numeric">
+            {name.replace(/_/g, ' ')}{' '}
+            <span className={value === 0 ? 'text-bear' : 'text-foreground'}>
+              {formatNumber(value, 2)}
+            </span>
+          </span>
+        ))}
+      </div>
     </div>
   )
 }

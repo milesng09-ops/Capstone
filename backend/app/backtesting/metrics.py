@@ -54,6 +54,7 @@ def compute_metrics(
     condition_filtered_matches: int = 0,
     conditions_applied: list[str] | None = None,
     configurations_tried: int = 1,
+    learned_weights=None,
 ) -> BacktestSummary:
     assumptions = list(ASSUMPTIONS) + list(extra_assumptions or [])
     assumptions.extend(conditions_applied or [])
@@ -92,6 +93,7 @@ def compute_metrics(
             baseline_p_value=None,
             configurations_tried=configurations_tried,
             family_wise_p_value=None,
+            learned_weights=learned_weights,
             condition_filtered_matches=condition_filtered_matches,
             conditions_applied=list(conditions_applied or []),
             same_bar_ambiguity_count=0,
@@ -148,6 +150,13 @@ def compute_metrics(
         if p_value is not None
         else None
     )
+    if learned_weights is not None:
+        assumptions.append(
+            "The similarity weights were fitted on the earlier part of the lookback, and "
+            "that stretch is excluded from the matches reported here -- so this result is "
+            "measured out of sample. A fit that only memorised its training half shows up "
+            "as no better than the hand-set weights, which is the point of splitting."
+        )
     if configurations_tried > 1:
         assumptions.append(
             f"{configurations_tried} distinct configurations have been run against this "
@@ -187,6 +196,7 @@ def compute_metrics(
         baseline_p_value=p_value,
         configurations_tried=configurations_tried,
         family_wise_p_value=family_wise,
+        learned_weights=learned_weights,
         condition_filtered_matches=condition_filtered_matches,
         conditions_applied=list(conditions_applied or []),
         sample_size_warning=warning,

@@ -49,6 +49,9 @@ BLOCK_WEIGHTS: dict[str, float] = {
     "volume": 0.3,
 }
 
+#: Used to pull the blocks out unweighted; see `build_block_matrices`.
+_UNIT_WEIGHTS: dict[str, float] = {name: 1.0 for name in BLOCK_WEIGHTS}
+
 VOLATILITY_WINDOW = 5
 
 #: Candidate windows scored per batch. Bounds peak memory during the search.
@@ -131,11 +134,18 @@ def build_feature_matrix(
     lows: np.ndarray,
     closes: np.ndarray,
     volumes: np.ndarray | None,
+    weights: dict[str, float] | None = None,
 ) -> np.ndarray:
     """Build weighted feature vectors for one or many windows.
 
     Accepts either 1-D arrays (a single window) or 2-D arrays shaped
     ``(n_windows, window_length)``.  Returns ``(n_windows, n_features)``.
+
+    ``weights`` overrides :data:`BLOCK_WEIGHTS` for the caller's own set --
+    the hand-set numbers stay the default, and a learned set is passed in the
+    same shape rather than mutating the module.  A block missing from the
+    override keeps its default weight, so a partial set cannot silently zero
+    a block nobody meant to switch off.
     """
 
     single = opens.ndim == 1
@@ -199,9 +209,42 @@ def build_feature_matrix(
         )
         blocks.append(("volume", normalised_volume))
 
-    parts = [_standardise(values) * BLOCK_WEIGHTS[name] for name, values in blocks]
+    chosen = {**BLOCK_WEIGHTS, **(weights or {})}
+    parts = [_standardise(values) * chosen[name] for name, values in blocks]
     matrix = np.concatenate(parts, axis=1)
     return matrix
+
+
+def build_block_matrices(
+    opens: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    volumes: np.ndarray | None,
+) -> dict[str, np.ndarray]:
+    """The same blocks, standardised but **unweighted**, keyed by name.
+
+    Weight learning needs the blocks before the weights are applied, so it can
+    try a set without rebuilding the arithmetic that produced them.  Sharing
+    one implementation with :func:`build_feature_matrix` matters more than the
+    convenience: two copies of the feature definition would drift, and a
+    learner fitting weights for features the search does not actually use
+    would be optimising the wrong thing entirely.
+    """
+
+    matrix = build_feature_matrix(
+        opens, highs, lows, closes, volumes, weights=_UNIT_WEIGHTS
+    )
+    single = opens.ndim == 1
+    width = (opens.shape[-1] if not single else opens.shape[0])
+    names = list(BLOCK_WEIGHTS)
+    if matrix.shape[1] == (len(names) - 1) * width:
+        names = [name for name in names if name != "volume"]
+
+    out: dict[str, np.ndarray] = {}
+    for index, name in enumerate(names):
+        out[name] = matrix[:, index * width : (index + 1) * width]
+    return out
 
 
 def resample_series(values: np.ndarray, target_length: int) -> np.ndarray:
@@ -217,6 +260,35 @@ def resample_series(values: np.ndarray, target_length: int) -> np.ndarray:
     return np.interp(target_positions, source_positions, values)
 
 
+def query_arrays(
+    candles: list[Candle], target_length: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """A selection's OHLCV, resampled to ``target_length``.
+
+    Split out of :func:`build_query` because weight fitting needs the same
+    arrays to build the query's unweighted blocks. Resampling the selection a
+    second way would compare the query against candidates through a slightly
+    different lens than the search uses.
+    """
+
+    arrays = candles_to_arrays(candles)
+    if target_length == len(candles):
+        return (
+            arrays["open"],
+            arrays["high"],
+            arrays["low"],
+            arrays["close"],
+            arrays["volume"],
+        )
+    return (
+        resample_series(arrays["open"], target_length),
+        resample_series(arrays["high"], target_length),
+        resample_series(arrays["low"], target_length),
+        resample_series(arrays["close"], target_length),
+        resample_series(arrays["volume"], target_length),
+    )
+
+
 def build_query(
     candles: list[Candle],
     interval: str,
@@ -224,6 +296,7 @@ def build_query(
     *,
     min_length: int = 5,
     max_length: int = 400,
+    weights: dict[str, float] | None = None,
 ) -> PatternQuery:
     """Turn a user selection into a comparable pattern."""
 
@@ -239,19 +312,10 @@ def build_query(
             f"Pattern length must be between {min_length} and {max_length} candles."
         )
 
-    arrays = candles_to_arrays(candles)
+    opens, highs, lows, closes, volumes = query_arrays(candles, target_length)
     resampled = target_length != len(candles)
-    if resampled:
-        opens = resample_series(arrays["open"], target_length)
-        highs = resample_series(arrays["high"], target_length)
-        lows = resample_series(arrays["low"], target_length)
-        closes = resample_series(arrays["close"], target_length)
-        volumes = resample_series(arrays["volume"], target_length)
-    else:
-        opens, highs, lows = arrays["open"], arrays["high"], arrays["low"]
-        closes, volumes = arrays["close"], arrays["volume"]
 
-    vector = build_feature_matrix(opens, highs, lows, closes, volumes)[0]
+    vector = build_feature_matrix(opens, highs, lows, closes, volumes, weights=weights)[0]
     normalised = (closes / closes[0] - 1.0) * 100.0
 
     return PatternQuery(
@@ -269,8 +333,19 @@ def build_query(
 # --------------------------------------------------------------------------
 # Sliding-window search
 # --------------------------------------------------------------------------
-def _sliding_view(values: np.ndarray, window: int) -> np.ndarray:
+def sliding_view(values: np.ndarray, window: int) -> np.ndarray:
+    """Every consecutive ``window``-length slice of ``values``, as a view.
+
+    Public because weight fitting enumerates the same candidate windows the
+    search does and must enumerate them the same way -- two implementations
+    of "the candidates" would let a model be fitted on a different set than
+    it is then used to rank.
+    """
+
     return np.lib.stride_tricks.sliding_window_view(values, window)
+
+
+_sliding_view = sliding_view
 
 
 def find_similar_windows(
@@ -284,6 +359,7 @@ def find_similar_windows(
     minimum_separation_bars: int | None = None,
     required_future_bars: int = 0,
     max_candidate_windows: int = 250_000,
+    weights: dict[str, float] | None = None,
 ) -> list[PatternWindow]:
     """Rank historical windows by similarity to ``query``.
 
@@ -334,6 +410,7 @@ def find_similar_windows(
             views["low"][chunk_start:chunk_end],
             views["close"][chunk_start:chunk_end],
             views["volume"][chunk_start:chunk_end],
+            weights=weights,
         )
 
         vector = query_vector

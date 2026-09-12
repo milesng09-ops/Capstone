@@ -3,11 +3,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/services/api'
-import { DEFAULT_DETECTOR_FILTERS } from '@/types/backtest'
+import { DEFAULT_DETECTOR_FILTERS, DEFAULT_LEARNING_SETTINGS } from '@/types/backtest'
 import type {
   BacktestRequest,
   BacktestResult,
   DetectorFilters,
+  LearningSettings,
   SearchConfig,
   TradeRules,
 } from '@/types/backtest'
@@ -37,6 +38,8 @@ export function buildBacktestRequest(params: {
   /** Defaults to requiring nothing, which is how a run behaves with no
    *  conditions set. */
   detectors?: DetectorFilters
+  /** Defaults to off, which is how a run behaves with no fitting. */
+  learning?: LearningSettings
   rangeEnd: number
   /** Explicit history to search. Overrides the lookback when set. */
   testWindow?: TimeWindow | null
@@ -49,6 +52,7 @@ export function buildBacktestRequest(params: {
     rules,
     search,
     detectors = DEFAULT_DETECTOR_FILTERS,
+    learning = DEFAULT_LEARNING_SETTINGS,
     rangeEnd,
     testWindow,
   } = params
@@ -82,6 +86,7 @@ export function buildBacktestRequest(params: {
       search_symbols: uniqueSymbols,
     },
     detectors,
+    learning,
   }
 }
 

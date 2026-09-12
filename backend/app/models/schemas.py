@@ -221,6 +221,51 @@ class DetectorFilters(BaseModel):
         )
 
 
+class LearningSettings(BaseModel):
+    """Phase two: fit the similarity weights instead of taking them as given.
+
+    Off by default. When on, the lookback is split in two: the weights are
+    fitted on the earlier part and the backtest runs on the later part, so
+    the result is never read off the data the model was chosen on.
+    """
+
+    enabled: bool = False
+    #: Share of the lookback used to fit. The remainder is what the reported
+    #: result is measured on, so this trades training signal against the size
+    #: of the out-of-sample window.
+    train_fraction: float = Field(0.5, ge=0.2, le=0.8)
+
+
+class LearnedWeightsOut(BaseModel):
+    """A fitted weight set and what it is worth.
+
+    The whole model, in full: seven numbers between 0 and 1.
+    """
+
+    weights: dict[str, float]
+    train_score: float
+    #: What the hand-set weights scored on the same training windows.
+    default_score: float
+    #: False when the fit could not beat the defaults on its own training
+    #: data, which means it found nothing.
+    improved: bool
+    labelled_windows: int
+    top_k: int
+    passes: int
+    objective: str
+    dropped_blocks: list[str] = Field(default_factory=list)
+    #: The same objective on windows the fit never saw. This is the figure
+    #: that decides whether the model is worth anything; `improved` above is
+    #: only about the data it was fitted to.
+    holdout_score: float | None = None
+    holdout_default_score: float | None = None
+    holdout_windows: int = 0
+    #: `None` when the holdout was too small to judge on.
+    generalised: bool | None = None
+    train_start: int
+    train_end: int
+
+
 class SearchSettings(BaseModel):
     lookback_start: int
     lookback_end: int
@@ -249,6 +294,7 @@ class BacktestRequest(BaseModel):
     trade: TradeRules = Field(default_factory=TradeRules)
     search: SearchSettings
     detectors: DetectorFilters = Field(default_factory=DetectorFilters)
+    learning: LearningSettings = Field(default_factory=LearningSettings)
 
     @model_validator(mode="after")
     def _check_symbols(self) -> "BacktestRequest":
@@ -358,6 +404,8 @@ class BacktestSummary(BaseModel):
     #: Matches dropped because they did not meet the detector conditions.
     #: Separate from `skipped_matches`, which counts matches that could not be
     #: simulated at all -- a match filtered out on purpose is not a failure.
+    #: Present only when weights were fitted for this run.
+    learned_weights: LearnedWeightsOut | None = None
     #: Distinct configurations run against a window overlapping this one,
     #: this run included. 1 means this is the first thing tried here.
     configurations_tried: int = 1

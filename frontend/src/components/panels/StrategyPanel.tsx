@@ -79,6 +79,7 @@ export function StrategyPanel() {
   const rules = useWorkspace((state) => state.rules)
   const search = useWorkspace((state) => state.search)
   const detectors = useWorkspace((state) => state.detectors)
+  const learning = useWorkspace((state) => state.learning)
   const sizing = useWorkspace((state) => state.sizing)
 
   const setSelection = useWorkspace((state) => state.setSelection)
@@ -87,6 +88,7 @@ export function StrategyPanel() {
   const updateRules = useWorkspace((state) => state.updateRules)
   const updateSearch = useWorkspace((state) => state.updateSearch)
   const updateDetectors = useWorkspace((state) => state.updateDetectors)
+  const updateLearning = useWorkspace((state) => state.updateLearning)
   const resetStrategy = useWorkspace((state) => state.resetStrategy)
   const setActiveBacktestId = useWorkspace((state) => state.setActiveBacktestId)
 
@@ -161,6 +163,7 @@ export function StrategyPanel() {
       rules,
       search,
       detectors,
+      learning,
       rangeEnd: range.to,
       testWindow,
     })
@@ -427,6 +430,39 @@ export function StrategyPanel() {
           checked={detectors.align_with_direction}
           onChange={(align_with_direction) => updateDetectors({ align_with_direction })}
         />
+      </Disclosure>
+
+      {/* ---- weights fitted rather than assumed ---- */}
+      <Disclosure
+        label="Fitted weights"
+        summary={learning.enabled ? `train on ${Math.round(learning.train_fraction * 100)}%` : 'off'}
+      >
+        <p className="text-2xs leading-relaxed text-muted-foreground">
+          Chooses how much each feature counts toward &ldquo;these look alike&rdquo;
+          by fitting to what the matches actually paid. The lookback is split:
+          fitted on the earlier part, measured on the later, so the result is
+          never read off the data the weights were chosen on.
+        </p>
+
+        <ToggleField
+          label="Fit the similarity weights"
+          hint="Off uses the hand-set weights, which is how every run above worked"
+          checked={learning.enabled}
+          onChange={(enabled) => updateLearning({ enabled })}
+        />
+
+        {learning.enabled && (
+          <NumberField
+            label="Train on"
+            hint="Share of the lookback used to fit. The rest is what the result is measured on, so more training means a smaller out-of-sample window."
+            value={Math.round(learning.train_fraction * 100)}
+            min={20}
+            max={80}
+            step={5}
+            suffix="%"
+            onChange={(percent) => updateLearning({ train_fraction: percent / 100 })}
+          />
+        )}
       </Disclosure>
 
       {/* ---- everything set once ---- */}

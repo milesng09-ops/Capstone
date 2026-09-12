@@ -22,6 +22,7 @@ import {
   DRAWING_COLORS,
   DRAWING_WIDTHS,
   TOOL_LABELS,
+  isPosition,
   type Drawing,
 } from '@/types/drawing'
 import { cn } from '@/utils/cn'
@@ -237,6 +238,29 @@ function anchorFor(drawing: Drawing, handle: ChartHandle): Anchor | null {
     // at the top of the line rather than beside it.
     const x = handle.timeToXFree(drawing.time)
     return x == null ? null : { x, y: 8 }
+  }
+
+  if (drawing.kind === 'brush') {
+    // Above the highest point of the stroke, which is the only part of a
+    // freehand line with a position worth anchoring to.
+    let best: { x: number; y: number } | null = null
+    for (const point of drawing.points) {
+      const x = handle.timeToXFree(point.time)
+      const y = handle.priceToY(point.price)
+      if (x == null || y == null) continue
+      if (!best || y < best.y) best = { x, y }
+    }
+    return best
+  }
+
+  if (isPosition(drawing)) {
+    // Above whichever of the two levels is higher, so the toolbar never sits
+    // inside the trade box it belongs to.
+    const x1 = handle.timeToXFree(drawing.entry.time)
+    const x2 = handle.timeToXFree(drawing.endTime)
+    const top = handle.priceToY(Math.max(drawing.stop, drawing.target))
+    if (x1 == null || x2 == null || top == null) return null
+    return { x: (x1 + x2) / 2, y: top }
   }
 
   const x1 = handle.timeToXFree(drawing.from.time)

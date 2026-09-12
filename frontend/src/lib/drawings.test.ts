@@ -17,6 +17,7 @@ import {
   type DrawingHit,
   type ProjectedDrawing,
 } from '@/lib/drawings'
+import { fibLevels, positionFromDrag } from '@/types/drawing'
 import type {
   Drawing,
   HorizontalDrawing,
@@ -310,5 +311,196 @@ describe('the dismiss tab on a backtest range', () => {
 
   it('finds nothing when no range is on the chart', () => {
     expect(hitTestChips([], 20, 12)).toBeNull()
+  })
+})
+
+describe('the retracement levels', () => {
+  it('puts ratio 0 at the end of the move and 1 at its start', () => {
+    // The convention every platform follows, and the only one that reads
+    // correctly: a retracement is measured back from where the move finished.
+    const levels = fibLevels({ time: 0, price: 100 }, { time: 10, price: 200 })
+
+    expect(levels[0]).toEqual({ ratio: 0, price: 200 })
+    expect(levels.at(-1)).toEqual({ ratio: 1, price: 100 })
+  })
+
+  it('places the golden ratio at 61.8% back towards the start', () => {
+    const levels = fibLevels({ time: 0, price: 0 }, { time: 10, price: 100 })
+    const golden = levels.find((level) => level.ratio === 0.618)
+
+    expect(golden?.price).toBeCloseTo(38.2, 6)
+  })
+
+  it('reads the same way on a move that ran downwards', () => {
+    const levels = fibLevels({ time: 0, price: 200 }, { time: 10, price: 100 })
+    const half = levels.find((level) => level.ratio === 0.5)
+
+    expect(half?.price).toBe(150)
+  })
+})
+
+describe('a position drawn by dragging', () => {
+  it('puts a long stop below the entry and the target twice as far above', () => {
+    expect(positionFromDrag('long', 100, 90)).toEqual({ stop: 90, target: 120 })
+  })
+
+  it('puts a short stop above the entry and the target below', () => {
+    expect(positionFromDrag('short', 100, 110)).toEqual({ stop: 110, target: 80 })
+  })
+
+  it('corrects a drag that ran the wrong way for the direction', () => {
+    // A stop on the wrong side of the entry is not a stop. The drag is read
+    // as a distance, so a long dragged upwards still comes out as a long.
+    expect(positionFromDrag('long', 100, 110)).toEqual({ stop: 90, target: 120 })
+  })
+
+  it('honours a reward multiple other than the default', () => {
+    expect(positionFromDrag('long', 100, 90, 3)).toEqual({ stop: 90, target: 130 })
+  })
+})
+
+describe('hit-testing the new shapes', () => {
+  const brush: ProjectedDrawing = {
+    id: 'brush',
+    kind: 'brush',
+    points: [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+    ],
+  }
+
+  const trade: ProjectedDrawing = {
+    id: 'trade',
+    kind: 'long',
+    x1: 100,
+    x2: 300,
+    yEntry: 200,
+    yStop: 260,
+    yTarget: 80,
+  }
+
+  it('finds a brush anywhere along its path, not just at its ends', () => {
+    expect(hitTestDrawing(brush, 50, 0)?.part).toBe('body')
+    expect(hitTestDrawing(brush, 100, 50)?.part).toBe('body')
+  })
+
+  it('misses a brush away from every segment', () => {
+    // Inside the corner the path turns, which no segment passes through.
+    expect(hitTestDrawing(brush, 40, 60)).toBeNull()
+  })
+
+  it('names which level of a trade was grabbed', () => {
+    expect(hitTestDrawing(trade, 100, 200)).toEqual({
+      id: 'trade',
+      part: 'level',
+      level: 'entry',
+    })
+    expect(hitTestDrawing(trade, 100, 260)).toEqual({
+      id: 'trade',
+      part: 'level',
+      level: 'stop',
+    })
+    expect(hitTestDrawing(trade, 300, 200)).toEqual({
+      id: 'trade',
+      part: 'level',
+      level: 'end',
+    })
+  })
+
+  it('grabs a trade by a level line away from the handles', () => {
+    expect(hitTestDrawing(trade, 220, 260)).toEqual({ id: 'trade', part: 'body' })
+  })
+
+  it('lets the pointer through the body of an unselected trade', () => {
+    // A trade box covers a lot of pane; swallowing the pointer inside it
+    // would stop the chart panning across it for no visible reason.
+    expect(hitTestDrawing(trade, 220, 150)).toBeNull()
+    expect(hitTestDrawing(trade, 220, 150, true)).toEqual({ id: 'trade', part: 'body' })
+  })
+
+  it('gives a trade four grips and a brush none', () => {
+    expect(handlePositions(trade)).toHaveLength(4)
+    expect(handlePositions(brush)).toEqual([])
+  })
+
+  it('keeps hover identity apart for the levels of one trade', () => {
+    const entry = hitTestDrawing(trade, 100, 200)
+    const stop = hitTestDrawing(trade, 100, 260)
+
+    expect(hitKey(entry)).not.toBe(hitKey(stop))
+  })
+})
+
+describe('moving the new shapes', () => {
+  const trade: Drawing = {
+    id: 'trade',
+    kind: 'long',
+    symbol: 'NQ',
+    color: '#818cf8',
+    width: 2,
+    createdAt: 0,
+    entry: { time: 1_000, price: 100 },
+    endTime: 2_000,
+    stop: 90,
+    target: 120,
+  }
+
+  const stroke: Drawing = {
+    id: 'stroke',
+    kind: 'brush',
+    symbol: 'NQ',
+    color: '#818cf8',
+    width: 2,
+    createdAt: 0,
+    points: [
+      { time: 1_000, price: 100 },
+      { time: 1_500, price: 110 },
+    ],
+  }
+
+  it('carries all three levels of a trade together', () => {
+    // A stop that stayed behind would change the trade as well as move it.
+    const moved = translateDrawing(trade, 500, 10)
+
+    expect(moved).toMatchObject({
+      entry: { time: 1_500, price: 110 },
+      endTime: 2_500,
+      stop: 100,
+      target: 130,
+    })
+  })
+
+  it('carries every point of a stroke', () => {
+    const moved = translateDrawing(stroke, 100, 5)
+
+    expect(moved).toMatchObject({
+      points: [
+        { time: 1_100, price: 105 },
+        { time: 1_600, price: 115 },
+      ],
+    })
+  })
+
+  it('moves one level of a trade without touching the others', () => {
+    const resized = resizeDrawing(
+      trade,
+      { id: 'trade', part: 'level', level: 'stop' },
+      { time: 9_999, price: 80 },
+    )
+
+    expect(resized).toMatchObject({ stop: 80, target: 120, endTime: 2_000 })
+    // The stop has no time of its own, so the grab's timestamp is ignored.
+    expect(resized).toMatchObject({ entry: { time: 1_000, price: 100 } })
+  })
+
+  it('changes only the duration when the right edge is dragged', () => {
+    const resized = resizeDrawing(
+      trade,
+      { id: 'trade', part: 'level', level: 'end' },
+      { time: 5_000, price: 999 },
+    )
+
+    expect(resized).toMatchObject({ endTime: 5_000, stop: 90, target: 120 })
   })
 })

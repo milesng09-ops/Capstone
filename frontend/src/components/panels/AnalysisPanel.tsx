@@ -19,7 +19,7 @@ import { Badge, Button, EmptyState, Spinner } from '@/components/ui/primitives'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useIct } from '@/hooks/useMarketData'
 import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
-import { TOOL_LABELS } from '@/types/drawing'
+import { TOOL_LABELS, drawingTime } from '@/types/drawing'
 import { VALIDITY_LABELS, VALIDITY_NOTES, type SmtDivergence } from '@/types/ict'
 import { cn } from '@/utils/cn'
 import { formatDateTime, formatNumber, formatPrice } from '@/utils/format'
@@ -291,7 +291,7 @@ function DrawingsSection() {
                           ? formatPrice(drawing.from.price)
                           : drawing.kind === 'text'
                             ? formatDateTime(drawing.at.time)
-                            : formatDateTime(drawing.from.time)}
+                            : formatDateTime(drawingTime(drawing))}
                   </span>
                 </button>
                 <Button

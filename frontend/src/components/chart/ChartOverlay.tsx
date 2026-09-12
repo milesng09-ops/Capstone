@@ -55,12 +55,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { magnetPrice, nearestBarTime, snapWithinBars } from '@/lib/chart'
+import {
+  magnetPrice,
+  medianBarSpacingMs,
+  nearestBarTime,
+  snapWithinBars,
+} from '@/lib/chart'
 import {
   handlePositions,
   hitKey,
   hitTestChips,
   hitTestDrawings,
+  isProjectedPosition,
   rangeChip,
   CHIP_HEIGHT_PX,
   type RangeChip,
@@ -69,6 +75,8 @@ import {
   translateDrawing,
   type DrawingHit,
   type ProjectedDrawing,
+  type ProjectedPlannedTrade,
+  type ProjectedSegment,
 } from '@/lib/drawings'
 import {
   hitTestPositions,
@@ -79,15 +87,23 @@ import {
 } from '@/lib/trades'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import type { Trade } from '@/types/backtest'
+import { INTERVAL_MS } from '@/types/market'
 import type { Candle, Interval, SelectionRange, TimeWindow } from '@/types/market'
 import {
+  BRUSH_MIN_STEP_PX,
   DEFAULT_NOTE,
+  DEFAULT_POSITION_R,
+  fibLevels,
   hasTwoPoints,
   isDragTool,
+  isPathTool,
   isPointTool,
   isRangeTool,
+  positionFromDrag,
   TEXT_CHAR_PX,
   TEXT_LINE_PX,
+  type FibDrawing,
+  type PositionDrawing,
 } from '@/types/drawing'
 import type { Drawing, DrawingDraft, DrawingPoint, ToolMode } from '@/types/drawing'
 import type { FairValueGap, IctAnalysis, IctSettings, SwingPoint } from '@/types/ict'
@@ -117,17 +133,22 @@ const MIN_DRAG_PX = 4
  * and `gesture.moved` already answers it.
  */
 function isVisiblySized(
-  kind: 'trendline' | 'rectangle' | 'ray' | 'arrow',
+  kind: 'trendline' | 'rectangle' | 'ray' | 'arrow' | 'fib',
   from: DrawingPoint,
   to: DrawingPoint,
 ): boolean {
   const spansTime = from.time !== to.time
   const spansPrice = from.price !== to.price
   // A zone needs extent on both axes or it is a line pretending to be a box.
+  // A retracement needs price above all: every level collapses onto one line
+  // when the two swings are at the same price, which is a tool that paints
+  // seven lines on top of each other and measures nothing.
+  if (kind === 'rectangle') return spansTime && spansPrice
+  if (kind === 'fib') return spansPrice
   // The line-like shapes need only one: a perfectly flat trend line is a
   // legitimate thing to draw, and a ray needs a direction, which either axis
   // can supply.
-  return kind === 'rectangle' ? spansTime && spansPrice : spansTime || spansPrice
+  return spansTime || spansPrice
 }
 
 /** Narrowest a position box may be drawn, so a one-bar trade is still visible. */
@@ -195,6 +216,18 @@ interface PendingGesture {
    * half the screen. Supporting both costs one flag and takes nothing away.
    */
   armed: boolean
+  /**
+   * The pointer's path, for the tools that are the path rather than its ends.
+   *
+   * Thinned as it is collected: a pointer stream is hundreds of samples a
+   * second, and a stroke that kept them all would be a drawing in
+   * `localStorage` larger than the rest of the workspace. Only the brush
+   * fills this in; for every other tool it stays empty.
+   */
+  path: DrawingPoint[]
+  /** Screen position of the last recorded path point, for the thinning test. */
+  pathX: number
+  pathY: number
 }
 
 /** An existing shape being moved or reshaped. */
@@ -519,6 +552,7 @@ export function ChartOverlay({
         selected: shown.id === selectedDrawingId,
         hovered: shown.id === hoveredId,
         background: palette.background,
+        palette,
       })
       if (!painted) offData += 1
     }
@@ -900,6 +934,9 @@ export function ChartOverlay({
       currentY: resolved.y,
       moved: false,
       armed: false,
+      path: isPathTool(tool) ? [resolved.point] : [],
+      pathX: resolved.x,
+      pathY: resolved.y,
     })
   }
 
@@ -908,6 +945,14 @@ export function ChartOverlay({
     if (!gesture) return
     const resolved = pointAt(event.clientX, event.clientY, !isRangeTool(tool) && snapToSwings)
     if (!resolved) return
+
+    // The brush records where the pointer has been, not where it started.
+    // Points closer together than a few pixels add nothing a reader can see
+    // and cost storage on every one of them.
+    const stepped =
+      isPathTool(tool) &&
+      Math.hypot(resolved.x - gesture.pathX, resolved.y - gesture.pathY) >=
+        BRUSH_MIN_STEP_PX
 
     updatePending({
       ...gesture,
@@ -918,6 +963,9 @@ export function ChartOverlay({
         gesture.moved ||
         Math.abs(resolved.x - gesture.startX) > MIN_DRAG_PX ||
         Math.abs(resolved.y - gesture.startY) > MIN_DRAG_PX,
+      path: stepped ? [...gesture.path, resolved.point] : gesture.path,
+      pathX: stepped ? resolved.x : gesture.pathX,
+      pathY: stepped ? resolved.y : gesture.pathY,
     })
   }
 
@@ -943,7 +991,13 @@ export function ChartOverlay({
     // the shape. A point tool is exempt -- it has one coordinate, so pressing
     // and releasing in place *is* the whole gesture -- and so are the range
     // tools, which name a span of bars and are only ever swept.
-    if (!gesture.moved && !gesture.armed && !isPointTool(tool) && !isRangeTool(tool)) {
+    if (
+      !gesture.moved &&
+      !gesture.armed &&
+      !isPointTool(tool) &&
+      !isRangeTool(tool) &&
+      !isPathTool(tool)
+    ) {
       updatePending({ ...gesture, armed: true })
       return
     }
@@ -1012,11 +1066,62 @@ export function ChartOverlay({
       } else {
         onTestWindowChange({ start_time: start, end_time: end })
       }
+    } else if (tool === 'brush') {
+      // Two points is the least that can be a line. One is a press that never
+      // moved, which is a mis-click rather than a stroke -- and the tool stays
+      // held, so trying again costs nothing.
+      if (gesture.path.length < 2) {
+        onGestureComplete(false)
+        return
+      }
+      onCreateDrawing({
+        kind: 'brush',
+        symbol,
+        color: drawingColor,
+        width: drawingWidth,
+        points: gesture.path,
+      })
+      onGestureComplete(true)
+      return
+    } else if (tool === 'long' || tool === 'short') {
+      // The drag is entry to stop, because risk is the number a trader
+      // decides; the target follows from it as a multiple. A drag with no
+      // height sets no risk, which would make the reward-to-risk undefined.
+      if (gesture.start.price === gesture.current.price) {
+        onGestureComplete(false)
+        return
+      }
+      const { stop, target } = positionFromDrag(
+        tool,
+        gesture.start.price,
+        gesture.current.price,
+      )
+      // A trade drawn with no width still has to be visible and grabbable, so
+      // a box that spans no time is given a nominal duration. Ten bars is
+      // TradingView's own default and reads as "a trade", not as a line.
+      const spacing = medianBarSpacingMs(candles) ?? INTERVAL_MS[interval]
+      const endTime =
+        gesture.current.time > gesture.start.time
+          ? gesture.current.time
+          : gesture.start.time + spacing * 10
+      onCreateDrawing({
+        kind: tool,
+        symbol,
+        color: drawingColor,
+        width: drawingWidth,
+        entry: gesture.start,
+        endTime,
+        stop,
+        target,
+      })
+      onGestureComplete(true)
+      return
     } else if (
       tool === 'trendline' ||
       tool === 'rectangle' ||
       tool === 'ray' ||
-      tool === 'arrow'
+      tool === 'arrow' ||
+      tool === 'fib'
     ) {
       // Measured on the *snapped* endpoints, not on the raw pointer path.
       // `moved` above is a pixel test taken before snapping, and snapping can
@@ -1459,11 +1564,128 @@ function paintSwing(
   ctx.restore()
 }
 
+/**
+ * A retracement: the two swings, and the levels between them.
+ *
+ * The levels run to the right edge rather than stopping at the second swing,
+ * because what the tool is *for* is watching price come back to one of them
+ * later -- a retracement that stops where the move stopped can only describe
+ * the past. The hit test extends the same way, so a level is grabbable
+ * wherever it is drawn.
+ */
+function paintFib(
+  ctx: CanvasRenderingContext2D,
+  projected: ProjectedSegment,
+  drawing: FibDrawing,
+  width: number,
+) {
+  const left = Math.min(projected.x1, projected.x2)
+  const levels = fibLevels(drawing.from, drawing.to)
+
+  // The move itself, faint: it is context for the levels rather than a level.
+  ctx.save()
+  ctx.globalAlpha = 0.35
+  ctx.setLineDash([3, 3])
+  ctx.beginPath()
+  ctx.moveTo(projected.x1, projected.y1)
+  ctx.lineTo(projected.x2, projected.y2)
+  ctx.stroke()
+  ctx.restore()
+
+  ctx.save()
+  ctx.font = '9px ui-monospace, monospace'
+  ctx.textBaseline = 'bottom'
+  for (let index = 0; index < levels.length; index += 1) {
+    const { ratio } = levels[index]
+    const y = projected.y2 + (projected.y1 - projected.y2) * ratio
+
+    // The extremes are the swings themselves and are drawn solid; the
+    // retracements between them are dashed, so the two read as what they are.
+    ctx.globalAlpha = ratio === 0 || ratio === 1 ? 0.9 : 0.55
+    ctx.setLineDash(ratio === 0 || ratio === 1 ? [] : [5, 4])
+    ctx.beginPath()
+    ctx.moveTo(left, y + 0.5)
+    ctx.lineTo(width, y + 0.5)
+    ctx.stroke()
+
+    ctx.globalAlpha = 0.85
+    ctx.fillText(`${ratio.toFixed(3)}  ${levels[index].price.toFixed(2)}`, left + 4, y - 2)
+  }
+  ctx.restore()
+}
+
+/**
+ * A planned trade: reward above the entry, risk below it, or the other way up.
+ *
+ * Filled in two colours because the question the box answers is "how much am
+ * I risking against how much am I making", and that is read from the relative
+ * size of the two blocks long before any number on it is.
+ */
+function paintPlannedTrade(
+  ctx: CanvasRenderingContext2D,
+  projected: ProjectedPlannedTrade,
+  drawing: PositionDrawing,
+  palette: ChartPalette,
+) {
+  const left = Math.min(projected.x1, projected.x2)
+  const right = Math.max(projected.x1, projected.x2)
+  const boxWidth = Math.max(MIN_POSITION_WIDTH_PX, right - left)
+  const { yEntry, yStop, yTarget } = projected
+
+  ctx.save()
+
+  ctx.globalAlpha = 0.16
+  ctx.fillStyle = palette.bull
+  ctx.fillRect(left, Math.min(yEntry, yTarget), boxWidth, Math.abs(yTarget - yEntry))
+  ctx.fillStyle = palette.bear
+  ctx.fillRect(left, Math.min(yEntry, yStop), boxWidth, Math.abs(yStop - yEntry))
+
+  ctx.globalAlpha = 0.95
+  ctx.lineWidth = drawing.width
+  for (const [y, colour] of [
+    [yEntry, drawing.color],
+    [yTarget, palette.bull],
+    [yStop, palette.bear],
+  ] as const) {
+    ctx.strokeStyle = colour
+    ctx.beginPath()
+    ctx.moveTo(left, y + 0.5)
+    ctx.lineTo(left + boxWidth, y + 0.5)
+    ctx.stroke()
+  }
+
+  /*
+   * Risk, reward and the ratio between them.
+   *
+   * The ratio is the number that decides whether a trade is worth taking, and
+   * it is the one a hand-drawn box exists to work out -- so it is printed
+   * rather than left to be measured off the axis. Guarded, because a stop
+   * dragged onto the entry makes the risk zero and the ratio meaningless; the
+   * honest answer there is to say nothing rather than to print a division.
+   */
+  const risk = Math.abs(drawing.entry.price - drawing.stop)
+  const reward = Math.abs(drawing.target - drawing.entry.price)
+  const label =
+    risk > 0
+      ? `${drawing.kind === 'long' ? 'Long' : 'Short'}  ${(reward / risk).toFixed(2)}R`
+      : `${drawing.kind === 'long' ? 'Long' : 'Short'}  no risk set`
+
+  ctx.globalAlpha = 0.9
+  ctx.fillStyle = palette.text
+  ctx.font = '9px ui-monospace, monospace'
+  ctx.textBaseline = 'bottom'
+  ctx.fillText(label, left + 4, Math.min(yTarget, yStop) - 3)
+
+  ctx.restore()
+}
+
 interface DrawingStyle {
   selected: boolean
   hovered: boolean
   /** Pane colour, used to punch out the middle of a grab handle. */
   background: string
+  /** The pane's own palette, for shapes that mean up and down. */
+  palette: ChartPalette
 }
 
 function paintDrawing(
@@ -1473,7 +1695,7 @@ function paintDrawing(
   yOf: YConverter,
   width: number,
   height: number,
-  { selected, hovered, background }: DrawingStyle,
+  { selected, hovered, background, palette }: DrawingStyle,
 ): boolean {
   // Painted from the same projection the pointer is tested against, so a grip
   // is never drawn somewhere it cannot actually be grabbed.
@@ -1544,6 +1766,24 @@ function paintDrawing(
     ctx.moveTo(x + 0.5, 0)
     ctx.lineTo(x + 0.5, height)
     ctx.stroke()
+  } else if (projected.kind === 'brush') {
+    // One path through every point. Round joins and caps because a freehand
+    // line drawn with mitred corners looks like a polygon, which is exactly
+    // what it is and exactly what it should not look like.
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.moveTo(projected.points[0].x, projected.points[0].y)
+    for (const point of projected.points.slice(1)) ctx.lineTo(point.x, point.y)
+    // A stroke of one point would paint nothing, so it is given a dot.
+    if (projected.points.length === 1) {
+      ctx.lineTo(projected.points[0].x + 0.1, projected.points[0].y)
+    }
+    ctx.stroke()
+  } else if (isProjectedPosition(projected)) {
+    paintPlannedTrade(ctx, projected, drawing as PositionDrawing, palette)
+  } else if (projected.kind === 'fib') {
+    paintFib(ctx, projected, drawing as FibDrawing, width)
   } else if (projected.kind === 'rectangle') {
     const left = Math.min(projected.x1, projected.x2)
     const top = Math.min(projected.y1, projected.y2)
@@ -1644,12 +1884,100 @@ function paintPending(
     ctx.globalAlpha = 1
     ctx.strokeStyle = accent
     ctx.strokeRect(left + 0.5, 0.5, span, height - 1)
-  } else if (tool === 'trendline') {
+  } else if (tool === 'trendline' || tool === 'ray' || tool === 'arrow') {
+    // The three segment tools preview the same way. The ray's extension is
+    // left out on purpose: while the gesture is running the second point is
+    // still moving, so an extension would swing across the pane on every
+    // pixel and say nothing about where the line will end up.
     ctx.strokeStyle = colour
     ctx.beginPath()
     ctx.moveTo(gesture.startX, gesture.startY)
     ctx.lineTo(gesture.currentX, gesture.currentY)
     ctx.stroke()
+  } else if (tool === 'brush') {
+    // The stroke as recorded so far, which is also exactly what will be
+    // stored -- the preview is the drawing, a step early.
+    ctx.strokeStyle = colour
+    ctx.setLineDash([])
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.moveTo(gesture.startX, gesture.startY)
+    ctx.lineTo(gesture.currentX, gesture.currentY)
+    ctx.stroke()
+  } else if (tool === 'vertical') {
+    ctx.strokeStyle = colour
+    ctx.beginPath()
+    ctx.moveTo(gesture.currentX + 0.5, 0)
+    ctx.lineTo(gesture.currentX + 0.5, height)
+    ctx.stroke()
+  } else if (tool === 'horizontal_ray') {
+    // Forward only, which is the whole claim the tool makes.
+    ctx.strokeStyle = colour
+    ctx.beginPath()
+    ctx.moveTo(gesture.currentX, gesture.currentY + 0.5)
+    ctx.lineTo(width, gesture.currentY + 0.5)
+    ctx.stroke()
+  } else if (tool === 'text') {
+    // The plate the note will sit on, so its size is not a surprise.
+    ctx.strokeStyle = colour
+    ctx.strokeRect(
+      gesture.currentX - 3.5,
+      gesture.currentY - TEXT_LINE_PX + 0.5,
+      DEFAULT_NOTE.length * TEXT_CHAR_PX + 8,
+      TEXT_LINE_PX,
+    )
+  } else if (tool === 'fib') {
+    // Every level, live: where the retracements land is the only reason to
+    // pick one pair of swings over another, so it has to be visible before
+    // the gesture is committed rather than after.
+    ctx.strokeStyle = colour
+    for (const { ratio } of fibLevels({ time: 0, price: 1 }, { time: 0, price: 0 })) {
+      const y = gesture.currentY + (gesture.startY - gesture.currentY) * ratio
+      ctx.globalAlpha = ratio === 0 || ratio === 1 ? 0.9 : 0.5
+      ctx.beginPath()
+      ctx.moveTo(Math.min(gesture.startX, gesture.currentX), y + 0.5)
+      ctx.lineTo(width, y + 0.5)
+      ctx.stroke()
+    }
+  } else if (tool === 'long' || tool === 'short') {
+    /*
+     * Risk below the entry and reward above it, in the proportions the trade
+     * will actually have.
+     *
+     * Drawn from the *screen* distance rather than by re-deriving prices: the
+     * commit does the arithmetic in market coordinates, and doing it twice in
+     * two places is how a preview comes to disagree with what it previews.
+     * One number links them -- the default reward multiple -- and the stop is
+     * placed on the side the direction demands, so a long dragged upwards
+     * still previews as a long.
+     */
+    const risk = Math.abs(gesture.currentY - gesture.startY)
+    const down = tool === 'long'
+    const stopY = down ? gesture.startY + risk : gesture.startY - risk
+    const targetY = down
+      ? gesture.startY - risk * DEFAULT_POSITION_R
+      : gesture.startY + risk * DEFAULT_POSITION_R
+    const left = Math.min(gesture.startX, gesture.currentX)
+    const span = Math.max(MIN_POSITION_WIDTH_PX, Math.abs(gesture.currentX - gesture.startX))
+
+    ctx.setLineDash([])
+    ctx.globalAlpha = 0.14
+    ctx.fillStyle = accent
+    ctx.fillRect(left, Math.min(gesture.startY, targetY), span, Math.abs(targetY - gesture.startY))
+    ctx.globalAlpha = 0.14
+    ctx.fillStyle = colour
+    ctx.fillRect(left, Math.min(gesture.startY, stopY), span, Math.abs(stopY - gesture.startY))
+
+    ctx.globalAlpha = 0.9
+    ctx.strokeStyle = colour
+    ctx.setLineDash([4, 3])
+    for (const y of [gesture.startY, stopY, targetY]) {
+      ctx.beginPath()
+      ctx.moveTo(left, y + 0.5)
+      ctx.lineTo(left + span, y + 0.5)
+      ctx.stroke()
+    }
   } else if (tool === 'horizontal') {
     // Previewed under the cursor before it exists: a level is committed on
     // release, so this is the last look at it before it is real.

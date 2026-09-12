@@ -606,3 +606,162 @@ describe('taking a backtest range off the chart', () => {
     expect(onSelectionChange).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * The one drawing a spy recorded.
+ *
+ * `setup` lets any callback be overridden, so the returned `onCreateDrawing`
+ * is typed as the prop rather than as the mock. This asserts it is the spy
+ * and hands back the draft, which is what the shape-specific cases read.
+ */
+function created(spy: unknown): any {
+  const mock = spy as { mock?: { calls: unknown[][] } }
+  expect(mock.mock?.calls.length).toBe(1)
+  return mock.mock!.calls[0][0]
+}
+
+describe('the Fibonacci retracement', () => {
+  it('is placed between the two swings that were dragged', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'fib' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 300))
+    fireEvent(canvas, pointer('pointermove', 400, 100))
+    fireEvent(canvas, pointer('pointerup', 400, 100))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'fib',
+        from: { time: 100, price: 300 },
+        to: { time: 400, price: 100 },
+      }),
+    )
+  })
+
+  it('refuses a drag with no height, which would stack every level on one line', () => {
+    const { canvas, onCreateDrawing, onGestureComplete } = setup({ tool: 'fib' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 200))
+    fireEvent(canvas, pointer('pointermove', 400, 200))
+    fireEvent(canvas, pointer('pointerup', 400, 200))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+    // The tool stays held: the user was mid-gesture, not finished.
+    expect(onGestureComplete).toHaveBeenCalledWith(false)
+  })
+})
+
+describe('the position tools', () => {
+  it('reads the drag as risk and places the target at twice it', () => {
+    // Entry 200, dragged to 260: 60 of risk. A long's stop is below the
+    // entry, so it lands at 140 and the target 120 above at 320.
+    const { canvas, onCreateDrawing } = setup({ tool: 'long' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 200))
+    fireEvent(canvas, pointer('pointermove', 300, 260))
+    fireEvent(canvas, pointer('pointerup', 300, 260))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'long',
+        entry: { time: 100, price: 200 },
+        stop: 140,
+        target: 320,
+      }),
+    )
+  })
+
+  it('mirrors the whole trade for a short', () => {
+    // Same gesture, opposite tool: the stop goes above the entry and the
+    // target below it. The drag is read as a distance, so a trade drawn the
+    // wrong way round still comes out as the trade that was asked for.
+    const { canvas, onCreateDrawing } = setup({ tool: 'short' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 200))
+    fireEvent(canvas, pointer('pointermove', 300, 260))
+    fireEvent(canvas, pointer('pointerup', 300, 260))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'short', stop: 260, target: 80 }),
+    )
+  })
+
+  it('refuses a drag that sets no risk', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'long' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 200))
+    fireEvent(canvas, pointer('pointermove', 300, 200))
+    fireEvent(canvas, pointer('pointerup', 300, 200))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('gives a box with no width a visible duration', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'long' })
+
+    fireEvent(canvas, pointer('pointerdown', 500, 200))
+    fireEvent(canvas, pointer('pointermove', 500, 260))
+    fireEvent(canvas, pointer('pointerup', 500, 260))
+
+    const drawn = created(onCreateDrawing)
+    expect(drawn.endTime).toBeGreaterThan(drawn.entry.time)
+  })
+})
+
+describe('the freehand brush', () => {
+  it('stores the path the pointer took, not its two ends', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'brush' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 140, 130))
+    fireEvent(canvas, pointer('pointermove', 180, 100))
+    fireEvent(canvas, pointer('pointerup', 180, 100))
+
+    const drawn = created(onCreateDrawing)
+    expect(drawn.kind).toBe('brush')
+    expect(drawn.points).toEqual([
+      { time: 100, price: 100 },
+      { time: 140, price: 130 },
+      { time: 180, price: 100 },
+    ])
+  })
+
+  it('thins samples closer together than the eye can use', () => {
+    // A pointer stream is hundreds of samples a second; storing them all puts
+    // a drawing in localStorage larger than the rest of the workspace.
+    const { canvas, onCreateDrawing } = setup({ tool: 'brush' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 101, 100))
+    fireEvent(canvas, pointer('pointermove', 102, 100))
+    fireEvent(canvas, pointer('pointermove', 140, 100))
+    fireEvent(canvas, pointer('pointerup', 140, 100))
+
+    expect(created(onCreateDrawing).points).toEqual([
+      { time: 100, price: 100 },
+      { time: 140, price: 100 },
+    ])
+  })
+
+  it('discards a press that never moved', () => {
+    const { canvas, onCreateDrawing, onGestureComplete } = setup({ tool: 'brush' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 100, 100))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+    expect(onGestureComplete).toHaveBeenCalledWith(false)
+  })
+
+  it('is not armed for a second click the way a two-point shape is', () => {
+    // A freehand line has no "first point", so arming one would leave the
+    // tool waiting for a click that means nothing.
+    const { canvas, onGestureComplete } = setup({ tool: 'brush' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 100, 100))
+    fireEvent(canvas, pointer('pointerdown', 200, 200))
+    fireEvent(canvas, pointer('pointerup', 200, 200))
+
+    expect(onGestureComplete).toHaveBeenCalledTimes(2)
+  })
+})

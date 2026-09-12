@@ -17,7 +17,9 @@
  */
 
 import {
+  fibLevels,
   hasTwoPoints,
+  isPosition,
   TEXT_CHAR_PX,
   TEXT_LINE_PX,
   type Drawing,
@@ -41,9 +43,49 @@ export type PointKey = 'from' | 'to'
  * *and* price together (`from`/`from`), while a rectangle's off-diagonal
  * corner takes its time from one stored point and its price from the other.
  */
+/**
+ * The draggable parts of a position.
+ *
+ * Named rather than anchored to a stored point pair, because a position has
+ * three prices and one of them is not on the same axis as the others: entry,
+ * stop and target move in price alone, and `end` moves in time alone.
+ */
+export type PositionHandle = 'entry' | 'stop' | 'target' | 'end'
+
 export type DrawingHit =
   | { id: string; part: 'body' }
   | { id: string; part: 'point'; timeAnchor: PointKey; priceAnchor: PointKey }
+  | { id: string; part: 'level'; level: PositionHandle }
+
+/** A shape stored as two market points, in pixels. */
+export interface ProjectedSegment {
+  id: string
+  kind: 'trendline' | 'rectangle' | 'ray' | 'arrow' | 'fib'
+  /** `from.time`, `from.price`, `to.time`, `to.price`, in pixels. */
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+/** A planned trade, in pixels: one time span and three price levels. */
+export interface ProjectedPlannedTrade {
+  id: string
+  kind: 'long' | 'short'
+  /** Left and right edge of the box. */
+  x1: number
+  x2: number
+  yEntry: number
+  yStop: number
+  yTarget: number
+}
+
+/** A freehand stroke, in pixels. */
+export interface ProjectedBrush {
+  id: string
+  kind: 'brush'
+  points: { x: number; y: number }[]
+}
 
 /** A drawing reduced to screen coordinates. */
 export type ProjectedDrawing =
@@ -51,15 +93,9 @@ export type ProjectedDrawing =
   | { id: string; kind: 'vertical'; x: number }
   | { id: string; kind: 'horizontal_ray'; x: number; y: number }
   | { id: string; kind: 'text'; x: number; y: number; chars: number }
-  | {
-      id: string
-      kind: 'trendline' | 'rectangle' | 'ray' | 'arrow'
-      /** `from.time`, `from.price`, `to.time`, `to.price`, in pixels. */
-      x1: number
-      y1: number
-      x2: number
-      y2: number
-    }
+  | ProjectedBrush
+  | ProjectedPlannedTrade
+  | ProjectedSegment
 
 /** Shortest distance from a point to a line *segment*, not the infinite line. */
 export function distanceToSegment(
@@ -113,6 +149,31 @@ export function projectDrawing(
       : { id: drawing.id, kind: 'horizontal_ray', x, y }
   }
 
+  if (drawing.kind === 'brush') {
+    const points: { x: number; y: number }[] = []
+    for (const point of drawing.points) {
+      const x = xOf(point.time)
+      const y = yOf(point.price)
+      // One unprojectable point does not invalidate the stroke: the rest is
+      // still on screen and still has to be grabbable. Only an empty result
+      // means there is nothing to draw.
+      if (x != null && y != null) points.push({ x, y })
+    }
+    return points.length === 0 ? null : { id: drawing.id, kind: 'brush', points }
+  }
+
+  if (isPosition(drawing)) {
+    const x1 = xOf(drawing.entry.time)
+    const x2 = xOf(drawing.endTime)
+    const yEntry = yOf(drawing.entry.price)
+    const yStop = yOf(drawing.stop)
+    const yTarget = yOf(drawing.target)
+    if (x1 == null || x2 == null || yEntry == null || yStop == null || yTarget == null) {
+      return null
+    }
+    return { id: drawing.id, kind: drawing.kind, x1, x2, yEntry, yStop, yTarget }
+  }
+
   const x1 = xOf(drawing.from.time)
   const y1 = yOf(drawing.from.price)
   const x2 = xOf(drawing.to.time)
@@ -122,6 +183,32 @@ export function projectDrawing(
   return { id: drawing.id, kind: drawing.kind, x1, y1, x2, y2 }
 }
 
+/**
+ * Where a projected position's four grips sit.
+ *
+ * The three price levels are grabbed at the left edge, where the labels are
+ * and where they do not collide with the right-edge grip that changes how
+ * long the trade is drawn as lasting.
+ */
+export function positionHandles(
+  item: ProjectedPlannedTrade,
+): { x: number; y: number; level: PositionHandle }[] {
+  const left = Math.min(item.x1, item.x2)
+  const right = Math.max(item.x1, item.x2)
+  return [
+    { x: left, y: item.yEntry, level: 'entry' },
+    { x: left, y: item.yStop, level: 'stop' },
+    { x: left, y: item.yTarget, level: 'target' },
+    { x: right, y: item.yEntry, level: 'end' },
+  ]
+}
+
+/** The ratios, kept in the shape the hit test wants. */
+const FIB_RATIOS = fibLevels(
+  { time: 0, price: 1 },
+  { time: 0, price: 0 },
+).map(({ ratio }) => ({ ratio }))
+
 interface Corner {
   x: number
   y: number
@@ -130,9 +217,7 @@ interface Corner {
 }
 
 /** Corner handles, paired with the stored anchors each one edits. */
-function cornersOf(
-  item: Extract<ProjectedDrawing, { kind: 'trendline' | 'rectangle' | 'ray' | 'arrow' }>,
-): Corner[] {
+function cornersOf(item: ProjectedSegment): Corner[] {
   const ends: Corner[] = [
     { x: item.x1, y: item.y1, timeAnchor: 'from', priceAnchor: 'from' },
     { x: item.x2, y: item.y2, timeAnchor: 'to', priceAnchor: 'to' },
@@ -149,6 +234,19 @@ function cornersOf(
   ]
 }
 
+/**
+ * Narrow a projection to a position.
+ *
+ * A hand-written guard rather than a pair of `kind ===` checks: the projected
+ * position carries `'long' | 'short'` as one discriminant, and the compiler
+ * will not subtract such a member from the union through an inline
+ * comparison -- so without this the branches after it still see a shape with
+ * no `y1`.
+ */
+export function isProjectedPosition(item: ProjectedDrawing): item is ProjectedPlannedTrade {
+  return item.kind === 'long' || item.kind === 'short'
+}
+
 /** Where to paint the grips on a selected drawing. */
 export function handlePositions(item: ProjectedDrawing): { x: number; y: number }[] {
   // A level and a time marker span a whole axis, so there is no end to grab:
@@ -157,9 +255,15 @@ export function handlePositions(item: ProjectedDrawing): { x: number; y: number 
     item.kind === 'horizontal' ||
     item.kind === 'vertical' ||
     item.kind === 'horizontal_ray' ||
-    item.kind === 'text'
+    item.kind === 'text' ||
+    // A freehand stroke has no anchors to adjust -- every point is one, and
+    // a grip on each would bury the line under its own handles.
+    item.kind === 'brush'
   ) {
     return []
+  }
+  if (isProjectedPosition(item)) {
+    return positionHandles(item).map(({ x, y }) => ({ x, y }))
   }
   return cornersOf(item).map(({ x, y }) => ({ x, y }))
 }
@@ -203,6 +307,72 @@ export function hitTestDrawing(
     return x >= item.x - HIT_TOLERANCE_PX && Math.abs(y - item.y) <= HIT_TOLERANCE_PX
       ? { id: item.id, part: 'body' }
       : null
+  }
+
+  if (item.kind === 'brush') {
+    // Every segment of the path, so the stroke is grabbable along its whole
+    // length rather than only near its ends.
+    for (let index = 1; index < item.points.length; index += 1) {
+      const a = item.points[index - 1]
+      const b = item.points[index]
+      if (distanceToSegment(x, y, a.x, a.y, b.x, b.y) <= HIT_TOLERANCE_PX) {
+        return { id: item.id, part: 'body' }
+      }
+    }
+    // A stroke of one point is a dot, and still has to be clickable.
+    const only = item.points[0]
+    return item.points.length === 1 && Math.hypot(only.x - x, only.y - y) <= HIT_TOLERANCE_PX
+      ? { id: item.id, part: 'body' }
+      : null
+  }
+
+  if (isProjectedPosition(item)) {
+    for (const handle of positionHandles(item)) {
+      if (Math.hypot(handle.x - x, handle.y - y) <= HANDLE_RADIUS_PX) {
+        return { id: item.id, part: 'level', level: handle.level }
+      }
+    }
+
+    const left = Math.min(item.x1, item.x2)
+    const right = Math.max(item.x1, item.x2)
+    for (const level of [item.yEntry, item.yStop, item.yTarget]) {
+      if (distanceToSegment(x, y, left, level, right, level) <= HIT_TOLERANCE_PX) {
+        return { id: item.id, part: 'body' }
+      }
+    }
+
+    // The two filled halves respond as a body only once the position is
+    // picked, for the same reason a zone does: a trade box covers a lot of
+    // pane, and swallowing the pointer there would stop the chart panning
+    // across it for no visible reason.
+    const top = Math.min(item.yStop, item.yTarget)
+    const bottom = Math.max(item.yStop, item.yTarget)
+    return includeInterior && x >= left && x <= right && y >= top && y <= bottom
+      ? { id: item.id, part: 'body' }
+      : null
+  }
+
+  if (item.kind === 'fib') {
+    for (const corner of cornersOf(item)) {
+      if (Math.hypot(corner.x - x, corner.y - y) <= HANDLE_RADIUS_PX) {
+        return {
+          id: item.id,
+          part: 'point',
+          timeAnchor: corner.timeAnchor,
+          priceAnchor: corner.priceAnchor,
+        }
+      }
+    }
+    // The levels run forward from the move rather than stopping at it, the
+    // way a horizontal ray does, because what a retracement is *for* is
+    // watching price come back to one of them later.
+    const left = Math.min(item.x1, item.x2)
+    if (x < left - HIT_TOLERANCE_PX) return null
+    for (const { ratio } of FIB_RATIOS) {
+      const y1 = item.y2 + (item.y1 - item.y2) * ratio
+      if (Math.abs(y - y1) <= HIT_TOLERANCE_PX) return { id: item.id, part: 'body' }
+    }
+    return null
   }
 
   for (const corner of cornersOf(item)) {
@@ -282,9 +452,9 @@ export function hitTestDrawings(
 /** Stable identity for a hit, so hover state only changes when it really has. */
 export function hitKey(hit: DrawingHit | null): string {
   if (!hit) return ''
-  return hit.part === 'point'
-    ? `${hit.id}:${hit.timeAnchor}:${hit.priceAnchor}`
-    : `${hit.id}:body`
+  if (hit.part === 'point') return `${hit.id}:${hit.timeAnchor}:${hit.priceAnchor}`
+  if (hit.part === 'level') return `${hit.id}:${hit.level}`
+  return `${hit.id}:body`
 }
 
 // --------------------------------------------------------------------------
@@ -327,6 +497,30 @@ export function translateDrawing(
       },
     }
   }
+  if (drawing.kind === 'brush') {
+    return {
+      ...drawing,
+      points: drawing.points.map((point) => ({
+        time: point.time + deltaTime,
+        price: point.price + deltaPrice,
+      })),
+    }
+  }
+  if (isPosition(drawing)) {
+    // All three prices move together: dragging a trade box to a different
+    // part of the chart is asking "what if I had taken this here", and a
+    // stop that stayed behind would change the trade as well as move it.
+    return {
+      ...drawing,
+      entry: {
+        time: drawing.entry.time + deltaTime,
+        price: drawing.entry.price + deltaPrice,
+      },
+      endTime: drawing.endTime + deltaTime,
+      stop: drawing.stop + deltaPrice,
+      target: drawing.target + deltaPrice,
+    }
+  }
   return {
     ...drawing,
     from: {
@@ -352,6 +546,19 @@ export function resizeDrawing(
   hit: DrawingHit,
   point: DrawingPoint,
 ): Drawing {
+  if (isPosition(drawing) && hit.part === 'level') {
+    switch (hit.level) {
+      case 'entry':
+        return { ...drawing, entry: { ...drawing.entry, price: point.price } }
+      case 'stop':
+        return { ...drawing, stop: point.price }
+      case 'target':
+        return { ...drawing, target: point.price }
+      case 'end':
+        return { ...drawing, endTime: point.time }
+    }
+  }
+
   if (!hasTwoPoints(drawing) || hit.part !== 'point') return drawing
 
   const from = { ...drawing.from }

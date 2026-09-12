@@ -17,6 +17,10 @@ export type DrawingKind =
   | 'arrow'
   | 'horizontal_ray'
   | 'text'
+  | 'fib'
+  | 'long'
+  | 'short'
+  | 'brush'
 
 /**
  * Active pointer mode. `cursor` hands the mouse back to the chart.
@@ -112,6 +116,74 @@ export interface TextDrawing extends DrawingBase {
   text: string
 }
 
+/**
+ * A Fibonacci retracement between two swings.
+ *
+ * Stored as the two points the trader picked -- the swing the move ran from
+ * and the swing it ran to -- with the levels derived at paint time rather
+ * than stored. That is what keeps the tool honest when a point is dragged:
+ * the ratios are a property of the tool, the prices are a property of the
+ * move, and only one of the two is the user's to change.
+ */
+export interface FibDrawing extends DrawingBase {
+  kind: 'fib'
+  from: DrawingPoint
+  to: DrawingPoint
+}
+
+/**
+ * The retracement levels drawn, as fractions of the move.
+ *
+ * 0 and 1 are the swings themselves, and are drawn because the tool is read
+ * as a whole: a retracement with no visible extremes is a set of floating
+ * lines. 0.5 is not a Fibonacci ratio at all -- it is there because traders
+ * use it, which is the only reason any of these are on a chart.
+ */
+export const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const
+
+/**
+ * A planned trade, drawn on the chart -- entry, stop and target.
+ *
+ * Miles asked for this for manual backtesting: scroll back, mark where you
+ * would have entered and where the stop and target would have sat, and read
+ * off whether the trade worked. It is deliberately *not* wired to the
+ * backtest engine. The engine answers "what did this rule do across two
+ * hundred instances"; this answers "what would I have done here", and
+ * conflating them would let a hand-placed box be counted as a result.
+ *
+ * `direction` rather than two shapes: long and short differ only in which
+ * side of the entry the stop sits on, and one shape with a flag cannot drift
+ * out of step with itself the way two near-copies can.
+ */
+export interface PositionDrawing extends DrawingBase {
+  kind: 'long' | 'short'
+  /** Entry: the time the trade opens, and the price it opens at. */
+  entry: DrawingPoint
+  /** Right edge of the box. The trade is drawn as lasting this long. */
+  endTime: number
+  stop: number
+  target: number
+}
+
+/** Reward offered per unit of risk when a position is first drawn. */
+export const DEFAULT_POSITION_R = 2
+
+/**
+ * A freehand line.
+ *
+ * The points are the pointer path in market coordinates, thinned as it is
+ * collected -- a raw pointer stream is hundreds of points a second, and
+ * storing them all would put a drawing in `localStorage` that is larger than
+ * the rest of the workspace put together.
+ */
+export interface BrushDrawing extends DrawingBase {
+  kind: 'brush'
+  points: DrawingPoint[]
+}
+
+/** Pixels the pointer must travel before the brush records another point. */
+export const BRUSH_MIN_STEP_PX = 3
+
 /** A moment running the full height -- a session open, a news release. */
 export interface VerticalDrawing extends DrawingBase {
   kind: 'vertical'
@@ -134,6 +206,9 @@ export type Drawing =
   | ArrowDrawing
   | HorizontalRayDrawing
   | TextDrawing
+  | FibDrawing
+  | PositionDrawing
+  | BrushDrawing
 
 /**
  * A drawing before it has been given an id.
@@ -158,6 +233,10 @@ export const TOOL_LABELS: Record<ToolMode, string> = {
   arrow: 'Arrow',
   horizontal_ray: 'Level from here',
   text: 'Note',
+  fib: 'Fibonacci retracement',
+  long: 'Long position',
+  short: 'Short position',
+  brush: 'Freehand',
 }
 
 export const TOOL_HINTS: Record<ToolMode, string> = {
@@ -177,6 +256,16 @@ export const TOOL_HINTS: Record<ToolMode, string> = {
   horizontal_ray:
     'Press where the level forms; it runs forward from there. Esc cancels.',
   text: 'Press to drop a note, then type into it. Esc cancels.',
+  fib:
+    'Drag from one swing to the other; the retracement levels are drawn ' +
+    'between them. Esc cancels.',
+  long:
+    'Drag from the entry to where the stop would sit. The target is placed ' +
+    'at twice the risk, and every level can be dragged. Esc cancels.',
+  short:
+    'Drag from the entry to where the stop would sit. The target is placed ' +
+    'at twice the risk, and every level can be dragged. Esc cancels.',
+  brush: 'Draw freehand. Esc cancels.',
 }
 
 /**
@@ -198,13 +287,63 @@ export const DEFAULT_DRAWING_WIDTH = 2
 /** True for the shapes stored as a pair of market points. */
 export function hasTwoPoints(
   drawing: Drawing,
-): drawing is TrendlineDrawing | RectangleDrawing | RayDrawing | ArrowDrawing {
+): drawing is
+  | TrendlineDrawing
+  | RectangleDrawing
+  | RayDrawing
+  | ArrowDrawing
+  | FibDrawing {
   return (
     drawing.kind === 'trendline' ||
     drawing.kind === 'rectangle' ||
     drawing.kind === 'ray' ||
-    drawing.kind === 'arrow'
+    drawing.kind === 'arrow' ||
+    drawing.kind === 'fib'
   )
+}
+
+/** True for the two position tools, which share one shape. */
+export function isPosition(drawing: Drawing): drawing is PositionDrawing {
+  return drawing.kind === 'long' || drawing.kind === 'short'
+}
+
+/**
+ * Price levels for a retracement, from the end of the move back to its start.
+ *
+ * Ratio 0 sits at the *end* of the move and 1 at its start, which is the
+ * convention every platform follows and the only one that reads correctly: a
+ * retracement is measured back from where the move finished.
+ */
+export function fibLevels(
+  from: DrawingPoint,
+  to: DrawingPoint,
+): { ratio: number; price: number }[] {
+  return FIB_LEVELS.map((ratio) => ({
+    ratio,
+    price: to.price + (from.price - to.price) * ratio,
+  }))
+}
+
+/**
+ * Where the stop and target sit for a freshly drawn position.
+ *
+ * The drag sets the risk -- entry to stop -- because that is the number a
+ * trader actually decides. The target follows from it, because a reward is
+ * only meaningful as a multiple of what was risked.
+ */
+export function positionFromDrag(
+  direction: 'long' | 'short',
+  entry: number,
+  stop: number,
+  reward = DEFAULT_POSITION_R,
+): { stop: number; target: number } {
+  // A stop on the wrong side of the entry is not a stop. The drag is read as
+  // a distance and placed on the side the direction demands, so a long drawn
+  // upwards still comes out as a long.
+  const risk = Math.abs(entry - stop)
+  return direction === 'long'
+    ? { stop: entry - risk, target: entry + risk * reward }
+    : { stop: entry + risk, target: entry - risk * reward }
 }
 
 /** Palette offered when drawing. Kept small so charts stay readable. */
@@ -244,4 +383,42 @@ export function isPointTool(tool: ToolMode): boolean {
     tool === 'horizontal_ray' ||
     tool === 'text'
   )
+}
+
+/**
+ * Tools that follow the pointer's whole path rather than its two ends.
+ *
+ * The brush is the only one, and it is excluded from the two-click placement
+ * every other shape uses: a freehand line has no "first point", so arming one
+ * would leave the tool waiting for a second click that means nothing.
+ */
+export function isPathTool(tool: ToolMode): boolean {
+  return tool === 'brush'
+}
+
+/**
+ * The moment a drawing is anchored at, for listing and ordering.
+ *
+ * Every shape has one except the full-width level, which is a claim about a
+ * price at every time; that answers with when it was created, since a list
+ * sorted by "no time" is not sorted at all.
+ */
+export function drawingTime(drawing: Drawing): number {
+  switch (drawing.kind) {
+    case 'horizontal':
+      return drawing.createdAt
+    case 'vertical':
+      return drawing.time
+    case 'text':
+      return drawing.at.time
+    case 'horizontal_ray':
+      return drawing.from.time
+    case 'brush':
+      return drawing.points[0]?.time ?? drawing.createdAt
+    case 'long':
+    case 'short':
+      return drawing.entry.time
+    default:
+      return drawing.from.time
+  }
 }

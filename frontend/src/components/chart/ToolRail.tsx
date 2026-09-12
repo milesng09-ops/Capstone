@@ -16,7 +16,11 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   BoxSelect,
+  Brush,
   CalendarRange,
+  Ruler,
+  TrendingDown,
+  TrendingUp,
   Magnet,
   Waypoints,
   Minus,
@@ -61,6 +65,10 @@ const TOOL_ICONS: Record<ToolMode, LucideIcon> = {
   text: Type,
   vertical: SeparatorVertical,
   arrow: ArrowUpRight,
+  fib: Ruler,
+  long: TrendingUp,
+  short: TrendingDown,
+  brush: Brush,
 }
 
 /**
@@ -87,8 +95,14 @@ const TOOL_GROUPS: ToolMode[][] = [
     'horizontal_ray',
     'vertical',
     'rectangle',
+    'fib',
+    'brush',
     'text',
   ],
+  // The two position tools are their own group: unlike everything above them
+  // they are not annotation, they are a trade written down -- entry, stop and
+  // target, with the reward-to-risk read off the box.
+  ['long', 'short'],
 ]
 
 export function ToolRail({ footer }: { footer?: ReactNode }) {

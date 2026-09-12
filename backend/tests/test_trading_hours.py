@@ -235,3 +235,55 @@ class TestTheProviderSurvivesTheBackFillSliver:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+class TestTheCacheAgreesWithTheProvider:
+    """The retry storm: excused by one layer, still owed by the other.
+
+    The provider stopped calling a one-hour sliver an outage. The cache went
+    on treating the same sliver as a range it had not been served, so the
+    window was asked for, politely answered with nothing, left uncovered, and
+    asked for again on the next poll -- three Massive calls a minute against a
+    five-a-minute quota, with nobody touching the page.
+    """
+
+    #: The window that did it: Friday 15:00 CT to the Sunday reopen, one open
+    #: hour in thirty-eight, on a contract with no bar there.
+    SLIVER = (ms(local(2026, 6, 5, 15)), ms(local(2026, 6, 7, 4, 59)))
+
+    def test_the_two_layers_reach_the_same_verdict(self):
+        from app.providers.trading_hours import empty_response_indicts_provider
+
+        start, end = self.SLIVER
+        # Both sides now ask the same question of the same window.
+        assert empty_response_indicts_provider(start, end, "1h") is False
+
+    def test_an_excused_window_is_recorded_as_covered(self):
+        """Covered, so the next poll does not ask for it again."""
+
+        from app.services.candle_service import CandleService
+        from app.database.repository import TimeRange
+
+        start, end = self.SLIVER
+        served = CandleService._served_span("ES", "1h", [], TimeRange(start, end))
+        assert served == (start, end)
+
+    def test_a_real_hole_is_still_left_uncovered(self):
+        """The concession must not swallow a stretch we were genuinely owed."""
+
+        from app.services.candle_service import CandleService
+        from app.database.repository import TimeRange
+
+        # A full trading day, empty: that is a hole, and re-asking is right.
+        start, end = ms(local(2026, 9, 2, 9)), ms(local(2026, 9, 2, 15))
+        assert CandleService._served_span("ES", "1h", [], TimeRange(start, end)) is None
+
+    def test_a_closed_window_is_still_covered(self):
+        from app.services.candle_service import CandleService
+        from app.database.repository import TimeRange
+
+        start, end = ms(local(2026, 9, 5, 0)), ms(local(2026, 9, 5, 9))
+        assert CandleService._served_span("ES", "1h", [], TimeRange(start, end)) == (
+            start,
+            end,
+        )

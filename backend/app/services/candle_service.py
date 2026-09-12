@@ -42,7 +42,10 @@ from app.models.domain import BarsResult, Candle
 from app.providers.base import ProviderRateLimitError
 from app.providers.fallback_provider import AutomaticFallbackProvider
 from app.providers.instruments import get_instrument
-from app.providers.trading_hours import has_trading_session
+from app.providers.trading_hours import (
+    empty_response_indicts_provider,
+    has_trading_session,
+)
 from app.services.aggregation_service import aggregate_candles
 from app.services.cache_service import (
     align_range,
@@ -486,11 +489,21 @@ class CandleService:
         ``None`` means "record nothing": the market was open and the provider
         returned nothing, so the range is still owed to us.
 
-        An empty response has two opposite meanings and they must not be
-        conflated. Over a weekend or the daily halt it is the correct answer,
-        and re-asking would spend the quota re-confirming the market was shut.
+        An empty response has three meanings and they must not be conflated.
+        Over a weekend or the daily halt it is the correct answer, and
+        re-asking would spend the quota re-confirming the market was shut.
         Over a stretch the market was open it means we were not served, and
         covering it would bake the hole in permanently.
+
+        Between those sits a window holding barely any open market at all --
+        the tail of an expiring contract, the single hour before a Friday
+        close -- where the vendor has no bar and never will.  The provider
+        already excuses that rather than calling it an outage, and this has to
+        agree with it: excused there and still owed here means the range is
+        asked for, politely answered with nothing, left uncovered, and asked
+        for again on the next poll, forever.  That is not theoretical -- it
+        was three Massive calls a minute against a five-a-minute quota, with
+        nobody touching the page.  The same predicate decides both.
 
         With bars, the span is the bars' own extent -- **both** ends. Yahoo
         trims a long intraday request at the *old* end, so taking the gap's
@@ -502,7 +515,9 @@ class CandleService:
 
         if not bars:
             instrument = get_instrument(symbol)
-            if has_trading_session(gap.start, gap.end, tz_name=instrument.timezone):
+            if empty_response_indicts_provider(
+                gap.start, gap.end, store_interval, tz_name=instrument.timezone
+            ):
                 return None
             return gap.start, gap.end
 

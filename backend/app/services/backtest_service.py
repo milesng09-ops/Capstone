@@ -31,6 +31,7 @@ from app.backtesting.attempts import configuration_key
 from app.learning.block_weights import (
     block_projections,
     fit_block_weights,
+    multi_block_projections,
     score_weights,
 )
 from app.backtesting.metrics import compute_metrics
@@ -100,6 +101,7 @@ def _learned_out(learned, train_range):
         passes=learned.passes,
         objective=learned.objective,
         dropped_blocks=learned.dropped_blocks,
+        query_windows=learned.query_windows,
         holdout_score=learned.holdout_score,
         holdout_default_score=learned.holdout_default_score,
         holdout_windows=learned.holdout_windows,
@@ -772,33 +774,81 @@ class BacktestService:
             )
             return None, None
 
-        query_blocks = build_block_matrices(*query_arrays(selection_candles, window_length))
-
-        def projections(starts: list[int]):
+        def blocks_for(starts: list[int]) -> dict:
             rows = np.array(starts, dtype=np.int64)
-            candidate_blocks = build_block_matrices(
+            return build_block_matrices(
                 views["open"][rows],
                 views["high"][rows],
                 views["low"][rows],
                 views["close"][rows],
                 views["volume"][rows],
             )
-            names = [name for name in candidate_blocks if name in query_blocks]
-            return names, block_projections(query_blocks, candidate_blocks, names)
 
-        names, (dots, query_norms, candidate_norms) = projections(train_starts)
-        defaults = {name: BLOCK_WEIGHTS[name] for name in names}
+        def pick_queries(starts: list[int]) -> list[int]:
+            """Windows to ask the question from, spread across the stretch.
+
+            Evenly spaced rather than randomly drawn: the point is coverage of
+            the period, and an even walk needs no seed to be reproducible.
+            """
+
+            wanted = min(request.learning.query_samples, len(starts))
+            if wanted <= 1:
+                return starts[: max(wanted, 0)]
+            step = (len(starts) - 1) / (wanted - 1)
+            return [starts[int(round(index * step))] for index in range(wanted)]
+
+        def overlap_mask(query_starts: list[int], candidate_starts: list[int]):
+            """False wherever a candidate overlaps the query asking about it.
+
+            A window is its own nearest neighbour, and its shifted copies are
+            the next nearest, all with near-identical outcomes. Left in, the
+            fit would be rewarded for predicting a window from itself.
+            """
+
+            queries = np.array(query_starts, dtype=np.int64)[:, None]
+            candidates = np.array(candidate_starts, dtype=np.int64)[None, :]
+            return np.abs(queries - candidates) >= window_length
+
+        all_defaults = {name: BLOCK_WEIGHTS[name] for name in BLOCK_WEIGHTS}
+        single_query = request.learning.query_samples <= 1
+
+        if single_query:
+            # The narrower fit: one question, asked about the user's own
+            # selection. Kept for comparison -- it is what overfits.
+            query_blocks = build_block_matrices(
+                *query_arrays(selection_candles, window_length)
+            )
+            query_starts: list[int] = []
+
+            def mask_for(starts: list[int]):
+                return None
+        else:
+            query_starts = pick_queries(train_starts)
+            query_blocks = blocks_for(query_starts)
+
+            def mask_for(starts: list[int]):
+                return overlap_mask(query_starts, starts)
+
+        def projections(starts: list[int]):
+            candidate_blocks = blocks_for(starts)
+            names = [name for name in candidate_blocks if name in query_blocks]
+            project = block_projections if single_query else multi_block_projections
+            return names, project(query_blocks, candidate_blocks, names)
+
+        names, projection = projections(train_starts)
+        defaults = {name: all_defaults[name] for name in names}
         top_k = min(request.search.maximum_matches, len(train_starts))
 
         learned = fit_block_weights(
             block_names=names,
-            dots=dots,
-            query_norms=query_norms,
-            candidate_norms=candidate_norms,
+            dots=projection[0],
+            query_norms=projection[1],
+            candidate_norms=projection[2],
             outcomes=train_outcomes,
             starting_weights=defaults,
             top_k=top_k,
             objective="expectancy",
+            valid_mask=mask_for(train_starts),
         )
 
         # ---- the number that decides whether to trust it ----------------
@@ -810,6 +860,11 @@ class BacktestService:
                 projection=test_projection,
                 outcomes=test_outcomes,
                 top_k=min(top_k, len(test_starts)),
+                # Queries come from training and candidates from test, so no
+                # window can overlap the one asking about it. The mask is
+                # still built rather than assumed: the halves touch at the
+                # split, and a query at the boundary can reach across it.
+                valid_mask=mask_for(test_starts),
             )
             learned = replace(
                 learned,

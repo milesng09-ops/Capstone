@@ -190,6 +190,7 @@ describe('when the similarity weights were fitted', () => {
     default_score: -0.0056,
     improved: true,
     labelled_windows: 1462,
+    query_windows: 60,
     top_k: 25,
     passes: 2,
     objective: 'expectancy',

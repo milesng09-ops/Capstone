@@ -11,11 +11,13 @@ same way for both weight sets so a fit that hurt cannot report success.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from app.learning.block_weights import (
     WEIGHT_GRID,
     block_projections,
     fit_block_weights,
+    multi_block_projections,
     score_weights,
     similarity_for_weights,
 )
@@ -228,3 +230,141 @@ class TestTheHoldoutDecidesIt:
         )
         assert hurt.improved is True or hurt.improved is False  # training verdict
         assert hurt.generalised is False
+
+
+# --------------------------------------------------------------------------
+# Asking the question from many windows instead of one
+# --------------------------------------------------------------------------
+def multi_setup(queries: int = 12, candidates: int = 50, seed: int = 0):
+    query = build_block_matrices(*windows(queries, seed=seed + 500))
+    candidate = build_block_matrices(*windows(candidates, seed=seed))
+    names = list(query)
+    return names, multi_block_projections(query, candidate, names)
+
+
+class TestManyQueriesAtOnce:
+    def test_the_projection_is_shaped_per_query(self):
+        names, (dots, query_norms, candidate_norms) = multi_setup(
+            queries=12, candidates=50
+        )
+        assert dots.shape == (12, 50, len(names))
+        assert query_norms.shape == (12, len(names))
+        assert candidate_norms.shape == (50, len(names))
+
+    def test_similarity_comes_back_one_row_per_query(self):
+        names, projection = multi_setup(queries=12, candidates=50)
+        vector = np.array([BLOCK_WEIGHTS[name] for name in names])
+        assert similarity_for_weights(*projection, vector).shape == (12, 50)
+
+    def test_one_query_still_gives_a_flat_ranking(self):
+        # The single-query path has to keep working; the service uses it for
+        # the narrower fit that is kept for comparison.
+        names, _, _, projection = setup(count=50)
+        vector = np.array([BLOCK_WEIGHTS[name] for name in names])
+        assert similarity_for_weights(*projection, vector).shape == (50,)
+
+    def test_each_query_is_scored_on_its_own_before_averaging(self):
+        """Pooling every pair would let one lucky neighbourhood carry it.
+
+        Averaging per query asks whether the weights make similarity
+        predictive generally, which is the question worth an answer.
+        """
+
+        names, projection = multi_setup(queries=4, candidates=40, seed=2)
+        outcomes = np.zeros(40)
+        # One query's best neighbours are wildly profitable; the rest flat.
+        vector = np.array([BLOCK_WEIGHTS[name] for name in names])
+        similarity = similarity_for_weights(*projection, vector)
+        best_of_first = np.argsort(-similarity[0])[:5]
+        outcomes[best_of_first] = 100.0
+
+        score = score_weights(
+            block_names=names, projection=projection, outcomes=outcomes, top_k=5
+        )
+        weights = {name: BLOCK_WEIGHTS[name] for name in names}
+        # A quarter of the queries seeing +100 each cannot read as +100.
+        assert score(weights) < 100.0
+
+
+class TestAWindowMayNotPredictItself:
+    def test_the_mask_removes_self_and_shifted_copies(self):
+        """The most complete leakage available here.
+
+        A window is its own nearest neighbour and its shifted copies are next,
+        all with near-identical outcomes. Unmasked, the fit is rewarded for
+        predicting a window from itself and the result looks spectacular.
+        """
+
+        window_length = 20
+        queries = [100, 300]
+        candidates = [90, 100, 110, 300, 500]
+        mask = np.abs(
+            np.array(queries)[:, None] - np.array(candidates)[None, :]
+        ) >= window_length
+
+        # 90 and 110 are within 20 bars of query 100, so they overlap it.
+        assert mask[0].tolist() == [False, False, False, True, True]
+        # Query 300 overlaps only the candidate at 300.
+        assert mask[1].tolist() == [True, True, True, False, True]
+
+    def test_a_masked_candidate_never_reaches_the_top_k(self):
+        names, projection = multi_setup(queries=3, candidates=30, seed=4)
+        outcomes = np.zeros(30)
+        outcomes[0] = 1000.0  # would dominate any ranking it entered
+
+        mask = np.ones((3, 30), dtype=bool)
+        mask[:, 0] = False
+
+        score = score_weights(
+            block_names=names,
+            projection=projection,
+            outcomes=outcomes,
+            top_k=5,
+            valid_mask=mask,
+        )
+        weights = {name: BLOCK_WEIGHTS[name] for name in names}
+        assert score(weights) == 0.0
+
+    def test_a_query_with_nothing_left_does_not_count_as_neutral(self):
+        """An all-masked row has no opinion, and must not be read as zero.
+
+        Counting it as 0.0 would pull the average toward neutral and make a
+        weight set look steadier than the evidence supports.
+        """
+
+        names, projection = multi_setup(queries=2, candidates=20, seed=6)
+        outcomes = np.full(20, -5.0)
+        mask = np.ones((2, 20), dtype=bool)
+        mask[1, :] = False  # second query has no eligible candidates at all
+
+        score = score_weights(
+            block_names=names,
+            projection=projection,
+            outcomes=outcomes,
+            top_k=5,
+            valid_mask=mask,
+        )
+        weights = {name: BLOCK_WEIGHTS[name] for name in names}
+        # Only the first query speaks, and it says -5.
+        assert score(weights) == pytest.approx(-5.0)
+
+
+class TestQuerySelectionIsReproducible:
+    def test_even_spacing_covers_the_stretch_without_a_seed(self):
+        # Mirrors the service's `pick_queries`: coverage of the period, and an
+        # even walk needs no seed to repeat.
+        starts = list(range(0, 1000))
+
+        def pick(wanted: int) -> list[int]:
+            wanted = min(wanted, len(starts))
+            if wanted <= 1:
+                return starts[:wanted]
+            step = (len(starts) - 1) / (wanted - 1)
+            return [starts[int(round(index * step))] for index in range(wanted)]
+
+        # 999/4 = 249.75 a step, so the interior points land on the nearest
+        # index rather than a round number -- even spacing, not tidy spacing.
+        assert pick(5) == [0, 250, 500, 749, 999]
+        assert pick(5) == pick(5)
+        assert pick(1) == [0]
+        assert len(pick(2000)) == 1000

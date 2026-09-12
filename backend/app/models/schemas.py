@@ -234,6 +234,15 @@ class LearningSettings(BaseModel):
     #: result is measured on, so this trades training signal against the size
     #: of the out-of-sample window.
     train_fraction: float = Field(0.5, ge=0.2, le=0.8)
+    #: How many windows across the training half are used as queries.
+    #:
+    #: Fitting to one selection asks "which weights made *this* window's
+    #: neighbours pay", which seven free parameters can answer by memorising
+    #: the neighbourhood. Fitting across many asks whether similarity is
+    #: predictive at all, which is both the harder question and the one worth
+    #: an answer. Set to 1 to fit against the user's own selection alone,
+    #: which is the narrower behaviour kept for comparison.
+    query_samples: int = Field(60, ge=1, le=400)
 
 
 class LearnedWeightsOut(BaseModel):
@@ -250,6 +259,8 @@ class LearnedWeightsOut(BaseModel):
     #: data, which means it found nothing.
     improved: bool
     labelled_windows: int
+    #: Windows used as queries. 1 means the fit saw only the selection.
+    query_windows: int = 1
     top_k: int
     passes: int
     objective: str

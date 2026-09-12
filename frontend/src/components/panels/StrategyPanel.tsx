@@ -435,7 +435,11 @@ export function StrategyPanel() {
       {/* ---- weights fitted rather than assumed ---- */}
       <Disclosure
         label="Fitted weights"
-        summary={learning.enabled ? `train on ${Math.round(learning.train_fraction * 100)}%` : 'off'}
+        summary={
+          learning.enabled
+            ? `${learning.query_samples} queries, train on ${Math.round(learning.train_fraction * 100)}%`
+            : 'off'
+        }
       >
         <p className="text-2xs leading-relaxed text-muted-foreground">
           Chooses how much each feature counts toward &ldquo;these look alike&rdquo;
@@ -450,6 +454,18 @@ export function StrategyPanel() {
           checked={learning.enabled}
           onChange={(enabled) => updateLearning({ enabled })}
         />
+
+        {learning.enabled && (
+          <NumberField
+            label="Ask from"
+            hint="Windows across the training half used as queries. Fitting to one window lets seven parameters memorise its neighbourhood; asking from many tests whether similarity is predictive at all."
+            value={learning.query_samples}
+            min={1}
+            max={400}
+            suffix="windows"
+            onChange={(query_samples) => updateLearning({ query_samples })}
+          />
+        )}
 
         {learning.enabled && (
           <NumberField

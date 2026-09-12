@@ -76,11 +76,19 @@ export interface LearningSettings {
   enabled: boolean
   /** Share of the lookback used to fit; the rest is the out-of-sample half. */
   train_fraction: number
+  /**
+   * How many windows across the training half are used as queries. Fitting to
+   * one asks "which weights made *this* window's neighbours pay", which seven
+   * parameters can answer by memorising the neighbourhood. Fitting across many
+   * asks whether similarity is predictive at all. 1 fits the selection alone.
+   */
+  query_samples: number
 }
 
 export const DEFAULT_LEARNING_SETTINGS: LearningSettings = {
   enabled: false,
   train_fraction: 0.5,
+  query_samples: 60,
 }
 
 /** A fitted weight set and what it is worth. The whole model: seven numbers. */
@@ -91,6 +99,8 @@ export interface LearnedWeightsSummary {
   /** Beat the defaults on its own training data. Weak evidence alone. */
   improved: boolean
   labelled_windows: number
+  /** Windows used as queries. 1 means the fit saw only the selection. */
+  query_windows: number
   top_k: number
   passes: number
   objective: string

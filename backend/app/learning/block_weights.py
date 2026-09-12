@@ -70,6 +70,8 @@ class LearnedWeights:
     top_k: int
     passes: int
     objective: str
+    #: Windows used as queries. One means the fit saw a single neighbourhood.
+    query_windows: int = 1
     #: Blocks the fit switched off entirely, named for the notes.
     dropped_blocks: list[str] = field(default_factory=list)
 
@@ -128,9 +130,15 @@ def similarity_for_weights(
 
     squared = np.square(weights)
     numerator = dots @ squared
-    query_part = float(np.sqrt(query_norms @ squared))
+    query_part = np.sqrt(np.atleast_1d(query_norms @ squared))
     candidate_part = np.sqrt(candidate_norms @ squared)
-    denominator = query_part * candidate_part
+    # One query gives (n,); many give (m, n) -- the outer product of the two
+    # norm vectors, which broadcasting produces without a special case.
+    denominator = (
+        query_part[:, None] * candidate_part[None, :]
+        if numerator.ndim == 2
+        else query_part[0] * candidate_part
+    )
     return np.divide(
         numerator,
         denominator,
@@ -165,23 +173,90 @@ def block_projections(
     return dots, query_norms, candidate_norms
 
 
+def multi_block_projections(
+    query_blocks: dict[str, np.ndarray],
+    candidate_blocks: dict[str, np.ndarray],
+    block_names: list[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The same projections for many queries at once.
+
+    ``dots`` comes back ``(queries, candidates, blocks)``, query norms
+    ``(queries, blocks)`` and candidate norms ``(candidates, blocks)``.  Built
+    once so the weight search is a handful of matrix products per trial rather
+    than a pass over the feature arrays.
+    """
+
+    first_query = next(iter(query_blocks.values()))
+    first_candidate = next(iter(candidate_blocks.values()))
+    queries, candidates = first_query.shape[0], first_candidate.shape[0]
+
+    dots = np.zeros((queries, candidates, len(block_names)))
+    query_norms = np.zeros((queries, len(block_names)))
+    candidate_norms = np.zeros((candidates, len(block_names)))
+
+    for index, name in enumerate(block_names):
+        q = np.asarray(query_blocks[name])
+        c = np.asarray(candidate_blocks[name])
+        dots[:, :, index] = q @ c.T
+        query_norms[:, index] = np.einsum("ij,ij->i", q, q)
+        candidate_norms[:, index] = np.einsum("ij,ij->i", c, c)
+
+    return dots, query_norms, candidate_norms
+
+
 def _score(
     similarity: np.ndarray, outcomes: np.ndarray, top_k: int
 ) -> float:
-    """Mean outcome of the ``top_k`` most similar windows.
+    """Mean outcome of the ``top_k`` most similar windows, over all queries.
 
     Deliberately the same quantity the tool reports: it takes the most similar
     windows and trades them, so the weights are fitted to that and not to a
-    correlation the user never sees.  Ties in similarity are broken by index,
-    which numpy's sort does stably, so the score cannot wobble between runs.
+    correlation the user never sees.  Ties are broken by index, which numpy's
+    stable sort does deterministically, so the score cannot wobble between
+    runs.
+
+    With many queries each one is scored on its own and the results averaged,
+    rather than pooling every (query, candidate) pair.  Pooling would let a
+    single query with unusually good neighbours carry the objective; averaging
+    per query asks the question that actually matters -- does this weight set
+    make similarity predictive *generally*, not just around one window.
     """
 
     if similarity.size == 0:
         return 0.0
-    take = min(top_k, similarity.size)
-    # Sort descending by similarity, stable, then average the leaders.
-    order = np.argsort(-similarity, kind="stable")[:take]
-    return float(np.mean(outcomes[order]))
+
+    matrix = similarity if similarity.ndim == 2 else similarity[None, :]
+    take = min(top_k, matrix.shape[1])
+    if take <= 0:
+        return 0.0
+
+    order = np.argsort(-matrix, axis=1, kind="stable")[:, :take]
+    picked = outcomes[order]
+    # A query whose entire row was masked out has nothing to say; NaN keeps it
+    # from dragging the mean toward zero as a fake neutral result.
+    per_query = np.where(
+        np.isneginf(np.take_along_axis(matrix, order, axis=1)).all(axis=1),
+        np.nan,
+        picked.mean(axis=1),
+    )
+    if np.all(np.isnan(per_query)):
+        return 0.0
+    return float(np.nanmean(per_query))
+
+
+def _masked(similarity: np.ndarray, valid_mask: np.ndarray | None) -> np.ndarray:
+    """Put ineligible candidates out of reach of the top-k.
+
+    A query's own window, and every window overlapping it, would otherwise sit
+    at the top of its own ranking with an outcome all but identical to its
+    own. The fit would then be rewarding weights for predicting a window from
+    itself, which is the most complete form of leakage available here and
+    would look like a spectacular result.
+    """
+
+    if valid_mask is None:
+        return similarity
+    return np.where(valid_mask, similarity, -np.inf)
 
 
 def score_weights(
@@ -190,6 +265,7 @@ def score_weights(
     projection: tuple[np.ndarray, np.ndarray, np.ndarray],
     outcomes: np.ndarray,
     top_k: int,
+    valid_mask: np.ndarray | None = None,
 ):
     """A function scoring any weight set against one set of labelled windows.
 
@@ -205,7 +281,7 @@ def score_weights(
         if not np.any(vector > 0):
             return float("-inf")
         similarity = similarity_for_weights(dots, query_norms, candidate_norms, vector)
-        return _score(similarity, outcomes, top_k)
+        return _score(_masked(similarity, valid_mask), outcomes, top_k)
 
     return score
 
@@ -220,6 +296,7 @@ def fit_block_weights(
     starting_weights: dict[str, float],
     top_k: int,
     objective: str = "expectancy",
+    valid_mask: np.ndarray | None = None,
 ) -> LearnedWeights:
     """Choose block weights that made the most similar windows pay best.
 
@@ -254,7 +331,7 @@ def fit_block_weights(
             # allowed to win by dividing by zero.
             return float("-inf")
         similarity = similarity_for_weights(dots, query_norms, candidate_norms, vector)
-        return _score(similarity, outcomes, top_k)
+        return _score(_masked(similarity, valid_mask), outcomes, top_k)
 
     default_score = score_of(current)
     best_score = default_score
@@ -294,6 +371,7 @@ def fit_block_weights(
         train_score=round(best_score, 6),
         default_score=round(default_score, 6),
         labelled_windows=int(outcomes.size),
+        query_windows=int(dots.shape[0]) if dots.ndim == 3 else 1,
         top_k=top_k,
         passes=passes,
         objective=objective,

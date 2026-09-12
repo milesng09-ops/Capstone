@@ -261,12 +261,12 @@ function FittedWeights({ fit }: { fit: LearnedWeightsSummary }) {
     fit.generalised == null
       ? {
           tone: 'border-border bg-[hsl(var(--panel-raised))] text-muted-foreground',
-          text: `Weights fitted on ${formatInteger(fit.labelled_windows)} earlier windows. The out-of-sample half was too small to judge whether they hold up.`,
+          text: `Weights fitted on ${formatInteger(fit.labelled_windows)} earlier windows, asked from ${formatInteger(fit.query_windows)}. The out-of-sample half was too small to judge whether they hold up.`,
         }
       : fit.generalised
         ? {
             tone: 'border-bull/30 bg-bull/10 text-bull',
-            text: `Fitted weights beat the hand-set ones on ${formatInteger(fit.holdout_windows)} windows they were never shown (${formatNumber(fit.holdout_score ?? 0, 3)} vs ${formatNumber(fit.holdout_default_score ?? 0, 3)} per trade).`,
+            text: `Fitted weights, asked from ${formatInteger(fit.query_windows)} windows, beat the hand-set ones on ${formatInteger(fit.holdout_windows)} they were never shown (${formatNumber(fit.holdout_score ?? 0, 3)} vs ${formatNumber(fit.holdout_default_score ?? 0, 3)} per trade).`,
           }
         : {
             tone: 'border-amber-500/30 bg-amber-500/10 text-amber-300',

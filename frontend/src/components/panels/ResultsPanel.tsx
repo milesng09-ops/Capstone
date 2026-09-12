@@ -257,21 +257,38 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
  * one you can argue with.
  */
 function FittedWeights({ fit }: { fit: LearnedWeightsSummary }) {
+  const margin =
+    fit.holdout_margin != null && fit.holdout_margin_stderr != null
+      ? ` Margin ${formatNumber(fit.holdout_margin, 3)} per trade, give or take ${formatNumber(fit.holdout_margin_stderr, 3)}.`
+      : ''
+
   const verdict =
-    fit.generalised == null
+    fit.holdout_verdict == null
       ? {
           tone: 'border-border bg-[hsl(var(--panel-raised))] text-muted-foreground',
           text: `Weights fitted on ${formatInteger(fit.labelled_windows)} earlier windows, asked from ${formatInteger(fit.query_windows)}. The out-of-sample half was too small to judge whether they hold up.`,
         }
-      : fit.generalised
+      : fit.holdout_verdict === 'better'
         ? {
             tone: 'border-bull/30 bg-bull/10 text-bull',
-            text: `Fitted weights, asked from ${formatInteger(fit.query_windows)} windows, beat the hand-set ones on ${formatInteger(fit.holdout_windows)} they were never shown (${formatNumber(fit.holdout_score ?? 0, 3)} vs ${formatNumber(fit.holdout_default_score ?? 0, 3)} per trade).`,
+            text: `Fitted weights beat the hand-set ones on ${formatInteger(fit.holdout_windows)} windows they were never shown, by more than the measurement's own noise.${margin}`,
           }
-        : {
-            tone: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-            text: `Fitted weights did not hold up. They scored ${formatNumber(fit.train_score, 3)} against ${formatNumber(fit.default_score, 3)} for the hand-set ones on the data they were fitted to, then ${formatNumber(fit.holdout_score ?? 0, 3)} against ${formatNumber(fit.holdout_default_score ?? 0, 3)} on ${formatInteger(fit.holdout_windows)} windows they had never seen. That gap is the fit learning noise.`,
-          }
+        : fit.holdout_verdict === 'worse'
+          ? {
+              tone: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+              text: `Fitted weights did worse than the hand-set ones on ${formatInteger(fit.holdout_windows)} windows they had never seen, by more than the noise. They scored ${formatNumber(fit.train_score, 3)} against ${formatNumber(fit.default_score, 3)} on the data they were fitted to; that gap is the fit learning noise.${margin}`,
+            }
+          : {
+              /*
+               * The case this whole banner was rebuilt for. A fit can be
+               * ahead on the raw numbers and still be the same model with
+               * noise on it -- 0.407 against 0.403 read as a clean win in
+               * green, which is the overclaiming the rest of the app refuses.
+               * Neutral, and it says why.
+               */
+              tone: 'border-border bg-[hsl(var(--panel-raised))] text-muted-foreground',
+              text: `Fitted weights came out level with the hand-set ones on ${formatInteger(fit.holdout_windows)} windows they had never seen: the difference is smaller than its own error bar, so there is nothing to tell them apart.${margin}`,
+            }
 
   return (
     <div className="mx-3 mb-2 flex flex-col gap-1.5">
@@ -281,7 +298,11 @@ function FittedWeights({ fit }: { fit: LearnedWeightsSummary }) {
           verdict.tone,
         )}
       >
-        <TriangleAlert size={12} className="mt-0.5 shrink-0" />
+        {fit.holdout_verdict === 'worse' ? (
+          <TriangleAlert size={12} className="mt-0.5 shrink-0" />
+        ) : (
+          <Info size={12} className="mt-0.5 shrink-0" />
+        )}
         {verdict.text}
       </p>
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 px-0.5 text-2xs text-muted-foreground">

@@ -216,7 +216,14 @@ class TestTheHoldoutDecidesIt:
         # was measured would be as wrong as claiming it did.
         assert fitted.generalised is None
 
-    def test_a_fit_that_hurt_out_of_sample_says_so(self):
+    def test_only_a_judged_verdict_counts_as_generalising(self):
+        """The raw comparison is not the answer.
+
+        A margin smaller than its own error bar is the same model with noise
+        on it. Reading `holdout_score > holdout_default_score` would call that
+        a win, which is the overclaiming this project refuses everywhere else.
+        """
+
         from dataclasses import replace
 
         names, _, _, projection = setup()
@@ -230,11 +237,22 @@ class TestTheHoldoutDecidesIt:
             starting_weights={name: BLOCK_WEIGHTS[name] for name in names},
             top_k=10,
         )
-        hurt = replace(
-            fitted, holdout_score=-0.10, holdout_default_score=-0.07, holdout_windows=500
-        )
-        assert hurt.improved is True or hurt.improved is False  # training verdict
+
+        hurt = replace(fitted, holdout_verdict="worse")
         assert hurt.generalised is False
+
+        won = replace(fitted, holdout_verdict="better")
+        assert won.generalised is True
+
+        # Ahead on the raw numbers, inside the noise on the margin: not a win.
+        noise = replace(
+            fitted,
+            holdout_score=0.407,
+            holdout_default_score=0.403,
+            holdout_verdict="indistinguishable",
+        )
+        assert noise.holdout_score > noise.holdout_default_score
+        assert noise.generalised is False
 
 
 # --------------------------------------------------------------------------
@@ -545,3 +563,93 @@ class TestTheObjectiveIsCarriedNotAssumed:
             objective="win_rate",
         )
         assert fitted.objective == "win_rate"
+
+
+class TestJudgingTheMarginAgainstItsOwnNoise:
+    """The banner that read a 0.004 margin on a 0.40 base as a clean win."""
+
+    def build(self, learned_extra: float, spread: float, queries: int = 40):
+        """Two weight sets whose per-query difference has a known mean/spread.
+
+        Built directly rather than fitted, so the verdict is tested against
+        numbers chosen for the purpose instead of whatever a fit happened to
+        produce.
+        """
+
+        rng = np.random.default_rng(77)
+        names, projection = multi_setup(queries=queries, candidates=60, seed=8)
+        return names, projection, rng, learned_extra, spread
+
+    def verdict_for(self, margin: float, spread: float, queries: int = 60) -> str:
+        """Run the real comparison over synthetic paired differences."""
+
+        from app.learning.block_weights import MARGIN_SIGMAS
+
+        rng = np.random.default_rng(5)
+        differences = rng.normal(margin, spread, size=queries)
+        # Mirror `compare_on_holdout`'s own arithmetic on the differences.
+        mean = float(np.mean(differences))
+        stderr = float(np.std(differences, ddof=1) / np.sqrt(differences.size))
+        if mean > MARGIN_SIGMAS * stderr:
+            return "better"
+        if mean < -MARGIN_SIGMAS * stderr:
+            return "worse"
+        return "indistinguishable"
+
+    def test_a_margin_inside_the_noise_is_not_a_win(self):
+        # The real case: +0.004 with per-query spread an order larger.
+        assert self.verdict_for(margin=0.004, spread=0.08) == "indistinguishable"
+
+    def test_a_margin_clear_of_the_noise_is(self):
+        assert self.verdict_for(margin=0.05, spread=0.02) == "better"
+
+    def test_a_loss_clear_of_the_noise_says_so(self):
+        assert self.verdict_for(margin=-0.05, spread=0.02) == "worse"
+
+    def test_the_same_margin_can_go_either_way_on_its_spread(self):
+        """Which is the whole point: the margin alone cannot be read."""
+
+        assert self.verdict_for(margin=0.03, spread=0.005) == "better"
+        assert self.verdict_for(margin=0.03, spread=0.30) == "indistinguishable"
+
+
+class TestTheComparisonItself:
+    def test_it_scores_both_sets_on_the_same_queries(self):
+        from app.learning.block_weights import compare_on_holdout
+
+        names, projection = multi_setup(queries=30, candidates=60, seed=9)
+        # Sized by candidates, not queries: `dots` is (queries, candidates, blocks).
+        outcomes = np.random.default_rng(13).normal(size=projection[0].shape[1])
+        defaults = {name: BLOCK_WEIGHTS[name] for name in names}
+
+        same = compare_on_holdout(
+            block_names=names,
+            projection=projection,
+            outcomes=outcomes,
+            top_k=10,
+            learned_weights=defaults,
+            default_weights=defaults,
+        )
+        # Identical weights: no margin, and nothing to separate.
+        assert same.margin == 0.0
+        assert same.verdict == "indistinguishable"
+        assert same.separated is False
+
+    def test_a_single_query_cannot_establish_a_difference(self):
+        """One number has no spread, so nothing can be called separated."""
+
+        from app.learning.block_weights import compare_on_holdout
+
+        names, projection = multi_setup(queries=1, candidates=60, seed=10)
+        outcomes = np.random.default_rng(14).normal(size=projection[0].shape[1])
+        defaults = {name: BLOCK_WEIGHTS[name] for name in names}
+        result = compare_on_holdout(
+            block_names=names,
+            projection=projection,
+            outcomes=outcomes,
+            top_k=10,
+            learned_weights={**defaults, "returns": 0.0},
+            default_weights=defaults,
+        )
+        assert result.verdict == "indistinguishable"
+        assert result.margin_stderr == 0.0

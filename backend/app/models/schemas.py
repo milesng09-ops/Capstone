@@ -288,7 +288,14 @@ class LearnedWeightsOut(BaseModel):
     holdout_score: float | None = None
     holdout_default_score: float | None = None
     holdout_windows: int = 0
-    #: `None` when the holdout was too small to judge on.
+    #: Mean per-query margin over the hand-set weights, and its uncertainty.
+    #: A margin inside its own error bar is the same model with noise on it.
+    holdout_margin: float | None = None
+    holdout_margin_stderr: float | None = None
+    #: "better" | "indistinguishable" | "worse". `None` when nothing was
+    #: measured, which is not the same as measuring no difference.
+    holdout_verdict: str | None = None
+    #: True only for a "better" verdict, never for a margin inside the noise.
     generalised: bool | None = None
     train_start: int
     train_end: int

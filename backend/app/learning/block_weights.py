@@ -93,6 +93,12 @@ class LearnedWeights:
     holdout_score: float | None = None
     holdout_default_score: float | None = None
     holdout_windows: int = 0
+    #: Mean per-query margin over the hand-set weights, and its uncertainty.
+    holdout_margin: float | None = None
+    holdout_margin_stderr: float | None = None
+    #: "better" | "indistinguishable" | "worse". `None` when there was no
+    #: holdout to judge on.
+    holdout_verdict: str | None = None
 
     @property
     def improved(self) -> bool:
@@ -107,15 +113,18 @@ class LearnedWeights:
 
     @property
     def generalised(self) -> bool | None:
-        """Still beat the defaults on data it never saw.
+        """Whether the fit is *demonstrably* better on data it never saw.
 
-        ``None`` when there was no holdout to judge on. ``False`` is the
-        honest and common answer, and the reason the split exists.
+        Not the raw comparison. A margin smaller than its own uncertainty is
+        the same model with noise on it, and answering "yes" to that would
+        overclaim in exactly the way this project refuses everywhere else --
+        so only a verdict of "better" counts. ``None`` means nothing was
+        measured, which is different from measuring no difference.
         """
 
-        if self.holdout_score is None or self.holdout_default_score is None:
+        if self.holdout_verdict is None:
             return None
-        return self.holdout_score > self.holdout_default_score
+        return self.holdout_verdict == "better"
 
 
 def similarity_for_weights(
@@ -216,10 +225,10 @@ def multi_block_projections(
     return dots, query_norms, candidate_norms
 
 
-def _score(
+def _per_query(
     similarity: np.ndarray, outcomes: np.ndarray, top_k: int
-) -> float:
-    """Mean outcome of the ``top_k`` most similar windows, over all queries.
+) -> np.ndarray:
+    """Each query's own score: the mean outcome of its ``top_k`` neighbours.
 
     Deliberately the same quantity the tool reports: it takes the most similar
     windows and trades them, so the weights are fitted to that and not to a
@@ -227,31 +236,46 @@ def _score(
     stable sort does deterministically, so the score cannot wobble between
     runs.
 
-    With many queries each one is scored on its own and the results averaged,
+    Kept per query rather than reduced immediately, because two weight sets
+    are compared on the *same* queries and the comparison is far tighter done
+    pair by pair than between two independently averaged numbers.
+
+    ``NaN`` marks a query whose candidates were all masked out: it has nothing
+    to say, and counting it as zero would drag the average toward a neutral
+    result nobody measured.
+    """
+
+    if similarity.size == 0:
+        return np.zeros(0)
+
+    matrix = similarity if similarity.ndim == 2 else similarity[None, :]
+    take = min(top_k, matrix.shape[1])
+    if take <= 0:
+        return np.zeros(0)
+
+    order = np.argsort(-matrix, axis=1, kind="stable")[:, :take]
+    picked = outcomes[order]
+    return np.where(
+        np.isneginf(np.take_along_axis(matrix, order, axis=1)).all(axis=1),
+        np.nan,
+        picked.mean(axis=1),
+    )
+
+
+def _score(
+    similarity: np.ndarray, outcomes: np.ndarray, top_k: int
+) -> float:
+    """One number for a weight set: the mean of the per-query scores.
+
+    With many queries each is scored on its own and the results averaged,
     rather than pooling every (query, candidate) pair.  Pooling would let a
     single query with unusually good neighbours carry the objective; averaging
     per query asks the question that actually matters -- does this weight set
     make similarity predictive *generally*, not just around one window.
     """
 
-    if similarity.size == 0:
-        return 0.0
-
-    matrix = similarity if similarity.ndim == 2 else similarity[None, :]
-    take = min(top_k, matrix.shape[1])
-    if take <= 0:
-        return 0.0
-
-    order = np.argsort(-matrix, axis=1, kind="stable")[:, :take]
-    picked = outcomes[order]
-    # A query whose entire row was masked out has nothing to say; NaN keeps it
-    # from dragging the mean toward zero as a fake neutral result.
-    per_query = np.where(
-        np.isneginf(np.take_along_axis(matrix, order, axis=1)).all(axis=1),
-        np.nan,
-        picked.mean(axis=1),
-    )
-    if np.all(np.isnan(per_query)):
+    per_query = _per_query(similarity, outcomes, top_k)
+    if per_query.size == 0 or np.all(np.isnan(per_query)):
         return 0.0
     return float(np.nanmean(per_query))
 
@@ -489,4 +513,104 @@ def fit_group_weights(
         dropped_blocks=dropped,
         group_weights={group: float(value) for group, value in best.items()},
         exhaustive=True,
+    )
+
+
+@dataclass(frozen=True)
+class HoldoutComparison:
+    """Two weight sets measured against each other on unseen windows.
+
+    The margin alone cannot be read.  A fit beating the hand-set weights by
+    0.004 on a base of 0.40 is not a better model, it is the same model with
+    noise on top -- and rendering that as a win is exactly the overclaiming
+    this project refuses everywhere else.  So the margin is reported with the
+    uncertainty it carries, and the verdict is drawn from both.
+    """
+
+    learned_score: float
+    default_score: float
+    #: Mean per-query difference, learned minus hand-set.
+    margin: float
+    #: Standard error of that difference.  Paired: both weight sets are scored
+    #: on the same queries, so the per-query differences are what varies, and
+    #: their spread is far tighter than that of two separate averages.
+    margin_stderr: float
+    queries: int
+    verdict: str
+
+    @property
+    def separated(self) -> bool:
+        return self.verdict in {"better", "worse"}
+
+
+#: Standard errors the margin must clear before the difference is called
+#: real.  Two is the usual 95% convention; the point is less the exact number
+#: than that there *is* one, so a margin inside the noise reports as
+#: "indistinguishable" rather than as a win.
+MARGIN_SIGMAS = 2.0
+
+
+def compare_on_holdout(
+    *,
+    block_names: list[str],
+    projection: tuple[np.ndarray, np.ndarray, np.ndarray],
+    outcomes: np.ndarray,
+    top_k: int,
+    learned_weights: dict[str, float],
+    default_weights: dict[str, float],
+    valid_mask: np.ndarray | None = None,
+) -> HoldoutComparison:
+    """Score both weight sets on the same unseen windows and judge the gap."""
+
+    dots, query_norms, candidate_norms = projection
+
+    def per_query(weights: dict[str, float]) -> np.ndarray:
+        vector = np.array(
+            [weights.get(name, 0.0) for name in block_names], dtype=np.float64
+        )
+        if not np.any(vector > 0):
+            return np.full(dots.shape[0] if dots.ndim == 3 else 1, np.nan)
+        similarity = similarity_for_weights(dots, query_norms, candidate_norms, vector)
+        return _per_query(_masked(similarity, valid_mask), outcomes, top_k)
+
+    learned = per_query(learned_weights)
+    default = per_query(default_weights)
+
+    usable = ~(np.isnan(learned) | np.isnan(default))
+    differences = (learned - default)[usable]
+    learned_mean = float(np.nanmean(learned)) if learned.size else 0.0
+    default_mean = float(np.nanmean(default)) if default.size else 0.0
+
+    if differences.size < 2:
+        # One query cannot say how much a difference varies, so nothing here
+        # can be called separated from noise.
+        margin = float(differences[0]) if differences.size else 0.0
+        return HoldoutComparison(
+            learned_score=round(learned_mean, 6),
+            default_score=round(default_mean, 6),
+            margin=round(margin, 6),
+            margin_stderr=0.0,
+            queries=int(differences.size),
+            verdict="indistinguishable",
+        )
+
+    margin = float(np.mean(differences))
+    stderr = float(np.std(differences, ddof=1) / np.sqrt(differences.size))
+
+    if stderr <= 0.0:
+        verdict = "better" if margin > 0 else "worse" if margin < 0 else "indistinguishable"
+    elif margin > MARGIN_SIGMAS * stderr:
+        verdict = "better"
+    elif margin < -MARGIN_SIGMAS * stderr:
+        verdict = "worse"
+    else:
+        verdict = "indistinguishable"
+
+    return HoldoutComparison(
+        learned_score=round(learned_mean, 6),
+        default_score=round(default_mean, 6),
+        margin=round(margin, 6),
+        margin_stderr=round(stderr, 6),
+        queries=int(differences.size),
+        verdict=verdict,
     )

@@ -31,9 +31,9 @@ from app.backtesting.attempts import configuration_key
 from app.learning.block_weights import (
     block_projections,
     fit_block_weights,
+    compare_on_holdout,
     fit_group_weights,
     multi_block_projections,
-    score_weights,
 )
 from app.backtesting.metrics import compute_metrics
 from app.backtesting.significance import (
@@ -110,6 +110,9 @@ def _learned_out(learned, train_range):
         holdout_score=learned.holdout_score,
         holdout_default_score=learned.holdout_default_score,
         holdout_windows=learned.holdout_windows,
+        holdout_margin=learned.holdout_margin,
+        holdout_margin_stderr=learned.holdout_margin_stderr,
+        holdout_verdict=learned.holdout_verdict,
         generalised=learned.generalised,
         train_start=train_range[0],
         train_end=train_range[1],
@@ -875,11 +878,13 @@ class BacktestService:
         test_starts, test_outcomes = label(eligible(in_training=False))
         if len(test_starts) >= MINIMUM_TRAINING_WINDOWS:
             test_names, test_projection = projections(test_starts)
-            holdout = score_weights(
+            comparison = compare_on_holdout(
                 block_names=test_names,
                 projection=test_projection,
                 outcomes=test_outcomes,
                 top_k=min(top_k, len(test_starts)),
+                learned_weights=learned.weights,
+                default_weights=defaults,
                 # Queries come from training and candidates from test, so no
                 # window can overlap the one asking about it. The mask is
                 # still built rather than assumed: the halves touch at the
@@ -888,9 +893,12 @@ class BacktestService:
             )
             learned = replace(
                 learned,
-                holdout_score=round(holdout(learned.weights), 6),
-                holdout_default_score=round(holdout(defaults), 6),
+                holdout_score=comparison.learned_score,
+                holdout_default_score=comparison.default_score,
                 holdout_windows=len(test_starts),
+                holdout_margin=comparison.margin,
+                holdout_margin_stderr=comparison.margin_stderr,
+                holdout_verdict=comparison.verdict,
             )
 
         return learned, train_range

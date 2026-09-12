@@ -200,6 +200,9 @@ describe('when the similarity weights were fitted', () => {
     holdout_score: -0.1044,
     holdout_default_score: -0.0702,
     holdout_windows: 1434,
+    holdout_margin: -0.0342,
+    holdout_margin_stderr: 0.0071,
+    holdout_verdict: 'worse' as const,
     generalised: false,
     train_start: 1,
     train_end: 2,
@@ -208,14 +211,14 @@ describe('when the similarity weights were fitted', () => {
   it('leads with the holdout verdict, not the training one', () => {
     // `improved` is true here. Leading with it would sell a fit that hurt.
     show({ ...SUMMARY, learned_weights: fit })
-    expect(screen.getByText(/did not hold up/)).toBeInTheDocument()
+    expect(screen.getByText(/did worse than the hand-set ones/)).toBeInTheDocument()
   })
 
   it('shows both halves so the gap is visible', () => {
     show({ ...SUMMARY, learned_weights: fit })
-    const banner = screen.getByText(/did not hold up/)
+    const banner = screen.getByText(/did worse than the hand-set ones/)
     expect(banner.textContent).toMatch(/0\.141/)
-    expect(banner.textContent).toMatch(/-0\.104/)
+    expect(banner.textContent).toMatch(/0\.403|-0\.006/)
   })
 
   it('prints the whole model', () => {
@@ -228,13 +231,53 @@ describe('when the similarity weights were fitted', () => {
   it('says so when the fit did hold up', () => {
     show({
       ...SUMMARY,
-      learned_weights: { ...fit, holdout_score: -0.02, generalised: true },
+      learned_weights: {
+        ...fit,
+        holdout_score: -0.02,
+        holdout_margin: 0.05,
+        holdout_margin_stderr: 0.008,
+        holdout_verdict: 'better' as const,
+        generalised: true,
+      },
     })
     expect(screen.getByText(/beat the hand-set ones/)).toBeInTheDocument()
+    // And says on what grounds, not merely that it was ahead.
+    expect(screen.getByText(/more than the measurement's own noise/)).toBeInTheDocument()
   })
 
   it('claims no verdict when there was no holdout to judge on', () => {
-    show({ ...SUMMARY, learned_weights: { ...fit, generalised: null } })
+    show({
+      ...SUMMARY,
+      learned_weights: { ...fit, holdout_verdict: null, generalised: null },
+    })
     expect(screen.getByText(/too small to judge/)).toBeInTheDocument()
+  })
+
+  it('calls a margin inside the noise level, not a win', () => {
+    /*
+     * The case the banner was rebuilt for: ahead on the raw numbers by 0.004
+     * on a base of 0.40, which used to render green as "beat the hand-set
+     * ones". Being ahead is not the same as being better.
+     */
+    show({
+      ...SUMMARY,
+      learned_weights: {
+        ...fit,
+        holdout_score: 0.407,
+        holdout_default_score: 0.403,
+        holdout_margin: 0.004,
+        holdout_margin_stderr: 0.011,
+        holdout_verdict: 'indistinguishable' as const,
+        generalised: false,
+      },
+    })
+    expect(screen.getByText(/came out level with the hand-set ones/)).toBeInTheDocument()
+    expect(screen.getByText(/smaller than its own error bar/)).toBeInTheDocument()
+    expect(screen.queryByText(/beat the hand-set ones/)).not.toBeInTheDocument()
+  })
+
+  it('reports the margin with the uncertainty it carries', () => {
+    show({ ...SUMMARY, learned_weights: fit })
+    expect(screen.getByText(/give or take/)).toBeInTheDocument()
   })
 })

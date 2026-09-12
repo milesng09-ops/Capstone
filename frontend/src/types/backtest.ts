@@ -126,7 +126,15 @@ export interface LearnedWeightsSummary {
   holdout_score: number | null
   holdout_default_score: number | null
   holdout_windows: number
-  /** The verdict that matters. `null` when there was no holdout to judge on. */
+  /** Mean per-query margin over the hand-set weights, and its uncertainty. */
+  holdout_margin: number | null
+  holdout_margin_stderr: number | null
+  /**
+   * The verdict that matters, judged against the margin's own noise.
+   * `null` means nothing was measured — not the same as no difference.
+   */
+  holdout_verdict: 'better' | 'indistinguishable' | 'worse' | null
+  /** True only for a `better` verdict, never for a margin inside the noise. */
   generalised: boolean | null
   train_start: number
   train_end: number

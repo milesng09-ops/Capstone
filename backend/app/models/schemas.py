@@ -472,6 +472,14 @@ class BacktestListItem(BaseModel):
     primary_symbol: str
     interval: str
     status: str
+    #: The setup this run was testing. Runs against overlapping windows are
+    #: attempts at the same thing, and a list that cannot show that is a list
+    #: of identical-looking rows.
+    selection_start: int = 0
+    selection_end: int = 0
+    #: A few words on what made this run different from the others against
+    #: the same window -- the rules, the conditions, whether weights were fit.
+    label: str = ""
     trades_executed: int | None = None
     win_rate: float | None = None
     net_return: float | None = None

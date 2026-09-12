@@ -91,3 +91,88 @@ def family_wise_probability(p_value: float, configurations: int) -> float:
     if p_value >= 1.0:
         return 1.0
     return 1.0 - (1.0 - p_value) ** configurations
+
+
+def describe_configuration(payload: dict) -> str:
+    """What made this run different, in a few words.
+
+    The machine-readable counterpart is :func:`configuration_key`, which
+    answers "is this the same attempt" and is deliberately unreadable.  This
+    answers "which attempt was it" for a person reading a list of runs, where
+    a dozen entries reading ``ES 1h - 28% win`` are worse than no list at all.
+
+    Only the fields that actually vary between attempts appear, and anything
+    left at its default is omitted -- a label that repeats the defaults on
+    every row distinguishes nothing, which is the problem being solved.
+
+    Reads the stored payload defensively rather than validating it: a run
+    saved under an older shape of the request should still be nameable, and
+    failing to parse one is not a reason to show nothing for it.
+    """
+
+    trade = payload.get("trade") or {}
+    parts: list[str] = []
+
+    direction = trade.get("direction")
+    if direction in {"long", "short"}:
+        parts.append(direction.capitalize())
+
+    stop = _describe_level(
+        trade.get("stop_loss_type"), trade.get("stop_loss_value"), risk_unit=False
+    )
+    target = _describe_level(
+        trade.get("take_profit_type"), trade.get("take_profit_value"), risk_unit=True
+    )
+    if stop and target:
+        parts.append(f"{stop} → {target}")
+    elif stop or target:
+        parts.append(stop or target)
+
+    detectors = payload.get("detectors") or {}
+    flags = [
+        name
+        for key, name in (
+            ("require_fair_value_gap", "FVG"),
+            ("require_smt_divergence", "SMT"),
+            ("require_swing_point", "swing"),
+        )
+        if detectors.get(key)
+    ]
+    parts.extend(flags)
+
+    learning = payload.get("learning") or {}
+    if learning.get("enabled"):
+        # Everything that changes what a fitted run *is*. A label is not a
+        # settings dump, but these four are exactly what separates one fit
+        # from another -- leave the split and the query count out and a row
+        # of fitted runs goes back to being indistinguishable, which is the
+        # problem this is here to solve.
+        shape = "3w" if learning.get("grouped") else "7w"
+        objective = "win" if learning.get("objective") == "win_rate" else "exp"
+        detail = f"fitted {shape}/{objective}"
+        queries = learning.get("query_samples")
+        if isinstance(queries, int):
+            detail += f" {queries}q"
+        split = learning.get("train_fraction")
+        if isinstance(split, (int, float)):
+            detail += f"/{round(split * 100)}%"
+        parts.append(detail)
+
+    return " · ".join(parts) if parts else "default rules"
+
+
+def _describe_level(kind: object, value: object, *, risk_unit: bool) -> str:
+    """One side of the trade, in the unit it was actually expressed in."""
+
+    if not isinstance(value, (int, float)):
+        return ""
+    number = f"{value:g}"
+    if kind == "percentage":
+        return f"{number}%"
+    if kind == "atr_multiple":
+        return f"{number}×ATR"
+    if kind == "fixed_price":
+        return f"@{number}"
+    if kind == "risk_reward":
+        return f"{number}R" if risk_unit else number
+    return number

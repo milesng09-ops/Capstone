@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app import __version__
 from app.api.deps import backtest_service, candle_service, ict_service, session_id
+from app.backtesting.attempts import describe_configuration
 from app.config import get_settings
 from app.database.repository import (
     cache_statistics,
@@ -327,6 +328,9 @@ async def list_backtest_runs() -> BacktestListResponse:
                     primary_symbol=row.primary_symbol,
                     interval=row.interval,
                     status=row.status,
+                    selection_start=row.selection_start,
+                    selection_end=row.selection_end,
+                    label=describe_configuration(row.configuration_json or {}),
                     trades_executed=summary.get("trades_executed"),
                     win_rate=summary.get("win_rate"),
                     net_return=summary.get("net_return"),

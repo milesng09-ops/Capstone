@@ -12,7 +12,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.backtesting.attempts import configuration_key, family_wise_probability
+from app.backtesting.attempts import (
+    configuration_key,
+    describe_configuration,
+    family_wise_probability,
+)
 from app.backtesting.metrics import compute_metrics
 from app.database.repository import configurations_against_selection
 from app.models.db_models import Base, BacktestRow
@@ -199,3 +203,92 @@ class TestTheSummarySaysSo:
             [], total_matches=0, skipped_matches=0, configurations_tried=12
         )
         assert summary.configurations_tried == 12
+
+
+class TestNamingARunInAList:
+    """Forty rows reading "ES 1h - 28% win" are worse than no list at all.
+
+    The label exists to answer one question: what did I already try against
+    this window? So the test that matters is not that it renders, but that
+    two runs which differ are named differently -- and that two which do not
+    differ are named the same, since the counter treats those as one draw.
+    """
+
+    BASE = {
+        "trade": {
+            "direction": "long",
+            "stop_loss_type": "percentage",
+            "stop_loss_value": 0.5,
+            "take_profit_type": "risk_reward",
+            "take_profit_value": 2.0,
+        }
+    }
+
+    def test_it_names_the_rules_in_the_units_they_were_set_in(self):
+        assert describe_configuration(self.BASE) == "Long · 0.5% → 2R"
+
+    def test_an_atr_stop_is_not_described_as_a_percentage(self):
+        payload = {
+            "trade": {
+                **self.BASE["trade"],
+                "stop_loss_type": "atr_multiple",
+                "stop_loss_value": 1.5,
+            }
+        }
+        assert "1.5×ATR" in describe_configuration(payload)
+        assert "1.5%" not in describe_configuration(payload)
+
+    def test_conditions_appear_only_when_required(self):
+        assert "FVG" not in describe_configuration(self.BASE)
+        with_gap = {**self.BASE, "detectors": {"require_fair_value_gap": True}}
+        assert "FVG" in describe_configuration(with_gap)
+
+    def test_two_fits_differing_only_in_the_split_are_named_differently(self):
+        """The failure this had on its first pass.
+
+        Shape and objective alone left a column of fitted runs reading
+        identically while being different configurations -- the same problem
+        the label was added to fix, one level down.
+        """
+
+        def fit(**over):
+            return {
+                **self.BASE,
+                "learning": {
+                    "enabled": True,
+                    "grouped": True,
+                    "objective": "win_rate",
+                    "query_samples": 60,
+                    "train_fraction": 0.5,
+                    **over,
+                },
+            }
+
+        assert describe_configuration(fit()) != describe_configuration(
+            fit(train_fraction=0.6)
+        )
+        assert describe_configuration(fit()) != describe_configuration(
+            fit(query_samples=150)
+        )
+        assert describe_configuration(fit()) != describe_configuration(
+            fit(grouped=False)
+        )
+        assert describe_configuration(fit()) != describe_configuration(
+            fit(objective="expectancy")
+        )
+
+    def test_the_same_configuration_is_named_the_same(self):
+        # Matching the counter, which treats a rerun as one draw, not two.
+        assert describe_configuration(self.BASE) == describe_configuration(
+            {"trade": dict(self.BASE["trade"])}
+        )
+
+    def test_a_run_saved_under_an_older_shape_is_still_nameable(self):
+        """Failing to parse one is not a reason to show nothing for it."""
+
+        assert describe_configuration({}) == "default rules"
+        assert describe_configuration({"trade": {}}) == "default rules"
+        # Junk in the numeric fields must not raise on the way to a list.
+        assert isinstance(
+            describe_configuration({"trade": {"stop_loss_value": "wat"}}), str
+        )

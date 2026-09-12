@@ -36,6 +36,7 @@ import {
   type SymbolKey,
 } from '@/types/market'
 import { formatDateTime, formatNumber } from '@/utils/format'
+import type { BacktestListItem } from '@/types/backtest'
 
 export function TopBar() {
   // Timestamps below are drawn in the zone chosen in the status bar;
@@ -143,17 +144,25 @@ export function TopBar() {
           <label className="hidden items-center gap-1.5 xl:flex">
             <span className="label-caps">Run</span>
             <select
-              className="h-6 max-w-[15rem] rounded border border-input bg-[hsl(var(--panel-raised))] px-1.5 text-2xs outline-none focus:border-primary/60"
+              className="h-6 max-w-[18rem] rounded border border-input bg-[hsl(var(--panel-raised))] px-1.5 text-2xs outline-none focus:border-primary/60"
               value={activeId ?? ''}
               onChange={(event) => setActiveBacktestId(event.target.value || null)}
             >
               <option value="">Latest / none</option>
-              {historyQuery.data.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.primary_symbol} {item.interval} &middot;{' '}
-                  {formatDateTime(item.created_at)}
-                  {item.win_rate != null ? ` · ${formatNumber(item.win_rate, 0)}% win` : ''}
-                </option>
+              {groupBySetup(historyQuery.data).map((group) => (
+                <optgroup key={group.key} label={group.title}>
+                  {group.runs.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.win_rate != null
+                        ? `${formatNumber(item.win_rate, 0)}%`
+                        : item.status}
+                      {' · '}
+                      {item.label || 'default rules'}
+                      {' · '}
+                      {formatDateTime(item.created_at)}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </label>
@@ -266,4 +275,42 @@ function LayoutPicker() {
       ))}
     </div>
   )
+}
+
+
+/**
+ * Runs gathered under the setup they were testing.
+ *
+ * A flat list of every run is unreadable once you have tried a few things:
+ * forty rows of "ES 1h - 28% win" differ only in a timestamp, and the one
+ * question worth asking of the list -- what did I already try against *this*
+ * window, and what did it give me -- cannot be answered from it at all.
+ *
+ * Grouping by the selection answers it directly, and it is the same unit the
+ * backend counts configurations against, so the list and the family-wise
+ * p-value are talking about the same thing.
+ *
+ * Groups keep the order their newest run appeared in, so the most recent work
+ * stays at the top rather than being reordered by setup date.
+ */
+function groupBySetup(items: BacktestListItem[]) {
+  const groups = new Map<string, { key: string; title: string; runs: BacktestListItem[] }>()
+
+  for (const item of items) {
+    const key = `${item.primary_symbol}|${item.interval}|${item.selection_start}|${item.selection_end}`
+    const existing = groups.get(key)
+    if (existing) {
+      existing.runs.push(item)
+      continue
+    }
+    groups.set(key, {
+      key,
+      title: item.selection_start
+        ? `${item.primary_symbol} ${item.interval} · setup ${formatDateTime(item.selection_start)}`
+        : `${item.primary_symbol} ${item.interval}`,
+      runs: [item],
+    })
+  }
+
+  return [...groups.values()]
 }

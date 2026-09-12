@@ -278,6 +278,11 @@ export interface BacktestListItem {
   primary_symbol: string
   interval: Interval
   status: string
+  /** The setup this run tested. Runs against the same window are comparable. */
+  selection_start: number
+  selection_end: number
+  /** A few words on what made this run different from its neighbours. */
+  label: string
   trades_executed: number | null
   win_rate: number | null
   net_return: number | null

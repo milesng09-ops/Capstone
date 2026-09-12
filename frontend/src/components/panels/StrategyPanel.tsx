@@ -174,7 +174,16 @@ export function StrategyPanel() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
+    /*
+     * The run action is pinned, not merely pushed down. It used to sit at the
+     * end of the one scrolling column with `mt-auto`, which places it nicely
+     * while the column is short -- and the column is no longer short. With
+     * sizing, conditions, fitted weights and advanced all present, the button
+     * that runs the thing was below the fold on load, so the panel opened
+     * with its primary action out of sight.
+     */
+    <div className="flex h-full flex-col p-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
       {/* ---- the setup ---- */}
       <Disclosure
         label="Selected setup"
@@ -592,8 +601,10 @@ export function StrategyPanel() {
         </p>
       </Disclosure>
 
-      {/* ---- run ---- */}
-      <section className="mt-auto space-y-2 border-t border-border pt-2.5">
+      </div>
+
+      {/* ---- run: always reachable, whatever is open above ---- */}
+      <section className="shrink-0 space-y-2 border-t border-border pt-2.5 mt-3">
         {runBacktest.isError && (
           <p className="rounded-md border border-bear/30 bg-bear/10 p-2 text-2xs leading-relaxed text-bear">
             {(runBacktest.error as Error).message}

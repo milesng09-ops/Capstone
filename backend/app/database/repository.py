@@ -184,6 +184,122 @@ DEMO_PROVIDER = "demo"
 #: them -- the database layer must not depend on the provider package.
 REAL_PROVIDERS: frozenset[str] = frozenset({"massive", "yahoo"})
 
+#: Which real provider owns a series when more than one has written to it,
+#: most preferred first.
+#:
+#: Two real providers are not two views of one price.  Massive serves the
+#: individual futures contracts stitched into a front-month series that is
+#: deliberately *not* back-adjusted; Yahoo's ``NQ=F`` is its own continuous
+#: series that rolls on its own dates.  Between rolls they agree to within a
+#: few points; after one they do not.  Measured in this project's own cache on
+#: 2026-09-12: two Yahoo bars had found their way into a 2,965-bar Massive NQ
+#: series, and at 2026-09-11 20:00 the Yahoo close was **291.50 points** below
+#: the neighbouring Massive bar, while the June bar in the same series was out
+#: by 10.25.  Drawn as one line that is a 300-point cliff in the middle of the
+#: chart, which is exactly what was reported from the review call as a gap
+#: "that is not in the real contract".
+#:
+#: So a series holds one provider's prices.  The order is the fallback chain's
+#: own preference, kept here rather than imported because the database layer
+#: must not depend on the provider package; a test pins the two together.
+PROVIDER_PREFERENCE: tuple[str, ...] = ("massive", "yahoo")
+
+
+def series_owner(session: Session, symbol: str, interval: str) -> str | None:
+    """The real provider whose prices this series is made of.
+
+    ``None`` when the series holds no real bars at all, which is the case
+    where any provider is free to take it.
+    """
+
+    present = providers_in_series(session, symbol, interval) & REAL_PROVIDERS
+    if not present:
+        return None
+    for candidate in PROVIDER_PREFERENCE:
+        if candidate in present:
+            return candidate
+    # A real provider that predates the preference list: it still owns the
+    # series, because the alternative is silently re-basing on a name we
+    # simply have not ranked yet.
+    return sorted(present)[0]
+
+
+def providers_in_series(session: Session, symbol: str, interval: str) -> set[str]:
+    """Every provider name appearing anywhere in one stored series."""
+
+    rows = session.execute(
+        select(CandleRow.provider)
+        .where(CandleRow.symbol == symbol, CandleRow.interval == interval)
+        .group_by(CandleRow.provider)
+    ).all()
+    return {row[0] for row in rows if row[0]}
+
+
+def drop_provider_candles(
+    session: Session, symbol: str, interval: str, provider: str
+) -> int:
+    """Delete one provider's bars from a series, and its coverage with them.
+
+    Coverage goes wholesale for the same reason it does in
+    :func:`drop_unreal_candles`: ranges are merged as they are recorded, so a
+    row labelled with one provider can vouch for bars from another, and a
+    coverage row that outlived its candles is worse than none.
+    """
+
+    removed = (
+        session.execute(
+            delete(CandleRow).where(
+                CandleRow.symbol == symbol,
+                CandleRow.interval == interval,
+                CandleRow.provider == provider,
+            )
+        ).rowcount
+        or 0
+    )
+    if removed:
+        session.execute(
+            delete(CacheCoverageRow).where(
+                CacheCoverageRow.symbol == symbol,
+                CacheCoverageRow.interval == interval,
+            )
+        )
+    return int(removed)
+
+
+def repair_mixed_real_series(session: Session) -> dict[tuple[str, str], int]:
+    """Reduce every series to one real provider's prices.
+
+    The owner keeps the series and the others are evicted.  Unlike the demo
+    repair this is not about invented data -- every bar here is a real
+    observation -- it is about two series of real observations being different
+    series, and a chart drawing them as one continuous line.
+
+    Returns the number of bars removed per ``(symbol, interval)`` it touched.
+    """
+
+    grouped = session.execute(
+        select(CandleRow.symbol, CandleRow.interval, CandleRow.provider).group_by(
+            CandleRow.symbol, CandleRow.interval, CandleRow.provider
+        )
+    ).all()
+
+    series: dict[tuple[str, str], set[str]] = {}
+    for symbol, interval, provider in grouped:
+        series.setdefault((symbol, interval), set()).add(provider)
+
+    removed: dict[tuple[str, str], int] = {}
+    for (symbol, interval), providers in series.items():
+        real = providers & REAL_PROVIDERS
+        if len(real) < 2:
+            continue
+        owner = series_owner(session, symbol, interval)
+        count = 0
+        for provider in sorted(real - {owner}):
+            count += drop_provider_candles(session, symbol, interval, provider)
+        if count:
+            removed[(symbol, interval)] = count
+    return removed
+
 
 def providers_in_range(
     session: Session, symbol: str, interval: str, start: int, end: int

@@ -29,6 +29,7 @@ from app.database.repository import (
     TimeRange,
     candle_provider,
     drop_unreal_candles,
+    series_owner,
     has_real_candles,
     load_candles,
     load_coverage,
@@ -61,6 +62,12 @@ from app.utils.timeutils import from_ms
 logger = logging.getLogger(__name__)
 
 
+#: What to tell the user when a fetched range was refused rather than failed.
+#: Both are our own rules about what may sit in one series, and each wants a
+#: different response -- so they do not get the same sentence.
+_DECLINED_REASONS: dict[str, str] = {}
+
+
 class _PersistOutcome(str, Enum):
     """Why a fetched range did or did not make it into the cache.
 
@@ -80,8 +87,30 @@ class _PersistOutcome(str, Enum):
     STORED_SHORT = "stored_short"
     #: Generated bars offered for a series that already holds real prices.
     DECLINED_GENERATED = "declined_generated"
+    #: Real bars offered for a series another real provider already owns.
+    #: Two real providers are not two views of one price -- see
+    #: :data:`app.database.repository.PROVIDER_PREFERENCE`.
+    DECLINED_FOREIGN = "declined_foreign"
     #: The market was open and nothing came back.
     NOT_SERVED = "not_served"
+
+
+_DECLINED_REASONS.update(
+    {
+        _PersistOutcome.DECLINED_GENERATED: (
+            "This range could not be fetched from a market-data provider, and "
+            "generated data is not mixed into a series of real prices."
+        ),
+        _PersistOutcome.DECLINED_FOREIGN: (
+            "The fallback provider quotes a different series for this market -- "
+            "its continuous contract is not the stitched front month these bars "
+            "come from, and after a roll the two differ by hundreds of points. "
+            "Its prices are not mixed in, so this stretch is still missing. "
+            "Clear the cache for this market to rebuild it from the fallback "
+            "instead."
+        ),
+    }
+)
 
 
 class RequestTooLargeError(ValueError):
@@ -350,13 +379,11 @@ class CandleService:
                 # the two reasons want different responses from the user, so
                 # they are not given the same sentence.
                 failed_gaps += 1
-                fallback_reason = fallback_reason or (
-                    "This range could not be fetched from a market-data provider, and "
-                    "generated data is not mixed into a series of real prices."
-                    if outcome is _PersistOutcome.DECLINED_GENERATED
-                    else "The provider returned no candles for part of this window "
+                fallback_reason = fallback_reason or _DECLINED_REASONS.get(
+                    outcome,
+                    "The provider returned no candles for part of this window "
                     "while the market was open, so that stretch is still missing. "
-                    "It will be asked for again."
+                    "It will be asked for again.",
                 )
                 continue
 
@@ -431,6 +458,25 @@ class CandleService:
                     )
                     return _PersistOutcome.DECLINED_GENERATED
             elif bars:
+                # A series holds one real provider's prices. Massive's
+                # stitched front-month contracts and Yahoo's own continuous
+                # series are different series, not two readings of the same
+                # one, and blending them draws a 300-point roll step as a
+                # cliff in the middle of the chart. The owner keeps the
+                # series; the fallback's bars are served to nobody rather
+                # than stored where they will be read as the same instrument.
+                owner = series_owner(session, symbol, store_interval)
+                if owner is not None and owner != provider:
+                    logger.warning(
+                        "Declined %d %s bars for %s %s: the series holds %s prices",
+                        len(bars),
+                        provider,
+                        symbol,
+                        store_interval,
+                        owner,
+                    )
+                    return _PersistOutcome.DECLINED_FOREIGN
+
                 evicted = drop_unreal_candles(session, symbol, store_interval)
                 if evicted:
                     logger.info(

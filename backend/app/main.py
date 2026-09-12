@@ -15,7 +15,11 @@ from fastapi.responses import JSONResponse
 from app import __version__
 from app.api.routes import api_router
 from app.config import get_settings
-from app.database.repository import repair_mixed_series, upsert_instruments
+from app.database.repository import (
+    repair_mixed_real_series,
+    repair_mixed_series,
+    upsert_instruments,
+)
 from app.database.session import init_database, session_scope
 from app.providers.instruments import list_instruments
 from app.services.candle_service import shutdown_candle_service
@@ -68,6 +72,22 @@ async def lifespan(_app: FastAPI):
         logger.warning(
             "Removed %d generated bars from %s %s, which also held real prices. "
             "That range will be refetched on the next request.",
+            removed,
+            symbol,
+            interval,
+        )
+
+    # The same argument for two *real* providers. Their bars are all genuine
+    # observations, but of different series: Massive stitches front-month
+    # contracts without back-adjusting, Yahoo quotes its own continuous
+    # contract, and after a roll the two are hundreds of points apart. One
+    # line drawn through both has a cliff in it that belongs to neither.
+    with session_scope() as session:
+        rebased = repair_mixed_real_series(session)
+    for (symbol, interval), removed in rebased.items():
+        logger.warning(
+            "Removed %d bars from %s %s that came from a second real provider. "
+            "A series holds one provider's prices; that range will be refetched.",
             removed,
             symbol,
             interval,

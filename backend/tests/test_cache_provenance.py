@@ -230,6 +230,44 @@ class TestWhatTheServiceStores:
         assert stored is _PersistOutcome.STORED
         assert providers_in_range(session, "NQ", "1h", T0, T0 + 100 * HOUR) == {"massive"}
 
+    def test_a_second_real_provider_is_declined_for_a_series_it_does_not_own(
+        self, session
+    ):
+        """Massive's stitched front month and Yahoo's continuous contract are
+        different series. Blending them draws a roll step as a cliff: measured
+        at 291.50 points in this project's own cache on 2026-09-12."""
+
+        save_candles(session, "1h", candles("ES", 2), "massive")
+
+        stored = self._persist("ES", candles("ES", 3, start=T0 + 50 * HOUR), "yahoo")
+
+        assert stored is _PersistOutcome.DECLINED_FOREIGN
+        assert providers_in_range(session, "ES", "1h", T0, T0 + 100 * HOUR) == {"massive"}
+        # No coverage either: the range stays missing and is asked for again,
+        # rather than being recorded as filled with prices from elsewhere.
+        assert load_coverage(session, "ES", "1h") == []
+
+    def test_the_owner_keeps_serving_its_own_series(self, session):
+        save_candles(session, "1h", candles("ES", 2), "yahoo")
+
+        stored = self._persist("ES", candles("ES", 3), "yahoo")
+
+        # The owner is never turned away from its own series. (Stored rather
+        # than short: the bars start where the window does, and a shortfall at
+        # the trailing end is exempt because the forming bar is refetched
+        # every time anyway.)
+        assert stored is _PersistOutcome.STORED
+        assert providers_in_range(session, "ES", "1h", T0, T0 + 100 * HOUR) == {"yahoo"}
+
+    def test_any_real_provider_may_take_a_series_nobody_owns(self, session):
+        # Including one that only holds generated bars, which it evicts.
+        save_candles(session, "1h", candles("YM", 4), DEMO_PROVIDER)
+
+        stored = self._persist("YM", candles("YM", 2), "yahoo")
+
+        assert stored is _PersistOutcome.STORED
+        assert providers_in_range(session, "YM", "1h", T0, T0 + 100 * HOUR) == {"yahoo"}
+
     def test_an_empty_range_over_a_closed_market_is_recorded_as_covered(self, session):
         # Saturday, read off a calendar: the market is shut all day, so an
         # empty answer is the right one. The range is settled and must not be

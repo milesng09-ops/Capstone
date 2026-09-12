@@ -18,9 +18,12 @@ from dataclasses import dataclass
 
 import anyio
 
-from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade
+from app.analysis import find_fair_value_gaps, find_smt_divergences, find_swing_points
+from app.analysis.conditions import detectors_at_entry, unmet_condition
+from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade, entry_bar
 from app.backtesting.metrics import compute_metrics
 from app.backtesting.significance import (
+    BASELINE_OVERSAMPLE,
     DEFAULT_BASELINE_SAMPLES,
     baseline_inputs,
     baseline_seed,
@@ -195,6 +198,32 @@ class BacktestService:
             by_symbol.setdefault(item.symbol, []).append((match_id, window))
 
         series_by_symbol = {item.symbol: item for item in usable}
+
+        # ---- detector conditions --------------------------------------
+        # Computed once per symbol and consulted per match, always as of the
+        # bar the trade enters on.
+        detectors = self._detector_context(request, usable, primary)
+        within_ms = request.detectors.within_bars * interval_ms(interval)
+        filtered_total = 0
+        if request.detectors.any_required:
+            kept: dict[str, list] = {}
+            for symbol, entries in by_symbol.items():
+                candles = series_by_symbol[symbol].candles
+                for match_id, window in entries:
+                    reason = self._condition_reason(
+                        candles=candles,
+                        end_index=window.end_index,
+                        request=request,
+                        context=detectors.get(symbol),
+                        within_ms=within_ms,
+                    )
+                    if reason is None:
+                        kept.setdefault(symbol, []).append((match_id, window))
+                    else:
+                        filtered_total += 1
+                        logger.info("Match %s dropped: %s", match_id, reason)
+            by_symbol = kept
+
         all_trades: list[SimulatedTrade] = []
         skipped_total = 0
 
@@ -229,6 +258,8 @@ class BacktestService:
                 primary=primary,
                 by_symbol=by_symbol,
                 series_by_symbol=series_by_symbol,
+                detectors=detectors,
+                within_ms=within_ms,
             )
         )
 
@@ -239,6 +270,8 @@ class BacktestService:
             data_quality=self._data_quality_notes(series, usable, query, interval),
             extra_assumptions=self._extra_assumptions(query, request),
             baseline=baseline,
+            condition_filtered_matches=filtered_total,
+            conditions_applied=self._conditions_applied(request),
         )
 
         # ---- persist ---------------------------------------------------
@@ -423,6 +456,127 @@ class BacktestService:
         )
         return notes
 
+    # ------------------------------------------------------------------
+    def _detector_context(self, request: BacktestRequest, usable, primary: str) -> dict:
+        """Swings, gaps and divergences per symbol, computed once.
+
+        Empty when nothing is required, so a run that asks for no conditions
+        pays nothing for the machinery.
+        """
+
+        if not request.detectors.any_required:
+            return {}
+
+        strength = request.detectors.swing_strength
+        swings_by_symbol = {}
+        gaps_by_symbol = {}
+        for item in usable:
+            swings_by_symbol[item.symbol] = find_swing_points(
+                item.candles, strength=strength
+            )
+            gaps_by_symbol[item.symbol] = find_fair_value_gaps(item.candles)
+
+        context: dict = {}
+        for item in usable:
+            # SMT is a comparison, so it needs a partner. The primary is
+            # measured against the first other series; the others against the
+            # primary. With nothing to compare to there are no divergences,
+            # and a run requiring them will correctly find nothing.
+            reference = next(
+                (
+                    other
+                    for other in usable
+                    if other.symbol != item.symbol
+                    and (item.symbol == primary or other.symbol == primary)
+                ),
+                None,
+            )
+            divergences = []
+            if reference is not None and request.detectors.require_smt_divergence:
+                divergences = find_smt_divergences(
+                    item.candles,
+                    swings_by_symbol[item.symbol],
+                    reference.candles,
+                    swings_by_symbol[reference.symbol],
+                    primary_gaps=gaps_by_symbol[item.symbol],
+                    reference_gaps=gaps_by_symbol[reference.symbol],
+                )
+            context[item.symbol] = {
+                "gaps": gaps_by_symbol[item.symbol],
+                "swings": swings_by_symbol[item.symbol],
+                "divergences": divergences,
+            }
+        return context
+
+    def _condition_reason(
+        self, *, candles, end_index: int, request: BacktestRequest, context, within_ms: int
+    ) -> str | None:
+        """Why this match cannot be traded, or ``None`` if it can.
+
+        The entry bar comes from the engine's own helper, so the conditions
+        are read at exactly the bar the simulation would open on.
+        """
+
+        if context is None:
+            return "No detector analysis was available for this symbol."
+
+        entry = entry_bar(candles, end_index, request.trade)
+        if entry is None:
+            # The engine will skip it for the same reason; let it say so.
+            return None
+        entry_index, entry_price = entry
+
+        state = detectors_at_entry(
+            entry_price=entry_price,
+            entry_time=candles[entry_index].time,
+            direction=request.trade.direction,
+            gaps=context["gaps"],
+            swings=context["swings"],
+            divergences=context["divergences"],
+            within_ms=within_ms,
+            align_with_direction=request.detectors.align_with_direction,
+        )
+        return unmet_condition(
+            state,
+            require_fair_value_gap=request.detectors.require_fair_value_gap,
+            require_smt_divergence=request.detectors.require_smt_divergence,
+            require_swing_point=request.detectors.require_swing_point,
+        )
+
+    @staticmethod
+    def _conditions_applied(request: BacktestRequest) -> list[str]:
+        """One line per condition, for the notes tab."""
+
+        filters = request.detectors
+        if not filters.any_required:
+            return []
+
+        aligned = (
+            " pointing the same way as the trade"
+            if filters.align_with_direction
+            else " in either direction"
+        )
+        lines: list[str] = []
+        if filters.require_fair_value_gap:
+            lines.append(
+                f"Only matches whose entry price sat inside an unfilled fair value gap{aligned}."
+            )
+        if filters.require_smt_divergence:
+            lines.append(
+                f"Only matches with a valid SMT divergence{aligned} confirmed within "
+                f"{filters.within_bars} bars before entry."
+            )
+        if filters.require_swing_point:
+            lines.append(
+                f"Only matches with a swing point{aligned} confirmed within "
+                f"{filters.within_bars} bars before entry."
+            )
+        lines.append(
+            "Conditions are read at the entry bar using only what had been confirmed "
+            "by then, and the random-entry baseline is held to the same conditions."
+        )
+        return lines
+
     def _draw_baseline(
         self,
         *,
@@ -433,6 +587,8 @@ class BacktestService:
         primary: str,
         by_symbol: dict,
         series_by_symbol: dict,
+        detectors: dict,
+        within_ms: int,
     ):
         """The same rules at windows chosen by chance, pooled across symbols.
 
@@ -445,6 +601,14 @@ class BacktestService:
         The seed is derived from the selection and the rules, so the same
         backtest reproduces the same baseline.  It is reported alongside the
         figures for exactly that reason.
+
+        Detector conditions apply here too.  If a run only takes matches that
+        sat inside a fair value gap, a baseline free to enter anywhere would
+        no longer be measuring what the similarity search contributed -- it
+        would be measuring the conditions and the search together, and the
+        gap between them would credit the search for both.  Holding the
+        conditions constant on both sides leaves resemblance as the only
+        difference, which is the whole point of the comparison.
         """
 
         matched_total = sum(len(entries) for entries in by_symbol.values())
@@ -461,10 +625,15 @@ class BacktestService:
         )
 
         trades = []
+        drawn = 0
         for symbol, entries in by_symbol.items():
             share = len(entries) / matched_total
             samples = max(1, round(DEFAULT_BASELINE_SAMPLES * share))
             candles = series_by_symbol[symbol].candles
+            # Conditions reject most windows by design, so oversample when
+            # they are on: filtering 500 draws down to a handful would leave
+            # a baseline too noisy to read against anything.
+            draw = samples * BASELINE_OVERSAMPLE if request.detectors.any_required else samples
             inputs = baseline_inputs(
                 candles,
                 window_length=query_length,
@@ -473,14 +642,29 @@ class BacktestService:
                 # search applies when it builds `exclude`.
                 exclude_ranges=[exclusion] if symbol == primary else [],
                 required_future_bars=required_future_bars,
-                samples=samples,
+                samples=draw,
                 seed=seed,
             )
+            if request.detectors.any_required:
+                inputs = [
+                    item
+                    for item in inputs
+                    if self._condition_reason(
+                        candles=candles,
+                        end_index=item.end_index,
+                        request=request,
+                        context=detectors.get(symbol),
+                        within_ms=within_ms,
+                    )
+                    is None
+                ][:samples]
+            drawn += len(inputs)
             trades.extend(run_baseline(candles, request.trade, inputs))
 
-        return summarise_baseline(
-            trades, samples=DEFAULT_BASELINE_SAMPLES, seed=seed
-        )
+        # `samples` reports what was actually offered to the engine, not the
+        # nominal target: with conditions on, the two differ and the smaller
+        # number is the honest denominator.
+        return summarise_baseline(trades, samples=drawn, seed=seed)
 
     @staticmethod
     def _extra_assumptions(query, request: BacktestRequest) -> list[str]:

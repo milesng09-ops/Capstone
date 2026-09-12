@@ -56,6 +56,14 @@ Z_95 = 1.959963984540054
 #: observed trades -- and small enough to stay well inside one request.
 DEFAULT_BASELINE_SAMPLES = 500
 
+#: How many extra windows to draw when detector conditions are in force.
+#: Conditions reject most windows by design -- an unfilled gap containing the
+#: entry is uncommon -- so drawing the nominal number and filtering would
+#: leave a baseline of a handful of trades, too noisy to read anything
+#: against. Drawing wide and keeping the first `samples` that qualify holds
+#: the baseline's precision roughly where it is without conditions.
+BASELINE_OVERSAMPLE = 12
+
 
 @dataclass(frozen=True)
 class Baseline:

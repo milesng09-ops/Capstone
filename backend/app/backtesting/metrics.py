@@ -50,8 +50,11 @@ def compute_metrics(
     data_quality: list[str] | None = None,
     extra_assumptions: list[str] | None = None,
     baseline: Baseline | None = None,
+    condition_filtered_matches: int = 0,
+    conditions_applied: list[str] | None = None,
 ) -> BacktestSummary:
     assumptions = list(ASSUMPTIONS) + list(extra_assumptions or [])
+    assumptions.extend(conditions_applied or [])
     if baseline is not None and baseline.trades_executed:
         assumptions.extend(BASELINE_ASSUMPTIONS)
 
@@ -78,14 +81,15 @@ def compute_metrics(
             longest_winning_streak=0,
             longest_losing_streak=0,
             average_holding_bars=0.0,
-            sample_size_warning=(
-                "No trades were simulated. Loosen the similarity threshold, widen the "
-                "lookback range, or check that the trade rules are valid."
+            sample_size_warning=_nothing_traded_reason(
+                total_matches, condition_filtered_matches
             ),
             win_rate_low=0.0,
             win_rate_high=0.0,
             baseline=_baseline_out(baseline),
             baseline_p_value=None,
+            condition_filtered_matches=condition_filtered_matches,
+            conditions_applied=list(conditions_applied or []),
             same_bar_ambiguity_count=0,
             equity_curve=[],
             assumptions=assumptions,
@@ -163,6 +167,8 @@ def compute_metrics(
         win_rate_high=high,
         baseline=_baseline_out(baseline),
         baseline_p_value=p_value,
+        condition_filtered_matches=condition_filtered_matches,
+        conditions_applied=list(conditions_applied or []),
         sample_size_warning=warning,
         same_bar_ambiguity_count=sum(1 for trade in trades if trade.same_bar_ambiguity),
         equity_curve=equity_curve,
@@ -227,4 +233,33 @@ def _baseline_out(baseline: Baseline | None) -> BaselineSummary | None:
         average_return=baseline.average_return,
         expectancy=baseline.expectancy,
         seed=baseline.seed,
+    )
+
+
+def _nothing_traded_reason(total_matches: int, condition_filtered: int) -> str:
+    """Why the run is empty, in terms of the thing that actually emptied it.
+
+    An empty result has more than one cause and they want opposite responses.
+    Advising a wider lookback while every match was in fact found and then
+    dropped by a detector condition sends the user to change a setting that
+    was never the problem -- the same misdirection as telling someone their
+    range holds no candles when a provider quota was draining.
+    """
+
+    if condition_filtered and condition_filtered >= total_matches:
+        return (
+            f"All {total_matches} matching windows were found, then dropped because none "
+            "met the detector conditions. This is a statement about the conditions, not "
+            "about the setup: relax one, widen the bars they look back over, or turn off "
+            "direction alignment."
+        )
+    if condition_filtered:
+        return (
+            f"{condition_filtered} of {total_matches} matches were dropped by the detector "
+            "conditions, and the rest could not be simulated. Relax a condition, or check "
+            "that the trade rules are valid."
+        )
+    return (
+        "No trades were simulated. Loosen the similarity threshold, widen the "
+        "lookback range, or check that the trade rules are valid."
     )

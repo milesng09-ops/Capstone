@@ -25,6 +25,7 @@ import { useBars } from '@/hooks/useMarketData'
 import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
 import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
 import type {
+  DetectorFilters,
   Direction,
   EntryType,
   StopLossType,
@@ -77,6 +78,7 @@ export function StrategyPanel() {
   const testWindow = useWorkspace((state) => state.testWindow)
   const rules = useWorkspace((state) => state.rules)
   const search = useWorkspace((state) => state.search)
+  const detectors = useWorkspace((state) => state.detectors)
   const sizing = useWorkspace((state) => state.sizing)
 
   const setSelection = useWorkspace((state) => state.setSelection)
@@ -84,6 +86,7 @@ export function StrategyPanel() {
   const setTool = useWorkspace((state) => state.setTool)
   const updateRules = useWorkspace((state) => state.updateRules)
   const updateSearch = useWorkspace((state) => state.updateSearch)
+  const updateDetectors = useWorkspace((state) => state.updateDetectors)
   const resetStrategy = useWorkspace((state) => state.resetStrategy)
   const setActiveBacktestId = useWorkspace((state) => state.setActiveBacktestId)
 
@@ -157,6 +160,7 @@ export function StrategyPanel() {
       interval,
       rules,
       search,
+      detectors,
       rangeEnd: range.to,
       testWindow,
     })
@@ -369,6 +373,62 @@ export function StrategyPanel() {
         />
       </Disclosure>
 
+      {/* ---- what has to be standing for a match to count ---- */}
+      <Disclosure label="Conditions" summary={conditionsSummary(detectors)}>
+        <p className="text-2xs leading-relaxed text-muted-foreground">
+          A match that fails these is found but not traded. Each is read at the
+          bar the trade opens on, using only what had been confirmed by then.
+        </p>
+
+        <ToggleField
+          label="Inside a fair value gap"
+          hint="The entry price sat in a gap that was still unfilled at the time"
+          checked={detectors.require_fair_value_gap}
+          onChange={(require_fair_value_gap) =>
+            updateDetectors({ require_fair_value_gap })
+          }
+        />
+        <ToggleField
+          label="SMT divergence"
+          hint="The two symbols had already disagreed at a confirmed pivot"
+          checked={detectors.require_smt_divergence}
+          onChange={(require_smt_divergence) => updateDetectors({ require_smt_divergence })}
+        />
+        <ToggleField
+          label="Swing point"
+          hint="A pivot had been confirmed, not merely formed"
+          checked={detectors.require_swing_point}
+          onChange={(require_swing_point) => updateDetectors({ require_swing_point })}
+        />
+
+        <div className="grid grid-cols-2 gap-2">
+          <NumberField
+            label="Look back"
+            hint="How recently a swing or divergence must have been confirmed. Gaps are exempt: they stand until filled."
+            value={detectors.within_bars}
+            min={1}
+            max={500}
+            suffix="bars"
+            onChange={(within_bars) => updateDetectors({ within_bars })}
+          />
+          <NumberField
+            label="Swing strength"
+            hint="Bars either side a pivot must exceed before it counts as confirmed"
+            value={detectors.swing_strength}
+            min={1}
+            max={20}
+            onChange={(swing_strength) => updateDetectors({ swing_strength })}
+          />
+        </div>
+
+        <ToggleField
+          label="Match the trade direction"
+          hint="A long wants a bullish gap, a bullish divergence and a swing low"
+          checked={detectors.align_with_direction}
+          onChange={(align_with_direction) => updateDetectors({ align_with_direction })}
+        />
+      </Disclosure>
+
       {/* ---- everything set once ---- */}
       <Disclosure
         label="Advanced"
@@ -502,4 +562,17 @@ function Readout({ label, value }: { label: string; value: string }) {
       <span className="numeric">{value}</span>
     </div>
   )
+}
+
+
+/** "off" reads better than "0 of 3" for the common case of asking nothing. */
+function conditionsSummary(detectors: DetectorFilters): string {
+  const on = [
+    detectors.require_fair_value_gap && 'fair value gap',
+    detectors.require_smt_divergence && 'SMT',
+    detectors.require_swing_point && 'swing',
+  ].filter(Boolean) as string[]
+
+  if (on.length === 0) return 'none required'
+  return on.join(', ')
 }

@@ -84,6 +84,31 @@ class MatchInput:
     similarity: float
 
 
+def entry_bar(
+    candles: list[Candle], end_index: int, rules: TradeRules
+) -> tuple[int, float] | None:
+    """The bar a trade on this match enters at, and the price before costs.
+
+    Shared rather than inlined because two callers have to agree on it: the
+    simulation, and the detector conditions that decide whether the match is
+    tradeable at all.  A condition evaluated one bar away from the bar the
+    trade actually opens on would be reading a different moment than the one
+    it claims to describe -- and with a next-open entry that bar is in the
+    future of the pattern, which is exactly where leakage hides.
+
+    ``None`` means the entry bar does not exist.
+    """
+
+    if rules.entry_type == "next_open":
+        index = end_index + 1
+        if index >= len(candles):
+            return None
+        return index, candles[index].open
+    if end_index >= len(candles):
+        return None
+    return end_index, candles[end_index].close
+
+
 class BacktestEngine:
     """Simulates the configured rules over a list of historical matches."""
 
@@ -124,16 +149,13 @@ class BacktestEngine:
         candles = self._candles
         long = rules.direction == "long"
 
-        if rules.entry_type == "next_open":
-            entry_index = match.end_index + 1
-            if entry_index >= len(candles):
-                raise _SkipMatch("No candle available after the pattern for a next-open entry")
-            raw_entry = candles[entry_index].open
-            first_scan_index = entry_index
-        else:
-            entry_index = match.end_index
-            raw_entry = candles[entry_index].close
-            first_scan_index = entry_index + 1
+        entry = entry_bar(candles, match.end_index, rules)
+        if entry is None:
+            raise _SkipMatch("No candle available after the pattern for a next-open entry")
+        entry_index, raw_entry = entry
+        # A next-open entry is itself the first bar the trade can be resolved
+        # on; a close entry is resolved from the bar after it.
+        first_scan_index = entry_index if rules.entry_type == "next_open" else entry_index + 1
 
         if first_scan_index >= len(candles):
             raise _SkipMatch("No future candles available to simulate the trade")

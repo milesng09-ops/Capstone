@@ -203,7 +203,7 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
       <Metric
         label="Trades"
         value={formatInteger(summary.trades_executed)}
-        hint={`${summary.total_matches} matches found, ${summary.skipped_matches} skipped`}
+        hint={matchesHint(summary)}
       />
       <Metric
         label="Net return"
@@ -239,6 +239,20 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
       />
     </div>
   )
+}
+
+/**
+ * Where the matches went. A match dropped by a condition is not a failure to
+ * simulate, so it is counted and named separately from a skip -- otherwise
+ * "25 found, 22 skipped" reads as something going wrong.
+ */
+function matchesHint(summary: NonNullable<BacktestResult['summary']>): string {
+  const parts = [`${summary.total_matches} matches found`]
+  if (summary.condition_filtered_matches > 0) {
+    parts.push(`${summary.condition_filtered_matches} failed the conditions`)
+  }
+  parts.push(`${summary.skipped_matches} skipped`)
+  return parts.join(', ')
 }
 
 /**

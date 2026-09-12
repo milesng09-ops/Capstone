@@ -187,6 +187,40 @@ class TradeRules(BaseModel):
         return self
 
 
+class DetectorFilters(BaseModel):
+    """Conditions a match must meet at its entry bar to be traded at all.
+
+    All off by default: a run that asks for nothing behaves exactly as it did
+    before detectors could decide anything.
+    """
+
+    #: The entry price sat inside a fair value gap that was unfilled at the
+    #: time. Containment, not mere presence -- a gap elsewhere on the chart
+    #: says nothing about this entry.
+    require_fair_value_gap: bool = False
+    #: A valid SMT divergence had been confirmed within `within_bars`.
+    require_smt_divergence: bool = False
+    #: A swing point had been confirmed within `within_bars`.
+    require_swing_point: bool = False
+    #: How recently a swing or divergence must have been confirmed to count
+    #: as this trade's reason. Does not apply to gaps, which stay live until
+    #: filled however long that takes.
+    within_bars: int = Field(10, ge=1, le=500)
+    #: Require each detector to point the same way as the trade: a long wants
+    #: a bullish gap, a bullish divergence, a swing low.
+    align_with_direction: bool = True
+    #: Confirmation width for swing detection, which also feeds SMT.
+    swing_strength: int = Field(2, ge=1, le=20)
+
+    @property
+    def any_required(self) -> bool:
+        return (
+            self.require_fair_value_gap
+            or self.require_smt_divergence
+            or self.require_swing_point
+        )
+
+
 class SearchSettings(BaseModel):
     lookback_start: int
     lookback_end: int
@@ -214,6 +248,7 @@ class BacktestRequest(BaseModel):
     selection: SelectionSpec
     trade: TradeRules = Field(default_factory=TradeRules)
     search: SearchSettings
+    detectors: DetectorFilters = Field(default_factory=DetectorFilters)
 
     @model_validator(mode="after")
     def _check_symbols(self) -> "BacktestRequest":
@@ -320,6 +355,12 @@ class BacktestSummary(BaseModel):
     #: account for the setup being picked by eye, nor for repeated attempts on
     #: the same window; both are named in ``assumptions``.
     baseline_p_value: float | None = None
+    #: Matches dropped because they did not meet the detector conditions.
+    #: Separate from `skipped_matches`, which counts matches that could not be
+    #: simulated at all -- a match filtered out on purpose is not a failure.
+    condition_filtered_matches: int = 0
+    #: One line per condition that was required, for the notes.
+    conditions_applied: list[str] = Field(default_factory=list)
     sample_size_warning: str | None = None
     same_bar_ambiguity_count: int = 0
     equity_curve: list[EquityPoint] = Field(default_factory=list)

@@ -39,6 +39,32 @@ export interface SearchSettings {
   search_symbols: string[] | null
 }
 
+/**
+ * Conditions a match must meet at its entry bar to be traded at all.
+ *
+ * All off by default, so a run that asks for nothing behaves exactly as it
+ * did before the detectors could decide anything.
+ */
+export interface DetectorFilters {
+  /** The entry price sat inside a fair value gap that was unfilled then. */
+  require_fair_value_gap: boolean
+  require_smt_divergence: boolean
+  require_swing_point: boolean
+  /** How recently a swing or divergence must have been confirmed to count. */
+  within_bars: number
+  align_with_direction: boolean
+  swing_strength: number
+}
+
+export const DEFAULT_DETECTOR_FILTERS: DetectorFilters = {
+  require_fair_value_gap: false,
+  require_smt_divergence: false,
+  require_swing_point: false,
+  within_bars: 10,
+  align_with_direction: true,
+  swing_strength: 2,
+}
+
 export interface BacktestRequest {
   symbols: string[]
   primary_symbol: string
@@ -46,6 +72,7 @@ export interface BacktestRequest {
   selection: { start_time: number; end_time: number }
   trade: TradeRules
   search: SearchSettings
+  detectors: DetectorFilters
 }
 
 export interface PatternMatch {
@@ -141,6 +168,10 @@ export interface BacktestSummary {
    * the same selection.
    */
   baseline_p_value: number | null
+  /** Matches found, then dropped for not meeting the detector conditions. */
+  condition_filtered_matches: number
+  /** One line per condition that was required. */
+  conditions_applied: string[]
   sample_size_warning: string | null
   same_bar_ambiguity_count: number
   equity_curve: EquityPoint[]
@@ -241,4 +272,5 @@ export interface BacktestFormState {
   selection: SelectionRange | null
   rules: TradeRules
   search: SearchConfig
+  detectors: DetectorFilters
 }

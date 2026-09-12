@@ -19,11 +19,13 @@ import {
 } from '@/types/drawing'
 import { DEFAULT_ICT_SETTINGS, type IctSettings } from '@/types/ict'
 import {
+  DEFAULT_DETECTOR_FILTERS,
   DEFAULT_SEARCH_CONFIG,
   DEFAULT_SIZING,
   DEFAULT_TRADE_RULES,
   type SearchConfig,
   type SizingConfig,
+  type DetectorFilters,
   type TradeRules,
 } from '@/types/backtest'
 import { MAX_RANGE_DAYS } from '@/types/market'
@@ -134,6 +136,7 @@ interface WorkspaceState {
   testWindow: TimeWindow | null
   rules: TradeRules
   search: SearchConfig
+  detectors: DetectorFilters
   /** Client-side only: the engine answers in percentages and sizes nothing. */
   sizing: SizingConfig
 
@@ -176,6 +179,7 @@ interface WorkspaceState {
   setTestWindow: (window: TimeWindow | null) => void
   updateRules: (patch: Partial<TradeRules>) => void
   updateSearch: (patch: Partial<SearchConfig>) => void
+  updateDetectors: (patch: Partial<DetectorFilters>) => void
   updateSizing: (patch: Partial<SizingConfig>) => void
   resetStrategy: () => void
   setActiveBacktestId: (id: string | null) => void
@@ -237,6 +241,7 @@ export const useWorkspace = create<WorkspaceState>()(
       testWindow: null,
       rules: DEFAULT_TRADE_RULES,
       search: DEFAULT_SEARCH_CONFIG,
+      detectors: DEFAULT_DETECTOR_FILTERS,
       sizing: DEFAULT_SIZING,
       activeBacktestId: null,
       showTrades: true,
@@ -404,10 +409,16 @@ export const useWorkspace = create<WorkspaceState>()(
 
       updateRules: (patch) => set((state) => ({ rules: { ...state.rules, ...patch } })),
       updateSearch: (patch) => set((state) => ({ search: { ...state.search, ...patch } })),
+      updateDetectors: (patch) =>
+        set((state) => ({ detectors: { ...state.detectors, ...patch } })),
       updateSizing: (patch) => set((state) => ({ sizing: { ...state.sizing, ...patch } })),
 
       resetStrategy: () =>
-        set({ rules: DEFAULT_TRADE_RULES, search: DEFAULT_SEARCH_CONFIG }),
+        set({
+          rules: DEFAULT_TRADE_RULES,
+          search: DEFAULT_SEARCH_CONFIG,
+          detectors: DEFAULT_DETECTOR_FILTERS,
+        }),
 
       setActiveBacktestId: (activeBacktestId) =>
         // A trade id belongs to the run it came from, so it cannot survive a
@@ -491,6 +502,7 @@ export const useWorkspace = create<WorkspaceState>()(
         snapToSwings: state.snapToSwings,
         rules: state.rules,
         search: state.search,
+        detectors: state.detectors,
         sizing: state.sizing,
         showTrades: state.showTrades,
       }),

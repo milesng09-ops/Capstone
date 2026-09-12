@@ -168,6 +168,22 @@ def candle_provider(session: Session, symbol: str, interval: str) -> str | None:
 #: win rate computed across both is neither one thing nor the other.
 DEMO_PROVIDER = "demo"
 
+#: Providers whose bars are real market prices.  Everything else that can
+#: appear in the provider column is not: the generated demo feed, and any
+#: label this build no longer produces -- an experiment, a retired provider, a
+#: name that was only ever written by hand.
+#:
+#: The rule is keyed on what is *known to be real* rather than on the one
+#: known-fake name, because the fake names are open-ended and the real ones
+#: are not.  Keying it the other way is what let 770 bars labelled "stub" sit
+#: inside a real ES series through every startup repair: they were not "demo",
+#: so nothing recognised them as anything to look at, and a quarter of the
+#: chart was priced at 1.5 while the rest was priced at 7,267.
+#:
+#: Pinned against the provider classes by a test rather than imported from
+#: them -- the database layer must not depend on the provider package.
+REAL_PROVIDERS: frozenset[str] = frozenset({"massive", "yahoo"})
+
 
 def providers_in_range(
     session: Session, symbol: str, interval: str, start: int, end: int
@@ -200,15 +216,19 @@ def has_real_candles(session: Session, symbol: str, interval: str) -> bool:
         .where(
             CandleRow.symbol == symbol,
             CandleRow.interval == interval,
-            CandleRow.provider != DEMO_PROVIDER,
+            CandleRow.provider.in_(REAL_PROVIDERS),
         )
         .limit(1)
     )
     return found is not None
 
 
-def drop_demo_candles(session: Session, symbol: str, interval: str) -> int:
-    """Delete every generated bar in a series, and its coverage bookkeeping.
+def drop_unreal_candles(session: Session, symbol: str, interval: str) -> int:
+    """Delete every bar in a series that did not come from a real provider.
+
+    That is the generated demo feed and anything else unrecognised -- see
+    :data:`REAL_PROVIDERS` for why the test is "not known real" rather than
+    "known fake".
 
     Coverage goes wholesale rather than by provider: ranges are merged as they
     are recorded, so a row labelled with one provider can vouch for bars from
@@ -222,7 +242,7 @@ def drop_demo_candles(session: Session, symbol: str, interval: str) -> int:
             delete(CandleRow).where(
                 CandleRow.symbol == symbol,
                 CandleRow.interval == interval,
-                CandleRow.provider == DEMO_PROVIDER,
+                CandleRow.provider.not_in(REAL_PROVIDERS),
             )
         ).rowcount
         or 0
@@ -238,12 +258,14 @@ def drop_demo_candles(session: Session, symbol: str, interval: str) -> int:
 
 
 def repair_mixed_series(session: Session) -> dict[tuple[str, str], int]:
-    """Evict generated bars from any series that also holds real ones.
+    """Evict unreal bars from any series that also holds real ones.
 
     A series is legitimately all demo -- that is the no-API-key path, and it is
-    left alone.  What cannot stand is a series that is *part* generated, where
-    the two are drawn as one continuous price line and only the provider column
-    of each row can tell them apart.
+    left alone.  The same grace covers a series that is entirely unrecognised:
+    it may be the only record of something, and nothing is drawn beside real
+    prices to misread.  What cannot stand is a series that is *part* invented,
+    where the two are drawn as one continuous price line and only the provider
+    column of each row can tell them apart.
 
     Returns the number of bars removed per ``(symbol, interval)`` it touched.
     """
@@ -259,9 +281,13 @@ def repair_mixed_series(session: Session) -> dict[tuple[str, str], int]:
 
     removed: dict[tuple[str, str], int] = {}
     for (symbol, interval), providers in series.items():
-        if DEMO_PROVIDER not in providers or providers == {DEMO_PROVIDER}:
+        real = providers & REAL_PROVIDERS
+        unreal = providers - REAL_PROVIDERS
+        # Both halves must be present: one without the other is a series that
+        # is wholly one thing, and wholly one thing is readable.
+        if not real or not unreal:
             continue
-        count = drop_demo_candles(session, symbol, interval)
+        count = drop_unreal_candles(session, symbol, interval)
         if count:
             removed[(symbol, interval)] = count
     return removed

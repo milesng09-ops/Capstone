@@ -21,8 +21,9 @@ from sqlalchemy.orm import Session
 
 from app.database.repository import (
     DEMO_PROVIDER,
+    REAL_PROVIDERS,
     TimeRange,
-    drop_demo_candles,
+    drop_unreal_candles,
     has_real_candles,
     load_coverage,
     providers_in_range,
@@ -102,7 +103,7 @@ class TestDroppingGeneratedBars:
         save_candles(session, "1h", candles("ES", 3), DEMO_PROVIDER)
         save_candles(session, "1h", candles("ES", 2, start=T0 + 10 * HOUR), "massive")
 
-        removed = drop_demo_candles(session, "ES", "1h")
+        removed = drop_unreal_candles(session, "ES", "1h")
 
         assert removed == 3
         assert providers_in_range(session, "ES", "1h", T0, T0 + 20 * HOUR) == {"massive"}
@@ -115,7 +116,7 @@ class TestDroppingGeneratedBars:
         record_coverage(session, "ES", "1h", T0, T0 + 3 * HOUR, DEMO_PROVIDER)
         assert load_coverage(session, "ES", "1h") == [TimeRange(T0, T0 + 3 * HOUR)]
 
-        drop_demo_candles(session, "ES", "1h")
+        drop_unreal_candles(session, "ES", "1h")
 
         assert load_coverage(session, "ES", "1h") == []
 
@@ -123,7 +124,7 @@ class TestDroppingGeneratedBars:
         save_candles(session, "1h", candles("ES", 2), "massive")
         record_coverage(session, "ES", "1h", T0, T0 + 2 * HOUR, "massive")
 
-        assert drop_demo_candles(session, "ES", "1h") == 0
+        assert drop_unreal_candles(session, "ES", "1h") == 0
         assert load_coverage(session, "ES", "1h") == [TimeRange(T0, T0 + 2 * HOUR)]
 
 
@@ -273,3 +274,57 @@ class TestWhatTheServiceStores:
 
         covered = load_coverage(session, "ES", "1h")
         assert min(entry.start for entry in covered) == T0
+
+
+# --------------------------------------------------------------------------
+# Labels that are neither "demo" nor a provider this build runs
+# --------------------------------------------------------------------------
+class TestAnUnrecognisedLabelIsNotRealPrices:
+    """The ES regression: 770 bars written as "stub" inside a real series.
+
+    Nothing produces that label now, and nothing did for long -- which is the
+    point.  The invariant has to hold for names this build has never heard of,
+    because those are exactly the ones no guard is written against.
+    """
+
+    def test_the_real_set_matches_the_providers_that_exist(self):
+        # Pins the frozenset against the classes instead of duplicating them:
+        # a new provider that forgets to register here would have its bars
+        # evicted from every mixed series, silently.
+        from app.providers.massive_provider import MassiveProvider
+        from app.providers.yahoo_provider import YahooProvider
+        from app.providers.demo_provider import DemoProvider
+
+        assert REAL_PROVIDERS == {MassiveProvider.name, YahooProvider.name}
+        assert DemoProvider.name not in REAL_PROVIDERS
+
+    def test_a_stub_label_does_not_count_as_real_prices(self, session):
+        save_candles(session, "1h", candles("ES", 3), "stub")
+        assert has_real_candles(session, "ES", "1h") is False
+
+    def test_it_is_evicted_when_a_real_provider_shares_the_series(self, session):
+        save_candles(session, "1h", candles("ES", 4), "stub")
+        save_candles(session, "1h", candles("ES", 3, start=T0 + 10 * HOUR), "massive")
+
+        removed = repair_mixed_series(session)
+
+        assert removed == {("ES", "1h"): 4}
+        assert has_real_candles(session, "ES", "1h") is True
+        assert providers_in_range(
+            session, "ES", "1h", T0, T0 + 100 * HOUR
+        ) == {"massive"}
+
+    def test_a_series_that_is_only_stub_is_left_alone(self, session):
+        # Same grace an all-demo series gets: nothing real is drawn beside it,
+        # so there is no continuous price line to misread.
+        save_candles(session, "1h", candles("ES", 3), "stub")
+
+        assert repair_mixed_series(session) == {}
+        assert drop_unreal_candles(session, "ES", "1h") == 3
+
+    def test_demo_and_stub_both_go_when_real_bars_arrive(self, session):
+        save_candles(session, "1h", candles("ES", 2), DEMO_PROVIDER)
+        save_candles(session, "1h", candles("ES", 2, start=T0 + 5 * HOUR), "stub")
+        save_candles(session, "1h", candles("ES", 3, start=T0 + 10 * HOUR), "massive")
+
+        assert repair_mixed_series(session) == {("ES", "1h"): 4}

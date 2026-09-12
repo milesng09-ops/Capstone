@@ -28,7 +28,7 @@ from app.database.repository import (
     DEMO_PROVIDER,
     TimeRange,
     candle_provider,
-    drop_demo_candles,
+    drop_unreal_candles,
     has_real_candles,
     load_candles,
     load_coverage,
@@ -428,10 +428,10 @@ class CandleService:
                     )
                     return _PersistOutcome.DECLINED_GENERATED
             elif bars:
-                evicted = drop_demo_candles(session, symbol, store_interval)
+                evicted = drop_unreal_candles(session, symbol, store_interval)
                 if evicted:
                     logger.info(
-                        "Evicted %d generated bars from %s %s now that %s can serve it",
+                        "Evicted %d unreal bars from %s %s now that %s can serve it",
                         evicted,
                         symbol,
                         store_interval,

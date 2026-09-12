@@ -27,14 +27,8 @@ import {
   useWorkspace,
   type ChartLayout,
 } from '@/store/workspace'
-import {
-  INTERVAL_LABELS,
-  INTERVALS,
-  PROVIDER_LABELS,
-  SYMBOLS,
-  type Interval,
-  type SymbolKey,
-} from '@/types/market'
+import { PROVIDER_LABELS, SYMBOLS, type SymbolKey } from '@/types/market'
+import { IntervalPicker } from '@/components/layout/IntervalPicker'
 import { formatDateTime, formatNumber } from '@/utils/format'
 import type { BacktestListItem } from '@/types/backtest'
 
@@ -48,12 +42,10 @@ export function TopBar() {
 
   const primarySymbol = useWorkspace((state) => state.primarySymbol)
   const compareSymbols = useWorkspace((state) => state.compareSymbols)
-  const interval = useWorkspace((state) => state.interval)
   const activeId = useWorkspace((state) => state.activeBacktestId)
 
   const setPrimarySymbol = useWorkspace((state) => state.setPrimarySymbol)
   const toggleCompareSymbol = useWorkspace((state) => state.toggleCompareSymbol)
-  const setInterval = useWorkspace((state) => state.setInterval)
   const setActiveBacktestId = useWorkspace((state) => state.setActiveBacktestId)
 
   const status = statusQuery.data
@@ -102,12 +94,7 @@ export function TopBar() {
 
       <span className="bar-divider" />
 
-      <SegmentedControl<Interval>
-        variant="plain"
-        value={interval}
-        options={INTERVALS.map((item) => ({ value: item, label: INTERVAL_LABELS[item] }))}
-        onChange={setInterval}
-      />
+      <IntervalPicker />
 
       <span className="bar-divider hidden md:block" />
 

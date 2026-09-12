@@ -17,7 +17,13 @@ from __future__ import annotations
 from app.database.repository import TimeRange
 from app.providers.futures_calendar import EXCHANGE_TIMEZONE
 from app.providers.trading_hours import trading_hours_between
-from app.utils.intervals import DAY_MS, HOUR_MS, get_interval, interval_ms
+from app.utils.intervals import (
+    DAY_MS,
+    HOUR_MS,
+    get_interval,
+    interval_ms,
+    is_calendar_anchored,
+)
 from app.utils.timeutils import now_ms
 
 #: Requested interval -> interval actually persisted.
@@ -28,13 +34,27 @@ from app.utils.timeutils import now_ms
 #: the open six hours into the bar. Aggregating from hours is what lets the
 #: daily candle start where the trading day starts -- and it costs nothing,
 #: because 1h, 4h and 6h already share that same stored series.
+#: Weekly and monthly are built from the same hourly series as everything
+#: from 1h up, which bounds how much history they can show: 20,000 stored bars
+#: is about 1,200 calendar days of trading hours, and the intraday history cap
+#: cuts that to 730. So a monthly chart reaches about two years, not ten.
+#: Storing a daily series of its own would lift that, and would mean deciding
+#: how a vendor's calendar-midnight daily bar is reconciled with a session
+#: that opens at 17:00 -- the question `1d` is aggregated from hours to avoid.
 STORAGE_INTERVAL: dict[str, str] = {
+    "1m": "1m",
+    "2m": "1m",
+    "3m": "1m",
     "5m": "5m",
     "15m": "15m",
+    "30m": "15m",
+    "90m": "15m",
     "1h": "1h",
     "4h": "1h",
     "6h": "1h",
     "1d": "1h",
+    "1w": "1h",
+    "1mo": "1h",
 }
 
 #: Number of trailing bars that are always considered stale.
@@ -63,7 +83,14 @@ def edge_padding_ms(interval: str) -> int:
     return max(
         interval_ms(candidate)
         for candidate, target in STORAGE_INTERVAL.items()
-        if target == store
+        # Calendar intervals are excluded on purpose. Padding a request by a
+        # whole month so that a monthly bucket is never partial would make
+        # every 1h view of the same range fetch a different window, losing the
+        # shared-window property this function exists to protect -- and against
+        # a five-a-minute quota that property is worth far more than a whole
+        # bucket at the left edge, which every charting platform shows partial
+        # anyway.
+        if target == store and not is_calendar_anchored(candidate)
     )
 
 

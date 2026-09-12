@@ -4,26 +4,84 @@
 export const SYMBOLS = ['ES', 'NQ', 'YM'] as const
 export type SymbolKey = (typeof SYMBOLS)[number]
 
-export const INTERVALS = ['5m', '15m', '1h', '4h', '6h', '1d'] as const
+/**
+ * Every interval the workspace can chart, finest first.
+ *
+ * The month is `1mo`, not `1M`: interval keys travel through query strings,
+ * `localStorage` and a SQLite column, and `1M` differing from `1m` only in
+ * case is a bug waiting for a collation somewhere along that path. The label
+ * below is free to say `1M`; the wire never does.
+ */
+export const INTERVALS = [
+  '1m',
+  '2m',
+  '3m',
+  '5m',
+  '15m',
+  '30m',
+  '1h',
+  '90m',
+  '4h',
+  '6h',
+  '1d',
+  '1w',
+  '1mo',
+] as const
 export type Interval = (typeof INTERVALS)[number]
 
 export const INTERVAL_LABELS: Record<Interval, string> = {
+  '1m': '1m',
+  '2m': '2m',
+  '3m': '3m',
   '5m': '5m',
   '15m': '15m',
+  '30m': '30m',
   '1h': '1H',
+  '90m': '90m',
   '4h': '4H',
   '6h': '6H',
   '1d': '1D',
+  '1w': '1W',
+  '1mo': '1M',
 }
 
-/** Milliseconds per interval. Used for range maths on the client. */
+/**
+ * The intervals shown inline in the top bar until the trader changes them.
+ *
+ * Thirteen buttons do not fit a toolbar, and a list that long is slower to
+ * read than it is to open a menu. These five are the ones the workspace
+ * shipped with; anything can be pinned beside them.
+ */
+export const DEFAULT_FAVOURITE_INTERVALS: Interval[] = ['5m', '15m', '1h', '4h', '1d']
+
+/** How the full list is grouped in the picker. */
+export const INTERVAL_GROUPS: { label: string; intervals: Interval[] }[] = [
+  { label: 'Minutes', intervals: ['1m', '2m', '3m', '5m', '15m', '30m'] },
+  { label: 'Hours', intervals: ['1h', '90m', '4h', '6h'] },
+  { label: 'Days', intervals: ['1d', '1w', '1mo'] },
+]
+
+/**
+ * Milliseconds per interval. Used for range maths on the client.
+ *
+ * `1mo` is nominal -- months are not all the same length, and the backend
+ * places monthly buckets from the calendar rather than from this number. It
+ * is here for estimating how many bars a window holds and nothing else.
+ */
 export const INTERVAL_MS: Record<Interval, number> = {
+  '1m': 60_000,
+  '2m': 2 * 60_000,
+  '3m': 3 * 60_000,
   '5m': 5 * 60_000,
   '15m': 15 * 60_000,
+  '30m': 30 * 60_000,
   '1h': 60 * 60_000,
+  '90m': 90 * 60_000,
   '4h': 4 * 60 * 60_000,
   '6h': 6 * 60 * 60_000,
   '1d': 24 * 60 * 60_000,
+  '1w': 7 * 24 * 60 * 60_000,
+  '1mo': 30 * 24 * 60 * 60_000,
 }
 
 /**
@@ -36,15 +94,30 @@ export const INTERVAL_MS: Record<Interval, number> = {
  * an error: during the 2026-09-05 review, 90 days of 5-minute bars was
  * selected, failed, and cost twenty minutes of working out why.
  *
+ * The cap is a property of the interval the backend *stores*, not the one on
+ * screen: 4h, 6h, 1d, 1w and 1mo are all built from the same hourly series,
+ * so they share its limit -- which is also why a monthly chart reaches about
+ * two years rather than ten. One- to three-minute bars are stored as minutes
+ * and run out far sooner; 1m is held to a week because that is all Yahoo
+ * keeps, and a silently truncated week looks like missing market rather than
+ * a vendor limit.
+ *
  * Keep in step with `max_bars_per_request` in the backend settings.
  */
 export const MAX_RANGE_DAYS: Record<Interval, number> = {
+  '1m': 7,
+  '2m': 14,
+  '3m': 14,
   '5m': 90,
   '15m': 180,
+  '30m': 180,
   '1h': 730,
+  '90m': 180,
   '4h': 730,
   '6h': 730,
   '1d': 730,
+  '1w': 730,
+  '1mo': 730,
 }
 
 export interface Instrument {

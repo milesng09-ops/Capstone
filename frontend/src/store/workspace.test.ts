@@ -9,6 +9,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { longestRange, useWorkspace } from '@/store/workspace'
 import type { Drawing } from '@/types/drawing'
+import {
+  DEFAULT_FAVOURITE_INTERVALS,
+  INTERVALS,
+  MAX_RANGE_DAYS,
+} from '@/types/market'
 import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
 
 function level(id: string, price = 100, symbol = 'NQ'): Drawing {
@@ -223,6 +228,63 @@ describe('how much history an interval can carry', () => {
     expect(longestRange('15m')).toBe(180)
     expect(longestRange('1h')).toBe(730)
     expect(longestRange('1d')).toBe(730)
+  })
+
+  it('offers every interval a preset it can actually load', () => {
+    // The guard that matters for the minute intervals: 1m runs out of stored
+    // bars in three weeks, so without a preset below 30 days the shortest
+    // offer would already be one the backend refuses -- a button that only
+    // returns an error.
+    for (const interval of INTERVALS) {
+      expect(longestRange(interval)).toBeLessThanOrEqual(MAX_RANGE_DAYS[interval])
+    }
+  })
+
+  it('holds the minute intervals to what the vendors keep', () => {
+    expect(longestRange('1m')).toBe(7)
+    expect(longestRange('2m')).toBe(14)
+    expect(longestRange('90m')).toBe(180)
+    expect(longestRange('1w')).toBe(730)
+    expect(longestRange('1mo')).toBe(730)
+  })
+
+  it('brings a long range down when switching to a minute interval', () => {
+    useWorkspace.setState({ interval: '1h', rangeDays: 730 })
+    useWorkspace.getState().setInterval('1m')
+
+    expect(useWorkspace.getState().rangeDays).toBe(7)
+  })
+})
+
+describe('pinned intervals', () => {
+  beforeEach(() => {
+    useWorkspace.setState({ favouriteIntervals: DEFAULT_FAVOURITE_INTERVALS })
+  })
+
+  const pinned = () => useWorkspace.getState().favouriteIntervals
+
+  it('pins an interval into the canonical order, not the order it was pressed', () => {
+    // A toolbar whose buttons sit in the order they happened to be added is
+    // one you have to read every time instead of reaching for by position.
+    useWorkspace.getState().toggleFavouriteInterval('1w')
+    useWorkspace.getState().toggleFavouriteInterval('3m')
+
+    expect(pinned()).toEqual(['3m', '5m', '15m', '1h', '4h', '1d', '1w'])
+  })
+
+  it('unpins one that is already there', () => {
+    useWorkspace.getState().toggleFavouriteInterval('4h')
+
+    expect(pinned()).toEqual(['5m', '15m', '1h', '1d'])
+  })
+
+  it('refuses to empty the row', () => {
+    // With nothing pinned there is no button showing which interval is
+    // current, so the bar reads as though none is selected.
+    useWorkspace.setState({ favouriteIntervals: ['1h'] })
+    useWorkspace.getState().toggleFavouriteInterval('1h')
+
+    expect(pinned()).toEqual(['1h'])
   })
 })
 

@@ -56,12 +56,18 @@ MASSIVE_PRODUCT_MAP: dict[str, str] = {
 }
 
 #: Canonical interval -> Massive resolution string.  Massive wants a count and
-#: a unit separated by a space; ``1h`` is rejected outright.  Only the four
-#: intervals the cache actually stores are listed, so 4h and 6h are aggregated
-#: from 1h by the existing chain rather than requested here.
+#: a unit separated by a space; ``1h`` is rejected outright.
+#:
+#: Only the resolutions the vendor is *known* to serve are listed.  Everything
+#: else in the vocabulary -- 2m, 3m, 90m, 4h, 6h, weekly, monthly -- is built
+#: from one of these by the aggregation chain, which is strictly safer than
+#: guessing at a spelling: a wrong guess here is a request that fails against
+#: the live API and costs a slot of a five-a-minute quota to find out.
 MASSIVE_INTERVAL_MAP: dict[str, str] = {
+    "1m": "1 min",
     "5m": "5 min",
     "15m": "15 min",
+    "30m": "30 min",
     "1h": "1 hour",
     "1d": "1 day",
 }

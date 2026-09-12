@@ -31,7 +31,12 @@ import {
   type LearningSettings,
   type TradeRules,
 } from '@/types/backtest'
-import { DEFAULT_CHART_SETTINGS, MAX_RANGE_DAYS } from '@/types/market'
+import {
+  DEFAULT_CHART_SETTINGS,
+  DEFAULT_FAVOURITE_INTERVALS,
+  INTERVALS,
+  MAX_RANGE_DAYS,
+} from '@/types/market'
 import type {
   ChartSettings,
   Interval,
@@ -51,8 +56,14 @@ import {
 /** Which panel is docked in the right-hand column. */
 export type SidePanel = 'analysis' | 'strategy'
 
-/** History loaded into the chart, in days. */
-export const RANGE_PRESETS = [30, 60, 90, 180, 365, 730] as const
+/**
+ * History loaded into the chart, in days.
+ *
+ * The two short presets exist for the minute intervals: a 1m chart runs out
+ * of stored bars in three weeks and Yahoo only keeps a week of them, so
+ * without something under 30 the shortest offer would already be too long.
+ */
+export const RANGE_PRESETS = [7, 14, 30, 60, 90, 180, 365, 730] as const
 export type RangeDays = (typeof RANGE_PRESETS)[number]
 
 /**
@@ -98,6 +109,14 @@ interface WorkspaceState {
   compareSymbols: SymbolKey[]
   interval: Interval
   rangeDays: RangeDays
+  /**
+   * Intervals pinned to the top bar.
+   *
+   * The full list is thirteen long, which is more than a toolbar can hold and
+   * more than an eye can scan. Everything stays reachable from the menu; this
+   * is only which ones are one click away.
+   */
+  favouriteIntervals: Interval[]
 
   // ---- layout ---------------------------------------------------------
   /** Which side panel is docked, or `null` when the column is closed. */
@@ -177,6 +196,7 @@ interface WorkspaceState {
   setPrimarySymbol: (symbol: SymbolKey) => void
   toggleCompareSymbol: (symbol: SymbolKey) => void
   setInterval: (interval: Interval) => void
+  toggleFavouriteInterval: (interval: Interval) => void
   setSidePanel: (panel: SidePanel | null) => void
   setResultsOpen: (open: boolean) => void
   setSidebarRatio: (ratio: number) => void
@@ -247,6 +267,7 @@ export const useWorkspace = create<WorkspaceState>()(
       compareSymbols: ['ES'],
       interval: '1h',
       rangeDays: 180,
+      favouriteIntervals: DEFAULT_FAVOURITE_INTERVALS,
 
       sidePanel: 'strategy',
       resultsOpen: true,
@@ -319,6 +340,27 @@ export const useWorkspace = create<WorkspaceState>()(
           // survives: "test August" means the same thing at any resolution.
           selection: null,
         })),
+
+      /**
+       * Pin or unpin an interval, keeping the row in the canonical order.
+       *
+       * Sorted rather than appended so the row reads finest-to-coarsest
+       * however it was built up -- a toolbar whose buttons are in the order
+       * they happened to be pressed is one you have to read every time.
+       * The last favourite cannot be removed: an empty row would leave the
+       * current interval with nothing showing it is selected.
+       */
+      toggleFavouriteInterval: (interval) =>
+        set((state) => {
+          const pinned = state.favouriteIntervals.includes(interval)
+          if (pinned && state.favouriteIntervals.length === 1) return state
+          const next = pinned
+            ? state.favouriteIntervals.filter((item) => item !== interval)
+            : [...state.favouriteIntervals, interval]
+          return {
+            favouriteIntervals: INTERVALS.filter((item) => next.includes(item)),
+          }
+        }),
 
       setRangeDays: (rangeDays) =>
         set((state) => ({
@@ -532,6 +574,7 @@ export const useWorkspace = create<WorkspaceState>()(
         compareSymbols: state.compareSymbols,
         interval: state.interval,
         rangeDays: state.rangeDays,
+        favouriteIntervals: state.favouriteIntervals,
         chartLayout: state.chartLayout,
         sidePanel: state.sidePanel,
         resultsOpen: state.resultsOpen,

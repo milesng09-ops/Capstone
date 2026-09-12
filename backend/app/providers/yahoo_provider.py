@@ -43,16 +43,39 @@ YAHOO_SYMBOL_MAP: dict[str, str] = {
 }
 
 YAHOO_INTERVAL_MAP: dict[str, str] = {
+    "1m": "1m",
+    "2m": "2m",
     "5m": "5m",
     "15m": "15m",
+    "30m": "30m",
     "1h": "1h",
     "1d": "1d",
 }
 
-#: Maximum days of history Yahoo will return per interval.
-MAX_HISTORY_DAYS: dict[str, int] = {"5m": 58, "15m": 58, "1h": 720, "1d": 20_000}
+#: Maximum days of history Yahoo will return per interval.  One-minute bars
+#: are the sharp one: Yahoo keeps only the last week of them, so a request for
+#: a month of 1m silently returns the last seven days unless it is clamped
+#: here, and the gap that leaves looks like missing market rather than a
+#: vendor limit.
+MAX_HISTORY_DAYS: dict[str, int] = {
+    "1m": 7,
+    "2m": 58,
+    "5m": 58,
+    "15m": 58,
+    "30m": 58,
+    "1h": 720,
+    "1d": 20_000,
+}
 #: Maximum days per individual request (chunking window).
-MAX_REQUEST_DAYS: dict[str, int] = {"5m": 55, "15m": 55, "1h": 700, "1d": 5_000}
+MAX_REQUEST_DAYS: dict[str, int] = {
+    "1m": 7,
+    "2m": 55,
+    "5m": 55,
+    "15m": 55,
+    "30m": 55,
+    "1h": 700,
+    "1d": 5_000,
+}
 
 
 class YahooProvider(MarketDataProvider):

@@ -14,7 +14,7 @@ Bucketing conventions (documented in the UI under "Assumptions"):
 * Intervals of an hour and under are anchored to the UTC epoch: they divide
   the session evenly from either origin, so the cheaper arithmetic is also
   the correct one.
-* ``4h``, ``6h`` and ``1d`` are anchored to the **session open** -- 17:00 in
+* ``90m``, ``4h``, ``6h`` and ``1d`` are anchored to the **session open** -- 17:00 in
   the instrument's exchange timezone, the boundary
   :mod:`app.providers.trading_hours` already draws the trading day on.  So a
   4h bar opens at 17:00 / 21:00 / 01:00 / 05:00 / 09:00 / 13:00 Chicago
@@ -29,6 +29,23 @@ is silently an hour out for the other -- bars opening mid-session, and the
 exchange's own zone is what makes the grid track the session across a
 daylight-saving change.
 
+* ``1w`` and ``1mo`` are anchored to the **calendar**, because neither has
+  a fixed length.  A week starts at the Sunday session open; a month starts
+  at the session open of its first trading day, which is the evening of the
+  last day of the month before -- the same convention the daily bar already
+  uses, where a bar stamped Sunday evening is Monday's trading.
+
+A month whose first day is a Saturday or Sunday anchors on an instant the
+market is shut -- November 2026 opens at 17:00 on Saturday 31 October.  That
+is a label, not a mis-bucketing: no bar exists between that instant and the
+Sunday reopen, so nothing can land in the wrong month because of it.
+
+**No partial bucket is ever dropped.**  The trailing bucket of a series is
+returned as it stands, and the caller decides whether a forming bar is
+wanted.  Counting bars to decide would need the number a *complete* bucket
+holds, and there is no such number here: a daily bar is 23 hours, not 24, a
+weekly one is five sessions, not seven, and a holiday shortens both.
+
 **Transition days.** A session day is 23 or 25 hours long across a
 daylight-saving change, so the last bucket of that day is short or an extra
 partial one appears.  The grid re-anchors at each session open rather than
@@ -41,6 +58,8 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from app.models.domain import Candle
 from app.providers.trading_hours import SESSION_OPEN_HOUR
@@ -58,6 +77,9 @@ def bucket_start(timestamp_ms: int, interval: str, timezone: str = "America/Chic
     """
 
     spec = get_interval(interval)
+    if spec.calendar is not None:
+        return _calendar_bucket_start(timestamp_ms, spec.calendar, timezone)
+
     if not spec.session_anchored:
         # Python's modulo floors towards negative infinity, so this is also
         # correct for pre-epoch timestamps.
@@ -104,13 +126,83 @@ def _session_open_cached(timestamp_ms: int, timezone: str) -> int:
     return opening
 
 
+#: The calendar bucket last computed, as (kind, timezone, start, next start).
+#: Bars arrive in ascending order and a week holds five sessions, a month
+#: twenty-odd, so consecutive bars nearly always answer from here.
+_LAST_CALENDAR: tuple[str, str, int, int] | None = None
+
+
+def _calendar_bucket_start(timestamp_ms: int, kind: str, timezone: str) -> int:
+    """First millisecond of the week or month ``timestamp_ms`` trades in.
+
+    Both are resolved through the *session* the instant belongs to rather than
+    through the calendar directly, so that Sunday evening -- which is already
+    Monday's trading -- lands in the week and the month Monday belongs to,
+    exactly as it does for the daily bar.
+    """
+
+    global _LAST_CALENDAR
+
+    cached = _LAST_CALENDAR
+    if cached is not None:
+        c_kind, c_zone, start, nxt = cached
+        if c_kind == kind and c_zone == timezone and start <= timestamp_ms < nxt:
+            return start
+
+    opening = _session_open_cached(timestamp_ms, timezone)
+    tz = ZoneInfo(timezone)
+    local_open = datetime.fromtimestamp(opening / 1000, tz=tz)
+
+    anchor = _anchor_date(local_open, kind)
+    start = _session_open_on(anchor, tz)
+    nxt = _session_open_on(_next_anchor_date(anchor, kind), tz)
+    _LAST_CALENDAR = (kind, timezone, start, nxt)
+    return start
+
+
+def _anchor_date(local_open: datetime, kind: str) -> date:
+    """Exchange-local date whose session open begins this week or month."""
+
+    if kind == "week":
+        # Monday is 0 and Sunday is 6, so this counts days back to Sunday --
+        # the evening the trading week reopens.
+        return local_open.date() - timedelta(days=(local_open.weekday() + 1) % 7)
+
+    # The evening open belongs to the next day's trading, so a session sits in
+    # the month of the day it *ends* on. The month therefore begins on the
+    # evening before its first day.
+    trade_date = local_open.date() + timedelta(days=1)
+    return date(trade_date.year, trade_date.month, 1) - timedelta(days=1)
+
+
+def _next_anchor_date(anchor: date, kind: str) -> date:
+    if kind == "week":
+        return anchor + timedelta(days=7)
+    # `anchor` is the evening before the first of the month, so the day after
+    # it is the first; stepping a month on from there and back one evening
+    # gives the next month's anchor without any day-count arithmetic.
+    first = anchor + timedelta(days=1)
+    year, month = (first.year + 1, 1) if first.month == 12 else (first.year, first.month + 1)
+    return date(year, month, 1) - timedelta(days=1)
+
+
+def _session_open_on(local_date: date, tz: ZoneInfo) -> int:
+    """UTC milliseconds of the session open on an exchange-local date.
+
+    Resolved on the date itself rather than by adding a number of hours, so a
+    week or month spanning a daylight-saving change still opens at 17:00 local
+    on both sides of it.
+    """
+
+    opening = datetime.combine(local_date, time(hour=SESSION_OPEN_HOUR), tzinfo=tz)
+    return int(opening.timestamp() * 1000)
+
+
 def aggregate_candles(
     candles: list[Candle],
     target_interval: str,
     *,
     timezone: str = "America/Chicago",
-    drop_incomplete: bool = False,
-    source_interval: str | None = None,
 ) -> list[Candle]:
     """Combine ``candles`` into ``target_interval`` buckets.
 
@@ -121,7 +213,6 @@ def aggregate_candles(
         return []
 
     buckets: "OrderedDict[int, Candle]" = OrderedDict()
-    counts: dict[int, int] = {}
 
     for candle in candles:
         key = bucket_start(candle.time, target_interval, timezone)
@@ -136,27 +227,13 @@ def aggregate_candles(
                 close=candle.close,
                 volume=candle.volume,
             )
-            counts[key] = 1
             continue
         current.high = max(current.high, candle.high)
         current.low = min(current.low, candle.low)
         current.close = candle.close
         current.volume += candle.volume
-        counts[key] += 1
 
-    aggregated = [buckets[key] for key in sorted(buckets)]
-
-    if drop_incomplete and source_interval and aggregated:
-        expected = max(
-            1,
-            get_interval(target_interval).milliseconds
-            // get_interval(source_interval).milliseconds,
-        )
-        last_key = aggregated[-1].time
-        if counts.get(last_key, 0) < expected:
-            aggregated.pop()
-
-    return aggregated
+    return [buckets[key] for key in sorted(buckets)]
 
 
 def needs_aggregation(requested: str, native: str) -> bool:

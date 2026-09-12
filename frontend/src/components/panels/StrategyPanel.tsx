@@ -456,6 +456,15 @@ export function StrategyPanel() {
         />
 
         {learning.enabled && (
+          <ToggleField
+            label="Three weights, not seven"
+            hint="Fits path, candle and context as groups. Fewer parameters for a noisy objective, and the whole space is searched rather than walked."
+            checked={learning.grouped}
+            onChange={(grouped) => updateLearning({ grouped })}
+          />
+        )}
+
+        {learning.enabled && (
           <NumberField
             label="Ask from"
             hint="Windows across the training half used as queries. Fitting to one window lets seven parameters memorise its neighbourhood; asking from many tests whether similarity is predictive at all."

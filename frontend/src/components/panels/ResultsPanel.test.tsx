@@ -195,6 +195,8 @@ describe('when the similarity weights were fitted', () => {
     passes: 2,
     objective: 'expectancy',
     dropped_blocks: ['returns'],
+    group_weights: null,
+    exhaustive: false,
     holdout_score: -0.1044,
     holdout_default_score: -0.0702,
     holdout_windows: 1434,

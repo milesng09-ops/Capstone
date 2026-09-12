@@ -31,6 +31,7 @@ from app.backtesting.attempts import configuration_key
 from app.learning.block_weights import (
     block_projections,
     fit_block_weights,
+    fit_group_weights,
     multi_block_projections,
     score_weights,
 )
@@ -65,7 +66,9 @@ from app.models.schemas import (
 from app.providers.instruments import get_instrument
 from app.services.candle_service import CandleService, get_candle_service
 from app.services.pattern_service import (
+    BLOCK_GROUPS,
     BLOCK_WEIGHTS,
+    GROUP_ORDER,
     PatternError,
     PatternWindow,
     build_block_matrices,
@@ -102,6 +105,8 @@ def _learned_out(learned, train_range):
         objective=learned.objective,
         dropped_blocks=learned.dropped_blocks,
         query_windows=learned.query_windows,
+        group_weights=learned.group_weights,
+        exhaustive=learned.exhaustive,
         holdout_score=learned.holdout_score,
         holdout_default_score=learned.holdout_default_score,
         holdout_windows=learned.holdout_windows,
@@ -839,7 +844,7 @@ class BacktestService:
         defaults = {name: all_defaults[name] for name in names}
         top_k = min(request.search.maximum_matches, len(train_starts))
 
-        learned = fit_block_weights(
+        shared = dict(
             block_names=names,
             dots=projection[0],
             query_norms=projection[1],
@@ -849,6 +854,11 @@ class BacktestService:
             top_k=top_k,
             objective="expectancy",
             valid_mask=mask_for(train_starts),
+        )
+        learned = (
+            fit_group_weights(groups=BLOCK_GROUPS, group_order=GROUP_ORDER, **shared)
+            if request.learning.grouped
+            else fit_block_weights(**shared)
         )
 
         # ---- the number that decides whether to trust it ----------------

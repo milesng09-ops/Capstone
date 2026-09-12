@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from itertools import product
 
 import numpy as np
 
@@ -52,6 +53,12 @@ MAX_PASSES = 4
 #: An improvement smaller than this is noise in the objective, not a better
 #: set of weights, and taking it would make the result depend on float order.
 MIN_IMPROVEMENT = 1e-9
+
+#: Values a *group* weight may take. Wider at the top than `WEIGHT_GRID`
+#: because a group multiplies the hand-set weights under it: 1.0 leaves a
+#: group as it was, and above 1.0 is how the fit says one matters more than
+#: the hand-set numbers allowed.
+GROUP_GRID: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0, 1.5)
 
 
 @dataclass(frozen=True)
@@ -72,6 +79,11 @@ class LearnedWeights:
     objective: str
     #: Windows used as queries. One means the fit saw a single neighbourhood.
     query_windows: int = 1
+    #: Set when the coarse model was fitted: the three numbers actually
+    #: searched over, before being expanded onto the blocks.
+    group_weights: dict[str, float] | None = None
+    #: True when the whole weight space was enumerated rather than walked.
+    exhaustive: bool = False
     #: Blocks the fit switched off entirely, named for the notes.
     dropped_blocks: list[str] = field(default_factory=list)
 
@@ -376,4 +388,105 @@ def fit_block_weights(
         passes=passes,
         objective=objective,
         dropped_blocks=dropped,
+    )
+
+
+def expand_group_weights(
+    group_weights: dict[str, float],
+    groups: dict[str, str],
+    defaults: dict[str, float],
+) -> dict[str, float]:
+    """Turn three group numbers into the seven block weights the search uses.
+
+    A group multiplies the hand-set weights inside it, so the blocks keep
+    their relative standing and only the balance *between* groups is fitted.
+    All groups at 1.0 reproduces the hand-set set exactly.
+    """
+
+    return {
+        name: group_weights[groups[name]] * default
+        for name, default in defaults.items()
+    }
+
+
+def fit_group_weights(
+    *,
+    block_names: list[str],
+    groups: dict[str, str],
+    group_order: tuple[str, ...],
+    dots: np.ndarray,
+    query_norms: np.ndarray,
+    candidate_norms: np.ndarray,
+    outcomes: np.ndarray,
+    starting_weights: dict[str, float],
+    top_k: int,
+    objective: str = "expectancy",
+    valid_mask: np.ndarray | None = None,
+) -> LearnedWeights:
+    """Fit one weight per group, by enumerating every combination.
+
+    Three parameters on a six-value grid is 216 combinations, so the whole
+    space is searched rather than walked.  That removes the caveat the
+    block-level fit has to carry -- coordinate ascent finds *a* peak and
+    cannot say whether it found *the* peak -- and here the answer is simply
+    the best set there is.
+
+    Fewer parameters is the point, not a simplification for speed.  Seven
+    weights against an objective read off a few dozen trades per query is
+    enough freedom to fit the noise; three is a coarser instrument, and a
+    coarser instrument is what a noisy measurement deserves.
+    """
+
+    present = [group for group in group_order if any(groups[name] == group for name in block_names)]
+    defaults = {name: starting_weights[name] for name in block_names}
+
+    def score_of(group_weights: dict[str, float]) -> float:
+        expanded = expand_group_weights(group_weights, groups, defaults)
+        vector = np.array([expanded[name] for name in block_names], dtype=np.float64)
+        if not np.any(vector > 0):
+            return float("-inf")
+        similarity = similarity_for_weights(dots, query_norms, candidate_norms, vector)
+        return _score(_masked(similarity, valid_mask), outcomes, top_k)
+
+    if dots.size == 0 or outcomes.size == 0:
+        return LearnedWeights(
+            weights=dict(defaults),
+            train_score=0.0,
+            default_score=0.0,
+            labelled_windows=0,
+            top_k=top_k,
+            passes=0,
+            objective=objective,
+            group_weights={group: 1.0 for group in present},
+            exhaustive=True,
+        )
+
+    # All groups at 1.0 is the hand-set model, and the incumbent to beat.
+    incumbent = {group: 1.0 for group in present}
+    default_score = score_of(incumbent)
+    best, best_score = incumbent, default_score
+
+    for combination in product(GROUP_GRID, repeat=len(present)):
+        trial = dict(zip(present, combination))
+        # Strictly better, so the hand-set model keeps the tie and the answer
+        # does not depend on enumeration order.
+        trial_score = score_of(trial)
+        if trial_score > best_score + MIN_IMPROVEMENT:
+            best, best_score = trial, trial_score
+
+    weights = expand_group_weights(best, groups, defaults)
+    dropped = [name for name, value in weights.items() if value == 0.0]
+
+    return LearnedWeights(
+        weights=weights,
+        train_score=round(best_score, 6),
+        default_score=round(default_score, 6),
+        labelled_windows=int(outcomes.size),
+        query_windows=int(dots.shape[0]) if dots.ndim == 3 else 1,
+        top_k=top_k,
+        passes=1,
+        objective=objective,
+        dropped_blocks=dropped,
+        group_weights={group: float(value) for group, value in best.items()},
+        exhaustive=True,
     )

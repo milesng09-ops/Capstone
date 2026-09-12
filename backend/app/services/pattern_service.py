@@ -52,6 +52,31 @@ BLOCK_WEIGHTS: dict[str, float] = {
 #: Used to pull the blocks out unweighted; see `build_block_matrices`.
 _UNIT_WEIGHTS: dict[str, float] = {name: 1.0 for name in BLOCK_WEIGHTS}
 
+#: What each block is *about*, for a model that fits three numbers instead of
+#: seven.  The grouping is semantic rather than statistical -- it is a claim
+#: about what these features measure, which is why it lives beside their
+#: definitions and not in the learner:
+#:
+#: ``path``     where price went: the close curve and the bar-over-bar moves.
+#: ``candle``   how each bar was shaped: body and the two wicks.
+#: ``context``  the regime it happened in: volatility and participation.
+#:
+#: A group weight multiplies the hand-set weights inside it, so a group set to
+#: 1.0 leaves that group exactly as it was.  All three at 1.0 reproduces
+#: `BLOCK_WEIGHTS` precisely, which means the coarse fit starts from the
+#: hand-set model rather than beside it.
+BLOCK_GROUPS: dict[str, str] = {
+    "normalised_close": "path",
+    "returns": "path",
+    "body": "candle",
+    "upper_wick": "candle",
+    "lower_wick": "candle",
+    "volatility": "context",
+    "volume": "context",
+}
+
+GROUP_ORDER: tuple[str, ...] = ("path", "candle", "context")
+
 VOLATILITY_WINDOW = 5
 
 #: Candidate windows scored per batch. Bounds peak memory during the search.

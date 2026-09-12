@@ -83,12 +83,19 @@ export interface LearningSettings {
    * asks whether similarity is predictive at all. 1 fits the selection alone.
    */
   query_samples: number
+  /**
+   * Fit three grouped weights — path, candle, context — instead of seven
+   * block weights. Fewer parameters against a noisy objective, and a space
+   * small enough to enumerate rather than walk.
+   */
+  grouped: boolean
 }
 
 export const DEFAULT_LEARNING_SETTINGS: LearningSettings = {
   enabled: false,
   train_fraction: 0.5,
   query_samples: 60,
+  grouped: false,
 }
 
 /** A fitted weight set and what it is worth. The whole model: seven numbers. */
@@ -105,6 +112,10 @@ export interface LearnedWeightsSummary {
   passes: number
   objective: string
   dropped_blocks: string[]
+  /** Present for the coarse model: the three numbers actually searched over. */
+  group_weights: Record<string, number> | null
+  /** True when the whole space was enumerated, not walked. */
+  exhaustive: boolean
   holdout_score: number | null
   holdout_default_score: number | null
   holdout_windows: number

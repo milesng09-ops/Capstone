@@ -243,6 +243,10 @@ class LearningSettings(BaseModel):
     #: an answer. Set to 1 to fit against the user's own selection alone,
     #: which is the narrower behaviour kept for comparison.
     query_samples: int = Field(60, ge=1, le=400)
+    #: Fit three grouped weights -- path, candle, context -- instead of seven
+    #: block weights. Fewer parameters against a noisy objective, and a space
+    #: small enough to enumerate rather than walk.
+    grouped: bool = False
 
 
 class LearnedWeightsOut(BaseModel):
@@ -265,6 +269,11 @@ class LearnedWeightsOut(BaseModel):
     passes: int
     objective: str
     dropped_blocks: list[str] = Field(default_factory=list)
+    #: Present for the coarse model: the three numbers actually searched over.
+    group_weights: dict[str, float] | None = None
+    #: True when the whole space was enumerated rather than walked, so the
+    #: result is the best set there is and not merely a local peak.
+    exhaustive: bool = False
     #: The same objective on windows the fit never saw. This is the figure
     #: that decides whether the model is worth anything; `improved` above is
     #: only about the data it was fitted to.

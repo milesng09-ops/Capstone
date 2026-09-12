@@ -285,6 +285,13 @@ function FittedWeights({ fit }: { fit: LearnedWeightsSummary }) {
         {verdict.text}
       </p>
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 px-0.5 text-2xs text-muted-foreground">
+        {/* The coarse model is three numbers; show those, since they are what
+            was actually searched, and the seven below are their expansion. */}
+        {Object.entries(fit.group_weights ?? {}).map(([name, value]) => (
+          <span key={`group-${name}`} className="numeric font-medium text-foreground">
+            {name} {formatNumber(value, 2)}
+          </span>
+        ))}
         {Object.entries(fit.weights).map(([name, value]) => (
           <span key={name} className="numeric">
             {name.replace(/_/g, ' ')}{' '}

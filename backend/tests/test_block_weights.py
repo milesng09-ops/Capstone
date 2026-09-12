@@ -14,7 +14,10 @@ import numpy as np
 import pytest
 
 from app.learning.block_weights import (
+    GROUP_GRID,
     WEIGHT_GRID,
+    expand_group_weights,
+    fit_group_weights,
     block_projections,
     fit_block_weights,
     multi_block_projections,
@@ -22,7 +25,9 @@ from app.learning.block_weights import (
     similarity_for_weights,
 )
 from app.services.pattern_service import (
+    BLOCK_GROUPS,
     BLOCK_WEIGHTS,
+    GROUP_ORDER,
     build_block_matrices,
     build_feature_matrix,
 )
@@ -368,3 +373,131 @@ class TestQuerySelectionIsReproducible:
         assert pick(5) == pick(5)
         assert pick(1) == [0]
         assert len(pick(2000)) == 1000
+
+
+# --------------------------------------------------------------------------
+# Three parameters instead of seven
+# --------------------------------------------------------------------------
+class TestGroupsCoverTheBlocksTheyClaimTo:
+    def test_every_block_belongs_to_exactly_one_group(self):
+        # A block with no group would silently vanish from the coarse model.
+        assert set(BLOCK_GROUPS) == set(BLOCK_WEIGHTS)
+        assert set(BLOCK_GROUPS.values()) == set(GROUP_ORDER)
+
+    def test_all_groups_at_one_reproduces_the_hand_set_weights(self):
+        """The property that makes the coarse fit start from the status quo.
+
+        Not merely close to it: exactly it, so the incumbent the search has to
+        beat is the model already in use.
+        """
+
+        expanded = expand_group_weights(
+            {group: 1.0 for group in GROUP_ORDER}, BLOCK_GROUPS, BLOCK_WEIGHTS
+        )
+        assert expanded == BLOCK_WEIGHTS
+
+    def test_a_group_at_zero_switches_off_everything_under_it(self):
+        expanded = expand_group_weights(
+            {"path": 0.0, "candle": 1.0, "context": 1.0}, BLOCK_GROUPS, BLOCK_WEIGHTS
+        )
+        assert expanded["normalised_close"] == 0.0
+        assert expanded["returns"] == 0.0
+        assert expanded["body"] == BLOCK_WEIGHTS["body"]
+
+    def test_blocks_keep_their_relative_standing_inside_a_group(self):
+        # Only the balance *between* groups is fitted; within one the hand-set
+        # ratios are left alone.
+        expanded = expand_group_weights(
+            {"path": 0.5, "candle": 0.5, "context": 0.5}, BLOCK_GROUPS, BLOCK_WEIGHTS
+        )
+        assert expanded["body"] / expanded["upper_wick"] == (
+            BLOCK_WEIGHTS["body"] / BLOCK_WEIGHTS["upper_wick"]
+        )
+
+
+def group_fit(outcomes, names, projection, **kw):
+    return fit_group_weights(
+        block_names=names,
+        groups=BLOCK_GROUPS,
+        group_order=GROUP_ORDER,
+        dots=projection[0],
+        query_norms=projection[1],
+        candidate_norms=projection[2],
+        outcomes=outcomes,
+        starting_weights={name: BLOCK_WEIGHTS[name] for name in names},
+        top_k=10,
+        **kw,
+    )
+
+
+class TestTheCoarseFitSearchesTheWholeSpace:
+    def test_it_says_so_rather_than_claiming_a_local_peak(self):
+        """Three parameters on a six-value grid is 216 sets.
+
+        Small enough to enumerate, which is the one thing the block-level fit
+        cannot claim: coordinate ascent finds *a* peak and cannot say whether
+        it found *the* peak.
+        """
+
+        names, _, _, projection = setup()
+        outcomes = np.random.default_rng(20).normal(size=projection[0].shape[0])
+        fitted = group_fit(outcomes, names, projection)
+        assert fitted.exhaustive is True
+        assert len(GROUP_GRID) ** 3 == 216
+
+    def test_it_reports_the_three_numbers_it_actually_searched(self):
+        names, _, _, projection = setup()
+        outcomes = np.random.default_rng(21).normal(size=projection[0].shape[0])
+        fitted = group_fit(outcomes, names, projection)
+        assert set(fitted.group_weights or {}) == set(GROUP_ORDER)
+        for value in (fitted.group_weights or {}).values():
+            assert value in GROUP_GRID
+
+    def test_the_same_inputs_give_the_same_groups(self):
+        names, _, _, projection = setup()
+        outcomes = np.random.default_rng(22).normal(size=projection[0].shape[0])
+        assert (
+            group_fit(outcomes, names, projection).group_weights
+            == group_fit(outcomes, names, projection).group_weights
+        )
+
+    def test_a_tie_leaves_the_hand_set_model_in_place(self):
+        """Flat outcomes mean every weight set scores identically.
+
+        The answer then has to be the incumbent, not whichever combination the
+        enumeration happened to reach last.
+        """
+
+        names, _, _, projection = setup()
+        flat = np.zeros(projection[0].shape[0])
+        fitted = group_fit(flat, names, projection)
+        assert fitted.group_weights == {group: 1.0 for group in GROUP_ORDER}
+        assert fitted.weights == {name: BLOCK_WEIGHTS[name] for name in names}
+
+    def test_it_never_returns_an_all_zero_model(self):
+        names, _, _, projection = setup()
+        outcomes = np.random.default_rng(23).normal(size=projection[0].shape[0])
+        fitted = group_fit(outcomes, names, projection)
+        assert any(value > 0 for value in fitted.weights.values())
+
+    def test_it_can_never_end_below_the_hand_set_model(self):
+        names, _, _, projection = setup()
+        outcomes = np.random.default_rng(24).normal(size=projection[0].shape[0])
+        fitted = group_fit(outcomes, names, projection)
+        assert fitted.train_score >= fitted.default_score
+
+    def test_nothing_to_learn_from_leaves_the_defaults_alone(self):
+        names = list(BLOCK_WEIGHTS)
+        fitted = fit_group_weights(
+            block_names=names,
+            groups=BLOCK_GROUPS,
+            group_order=GROUP_ORDER,
+            dots=np.zeros((0, len(names))),
+            query_norms=np.zeros(len(names)),
+            candidate_norms=np.zeros((0, len(names))),
+            outcomes=np.zeros(0),
+            starting_weights=BLOCK_WEIGHTS,
+            top_k=10,
+        )
+        assert fitted.weights == BLOCK_WEIGHTS
+        assert fitted.labelled_windows == 0

@@ -1282,6 +1282,21 @@ function paintDrawing(
       ctx.textBaseline = 'bottom'
       ctx.fillText(priceLabel, 4, y - 2)
     }
+  } else if (projected.kind === 'horizontal_ray') {
+    // Forward only: the level did not exist before the bar that made it.
+    ctx.beginPath()
+    ctx.moveTo(projected.x, projected.y + 0.5)
+    ctx.lineTo(width, projected.y + 0.5)
+    ctx.stroke()
+
+    ctx.globalAlpha = 0.85
+    ctx.font = '9px ui-monospace, monospace'
+    ctx.textBaseline = 'bottom'
+    ctx.fillText(
+      drawing.kind === 'horizontal_ray' ? drawing.from.price.toFixed(2) : '',
+      projected.x + 4,
+      projected.y - 2,
+    )
   } else if (projected.kind === 'vertical') {
     const x = projected.x
     ctx.beginPath()

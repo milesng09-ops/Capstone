@@ -43,6 +43,7 @@ export type DrawingHit =
 export type ProjectedDrawing =
   | { id: string; kind: 'horizontal'; y: number }
   | { id: string; kind: 'vertical'; x: number }
+  | { id: string; kind: 'horizontal_ray'; x: number; y: number }
   | {
       id: string
       kind: 'trendline' | 'rectangle' | 'ray' | 'arrow'
@@ -89,6 +90,14 @@ export function projectDrawing(
     return x == null ? null : { id: drawing.id, kind: 'vertical', x }
   }
 
+  if (drawing.kind === 'horizontal_ray') {
+    const x = xOf(drawing.from.time)
+    const y = yOf(drawing.from.price)
+    return x == null || y == null
+      ? null
+      : { id: drawing.id, kind: 'horizontal_ray', x, y }
+  }
+
   const x1 = xOf(drawing.from.time)
   const y1 = yOf(drawing.from.price)
   const x2 = xOf(drawing.to.time)
@@ -129,7 +138,13 @@ function cornersOf(
 export function handlePositions(item: ProjectedDrawing): { x: number; y: number }[] {
   // A level and a time marker span a whole axis, so there is no end to grab:
   // they are moved by their body or not at all.
-  if (item.kind === 'horizontal' || item.kind === 'vertical') return []
+  if (
+    item.kind === 'horizontal' ||
+    item.kind === 'vertical' ||
+    item.kind === 'horizontal_ray'
+  ) {
+    return []
+  }
   return cornersOf(item).map(({ x, y }) => ({ x, y }))
 }
 
@@ -151,6 +166,14 @@ export function hitTestDrawing(
   if (item.kind === 'vertical') {
     // The mirror of a level: full height, so only horizontal distance counts.
     return Math.abs(x - item.x) <= HIT_TOLERANCE_PX ? { id: item.id, part: 'body' } : null
+  }
+
+  if (item.kind === 'horizontal_ray') {
+    // Only forward of its origin: behind that point the level is not drawn,
+    // so it must not be grabbable there either.
+    return x >= item.x - HIT_TOLERANCE_PX && Math.abs(y - item.y) <= HIT_TOLERANCE_PX
+      ? { id: item.id, part: 'body' }
+      : null
   }
 
   for (const corner of cornersOf(item)) {
@@ -256,6 +279,15 @@ export function translateDrawing(
   }
   if (drawing.kind === 'vertical') {
     return { ...drawing, time: drawing.time + deltaTime }
+  }
+  if (drawing.kind === 'horizontal_ray') {
+    return {
+      ...drawing,
+      from: {
+        time: drawing.from.time + deltaTime,
+        price: drawing.from.price + deltaPrice,
+      },
+    }
   }
   return {
     ...drawing,

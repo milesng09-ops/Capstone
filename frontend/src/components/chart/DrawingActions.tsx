@@ -200,6 +200,12 @@ function anchorFor(drawing: Drawing, handle: ChartHandle): Anchor | null {
     return y == null ? null : { x: BAR_WIDTH_PX / 2 + 8, y }
   }
 
+  if (drawing.kind === 'horizontal_ray') {
+    const x = handle.timeToXFree(drawing.from.time)
+    const y = handle.priceToY(drawing.from.price)
+    return x == null || y == null ? null : { x, y }
+  }
+
   if (drawing.kind === 'vertical') {
     // The mirror of a level: it has a time and no price, so the toolbar sits
     // at the top of the line rather than beside it.

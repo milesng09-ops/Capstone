@@ -15,6 +15,7 @@ export type DrawingKind =
   | 'ray'
   | 'vertical'
   | 'arrow'
+  | 'horizontal_ray'
 
 /**
  * Active pointer mode. `cursor` hands the mouse back to the chart.
@@ -83,6 +84,20 @@ export interface RayDrawing extends DrawingBase {
   to: DrawingPoint
 }
 
+/**
+ * A level that starts where it formed and runs forward only.
+ *
+ * The difference from a full-width level is which claim is being made. A
+ * level drawn across the whole chart says "this price matters"; a horizontal
+ * ray says "this price has mattered since *here*", which is the one an order
+ * block or a swing high actually supports -- the level did not exist before
+ * the bar that made it.
+ */
+export interface HorizontalRayDrawing extends DrawingBase {
+  kind: 'horizontal_ray'
+  from: DrawingPoint
+}
+
 /** A moment running the full height -- a session open, a news release. */
 export interface VerticalDrawing extends DrawingBase {
   kind: 'vertical'
@@ -103,6 +118,7 @@ export type Drawing =
   | RayDrawing
   | VerticalDrawing
   | ArrowDrawing
+  | HorizontalRayDrawing
 
 /**
  * A drawing before it has been given an id.
@@ -125,6 +141,7 @@ export const TOOL_LABELS: Record<ToolMode, string> = {
   ray: 'Ray',
   vertical: 'Time marker',
   arrow: 'Arrow',
+  horizontal_ray: 'Level from here',
 }
 
 export const TOOL_HINTS: Record<ToolMode, string> = {
@@ -141,6 +158,8 @@ export const TOOL_HINTS: Record<ToolMode, string> = {
   ray: 'Two points, then it carries on to the right edge. Esc cancels.',
   vertical: 'Press to preview a moment, release to place it. Esc cancels.',
   arrow: 'Drag from one point to another. Esc cancels.',
+  horizontal_ray:
+    'Press where the level forms; it runs forward from there. Esc cancels.',
 }
 
 /** Stroke widths offered. Small set: a thickness picker is not a design tool. */
@@ -191,5 +210,5 @@ export function isRangeTool(tool: ToolMode): boolean {
 
 /** Tools that place a single point rather than sweeping a range. */
 export function isPointTool(tool: ToolMode): boolean {
-  return tool === 'horizontal' || tool === 'vertical'
+  return tool === 'horizontal' || tool === 'vertical' || tool === 'horizontal_ray'
 }

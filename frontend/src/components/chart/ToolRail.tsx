@@ -27,6 +27,7 @@ import {
   Square,
   MoveUpRight,
   ArrowUpRight,
+  ArrowRightFromLine,
   SeparatorVertical,
   Settings2,
   Trash2,
@@ -53,6 +54,7 @@ const TOOL_ICONS: Record<ToolMode, LucideIcon> = {
   horizontal: Minus,
   rectangle: Square,
   ray: MoveUpRight,
+  horizontal_ray: ArrowRightFromLine,
   vertical: SeparatorVertical,
   arrow: ArrowUpRight,
 }

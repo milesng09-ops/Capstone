@@ -16,6 +16,7 @@ export type DrawingKind =
   | 'vertical'
   | 'arrow'
   | 'horizontal_ray'
+  | 'text'
 
 /**
  * Active pointer mode. `cursor` hands the mouse back to the chart.
@@ -98,6 +99,19 @@ export interface HorizontalRayDrawing extends DrawingBase {
   from: DrawingPoint
 }
 
+/**
+ * A note pinned to a point on the chart.
+ *
+ * Anchored in market coordinates like everything else, so "this is the bias"
+ * stays on the bar it was written about rather than drifting to wherever the
+ * screen has moved to.
+ */
+export interface TextDrawing extends DrawingBase {
+  kind: 'text'
+  at: DrawingPoint
+  text: string
+}
+
 /** A moment running the full height -- a session open, a news release. */
 export interface VerticalDrawing extends DrawingBase {
   kind: 'vertical'
@@ -119,6 +133,7 @@ export type Drawing =
   | VerticalDrawing
   | ArrowDrawing
   | HorizontalRayDrawing
+  | TextDrawing
 
 /**
  * A drawing before it has been given an id.
@@ -142,6 +157,7 @@ export const TOOL_LABELS: Record<ToolMode, string> = {
   vertical: 'Time marker',
   arrow: 'Arrow',
   horizontal_ray: 'Level from here',
+  text: 'Note',
 }
 
 export const TOOL_HINTS: Record<ToolMode, string> = {
@@ -160,7 +176,19 @@ export const TOOL_HINTS: Record<ToolMode, string> = {
   arrow: 'Drag from one point to another. Esc cancels.',
   horizontal_ray:
     'Press where the level forms; it runs forward from there. Esc cancels.',
+  text: 'Press to drop a note, then type into it. Esc cancels.',
 }
+
+/**
+ * Note metrics, shared by the painter and the hit test.
+ *
+ * A note is drawn in a monospace face, so its box can be computed from the
+ * character count without measuring. Both sides using the same two numbers is
+ * what stops a note being clickable somewhere it is not drawn.
+ */
+export const TEXT_CHAR_PX = 6.1
+export const TEXT_LINE_PX = 15
+export const DEFAULT_NOTE = 'Note'
 
 /** Stroke widths offered. Small set: a thickness picker is not a design tool. */
 export const DRAWING_WIDTHS = [1, 2, 3, 4] as const
@@ -210,5 +238,10 @@ export function isRangeTool(tool: ToolMode): boolean {
 
 /** Tools that place a single point rather than sweeping a range. */
 export function isPointTool(tool: ToolMode): boolean {
-  return tool === 'horizontal' || tool === 'vertical' || tool === 'horizontal_ray'
+  return (
+    tool === 'horizontal' ||
+    tool === 'vertical' ||
+    tool === 'horizontal_ray' ||
+    tool === 'text'
+  )
 }

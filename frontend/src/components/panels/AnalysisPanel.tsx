@@ -289,7 +289,9 @@ function DrawingsSection() {
                         ? formatDateTime(drawing.time)
                         : drawing.kind === 'horizontal_ray'
                           ? formatPrice(drawing.from.price)
-                          : formatDateTime(drawing.from.time)}
+                          : drawing.kind === 'text'
+                            ? formatDateTime(drawing.at.time)
+                            : formatDateTime(drawing.from.time)}
                   </span>
                 </button>
                 <Button

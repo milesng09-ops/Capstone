@@ -76,7 +76,15 @@ import {
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import type { Trade } from '@/types/backtest'
 import type { Candle, Interval, SelectionRange, TimeWindow } from '@/types/market'
-import { hasTwoPoints, isDragTool, isPointTool, isRangeTool } from '@/types/drawing'
+import {
+  DEFAULT_NOTE,
+  hasTwoPoints,
+  isDragTool,
+  isPointTool,
+  isRangeTool,
+  TEXT_CHAR_PX,
+  TEXT_LINE_PX,
+} from '@/types/drawing'
 import type { Drawing, DrawingDraft, DrawingPoint, ToolMode } from '@/types/drawing'
 import type { FairValueGap, IctAnalysis, IctSettings, SwingPoint } from '@/types/ict'
 import type { ChartPalette } from '@/lib/chart'
@@ -173,6 +181,16 @@ interface PendingGesture {
   currentX: number
   currentY: number
   moved: boolean
+  /**
+   * The first point is placed and the pointer is free.
+   *
+   * Two-point shapes can be drawn either way: press-drag-release, or click
+   * once to drop the first point, move, and click again. The second is what
+   * every charting platform does and is markedly easier over a long
+   * distance, since it does not ask the hand to hold a button steady across
+   * half the screen. Supporting both costs one flag and takes nothing away.
+   */
+  armed: boolean
 }
 
 /** An existing shape being moved or reshaped. */
@@ -737,6 +755,11 @@ export function ChartOverlay({
     const resolved = pointAt(event.clientX, event.clientY, !isRangeTool(tool) && snapToSwings)
     if (!resolved) return
 
+    // Already armed: this press is the *second* click of a two-click
+    // placement, so the gesture already holds the first point and must be
+    // left alone for the release to commit it.
+    if (pendingRef.current?.armed) return
+
     event.currentTarget.setPointerCapture(event.pointerId)
     updatePending({
       start: resolved.point,
@@ -746,6 +769,7 @@ export function ChartOverlay({
       currentX: resolved.x,
       currentY: resolved.y,
       moved: false,
+      armed: false,
     })
   }
 
@@ -782,16 +806,19 @@ export function ChartOverlay({
     }
 
     const gesture = pendingRef.current
-    updatePending(null)
     if (!gesture) return
 
-    // A click without a drag is almost always a misfire, not a zero-width
-    // shape, so it is discarded. A level is the exception: it has only one
-    // coordinate, so pressing and releasing in place *is* the whole gesture.
-    if (!gesture.moved && !isPointTool(tool)) {
-      onGestureComplete(false)
+    // A click without a drag on a two-point shape arms it rather than
+    // discarding it: the first point is placed and the next click finishes
+    // the shape. A point tool is exempt -- it has one coordinate, so pressing
+    // and releasing in place *is* the whole gesture -- and so are the range
+    // tools, which name a span of bars and are only ever swept.
+    if (!gesture.moved && !gesture.armed && !isPointTool(tool) && !isRangeTool(tool)) {
+      updatePending({ ...gesture, armed: true })
       return
     }
+
+    updatePending(null)
 
     if (tool === 'horizontal') {
       onCreateDrawing({
@@ -808,6 +835,23 @@ export function ChartOverlay({
         color: drawingColor,
         width: drawingWidth,
         time: gesture.current.time,
+      })
+    } else if (tool === 'horizontal_ray') {
+      onCreateDrawing({
+        kind: 'horizontal_ray',
+        symbol,
+        color: drawingColor,
+        width: drawingWidth,
+        from: gesture.current,
+      })
+    } else if (tool === 'text') {
+      onCreateDrawing({
+        kind: 'text',
+        symbol,
+        color: drawingColor,
+        width: drawingWidth,
+        at: gesture.current,
+        text: DEFAULT_NOTE,
       })
     } else if (isRangeTool(tool)) {
       // A range has to be made of real bars, so a drag that runs off the end
@@ -1282,6 +1326,26 @@ function paintDrawing(
       ctx.textBaseline = 'bottom'
       ctx.fillText(priceLabel, 4, y - 2)
     }
+  } else if (projected.kind === 'text') {
+    const label = drawing.kind === 'text' ? drawing.text : ''
+    const boxWidth = projected.chars * TEXT_CHAR_PX + 8
+    // A quiet plate behind the words: a note over candles is unreadable
+    // without one, and an opaque block would hide the bars it annotates.
+    ctx.globalAlpha = 0.72
+    ctx.fillStyle = background
+    ctx.fillRect(projected.x - 4, projected.y - TEXT_LINE_PX, boxWidth, TEXT_LINE_PX + 4)
+    ctx.globalAlpha = 1
+    ctx.strokeStyle = drawing.color
+    ctx.strokeRect(
+      projected.x - 3.5,
+      projected.y - TEXT_LINE_PX + 0.5,
+      boxWidth - 1,
+      TEXT_LINE_PX + 3,
+    )
+    ctx.fillStyle = drawing.color
+    ctx.font = '11px ui-monospace, monospace'
+    ctx.textBaseline = 'alphabetic'
+    ctx.fillText(label, projected.x, projected.y - 3)
   } else if (projected.kind === 'horizontal_ray') {
     // Forward only: the level did not exist before the bar that made it.
     ctx.beginPath()

@@ -27,7 +27,7 @@ import {
 import { cn } from '@/utils/cn'
 
 /** Roughly the bar's own size, used to keep it inside the pane. */
-const BAR_WIDTH_PX = 230
+const BAR_WIDTH_PX = 340
 const BAR_HEIGHT_PX = 26
 
 interface Props {
@@ -119,6 +119,26 @@ export function DrawingActions({ handle, drawings }: Props) {
             />
           ))}
 
+          {drawing.kind === 'text' && (
+            <>
+              <span className="h-3.5 w-px bg-border" />
+              {/*
+                * The note is edited where it is selected rather than in a
+                * dialog: a caption is a few words, and sending someone to
+                * another surface to change four of them is the slower path.
+                */}
+              <input
+                value={drawing.text}
+                onChange={(event) =>
+                  updateDrawing(drawing.id, { text: event.target.value })
+                }
+                aria-label="Note text"
+                placeholder="Note"
+                className="h-5 w-28 rounded border border-input bg-[hsl(var(--panel-raised))] px-1 text-2xs outline-none focus:border-primary/60"
+              />
+            </>
+          )}
+
           <span className="h-3.5 w-px bg-border" />
 
           {/*
@@ -198,6 +218,12 @@ function anchorFor(drawing: Drawing, handle: ChartHandle): Anchor | null {
   if (drawing.kind === 'horizontal') {
     const y = handle.priceToY(drawing.price)
     return y == null ? null : { x: BAR_WIDTH_PX / 2 + 8, y }
+  }
+
+  if (drawing.kind === 'text') {
+    const x = handle.timeToXFree(drawing.at.time)
+    const y = handle.priceToY(drawing.at.price)
+    return x == null || y == null ? null : { x, y }
   }
 
   if (drawing.kind === 'horizontal_ray') {

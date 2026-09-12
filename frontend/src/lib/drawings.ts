@@ -16,7 +16,13 @@
  * responds, which is when you actually want to drag it somewhere.
  */
 
-import { hasTwoPoints, type Drawing, type DrawingPoint } from '@/types/drawing'
+import {
+  hasTwoPoints,
+  TEXT_CHAR_PX,
+  TEXT_LINE_PX,
+  type Drawing,
+  type DrawingPoint,
+} from '@/types/drawing'
 
 /** Pixel slack around a line before the pointer counts as being on it. */
 export const HIT_TOLERANCE_PX = 6
@@ -44,6 +50,7 @@ export type ProjectedDrawing =
   | { id: string; kind: 'horizontal'; y: number }
   | { id: string; kind: 'vertical'; x: number }
   | { id: string; kind: 'horizontal_ray'; x: number; y: number }
+  | { id: string; kind: 'text'; x: number; y: number; chars: number }
   | {
       id: string
       kind: 'trendline' | 'rectangle' | 'ray' | 'arrow'
@@ -88,6 +95,14 @@ export function projectDrawing(
   if (drawing.kind === 'vertical') {
     const x = xOf(drawing.time)
     return x == null ? null : { id: drawing.id, kind: 'vertical', x }
+  }
+
+  if (drawing.kind === 'text') {
+    const x = xOf(drawing.at.time)
+    const y = yOf(drawing.at.price)
+    return x == null || y == null
+      ? null
+      : { id: drawing.id, kind: 'text', x, y, chars: Math.max(1, drawing.text.length) }
   }
 
   if (drawing.kind === 'horizontal_ray') {
@@ -141,7 +156,8 @@ export function handlePositions(item: ProjectedDrawing): { x: number; y: number 
   if (
     item.kind === 'horizontal' ||
     item.kind === 'vertical' ||
-    item.kind === 'horizontal_ray'
+    item.kind === 'horizontal_ray' ||
+    item.kind === 'text'
   ) {
     return []
   }
@@ -166,6 +182,19 @@ export function hitTestDrawing(
   if (item.kind === 'vertical') {
     // The mirror of a level: full height, so only horizontal distance counts.
     return Math.abs(x - item.x) <= HIT_TOLERANCE_PX ? { id: item.id, part: 'body' } : null
+  }
+
+  if (item.kind === 'text') {
+    // The box the painter draws, computed the same way from the same two
+    // constants -- a note clickable where it is not drawn would be worse than
+    // one that cannot be clicked at all.
+    const boxWidth = item.chars * TEXT_CHAR_PX + 8
+    return x >= item.x - 4 &&
+      x <= item.x + boxWidth &&
+      y >= item.y - TEXT_LINE_PX &&
+      y <= item.y + 4
+      ? { id: item.id, part: 'body' }
+      : null
   }
 
   if (item.kind === 'horizontal_ray') {
@@ -279,6 +308,15 @@ export function translateDrawing(
   }
   if (drawing.kind === 'vertical') {
     return { ...drawing, time: drawing.time + deltaTime }
+  }
+  if (drawing.kind === 'text') {
+    return {
+      ...drawing,
+      at: {
+        time: drawing.at.time + deltaTime,
+        price: drawing.at.price + deltaPrice,
+      },
+    }
   }
   if (drawing.kind === 'horizontal_ray') {
     return {

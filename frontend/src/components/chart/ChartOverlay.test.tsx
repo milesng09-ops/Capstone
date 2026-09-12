@@ -262,15 +262,87 @@ describe('drawing a shape', () => {
     expect(onGestureComplete).toHaveBeenCalledWith(false)
   })
 
-  it('keeps the tool held when a gesture places nothing', () => {
-    // Losing the tool on a misfire makes a mis-click cost two things: the
-    // shape, and the tool you have to go and pick again.
-    const { canvas, onGestureComplete } = setup({ tool: 'rectangle' })
+  it('arms on the first click instead of discarding it', () => {
+    /*
+     * Two-point shapes can be drawn either way: press-drag-release, or click
+     * to drop the first point and click again to finish. The second is what
+     * every charting platform does and is far easier over a long distance,
+     * since it does not ask the hand to hold a button steady across half the
+     * screen.
+     *
+     * Nothing is placed yet and nothing is abandoned, so the tool stays held
+     * and no completion is reported either way.
+     */
+    const { canvas, onGestureComplete, onCreateDrawing } = setup({ tool: 'rectangle' })
 
     fireEvent(canvas, pointer('pointerdown', 100, 100))
     fireEvent(canvas, pointer('pointerup', 101, 101))
 
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+    expect(onGestureComplete).not.toHaveBeenCalled()
+  })
+
+  it('places the shape on the second click', () => {
+    const { canvas, onCreateDrawing, onGestureComplete } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 101, 101))
+    fireEvent(canvas, pointer('pointermove', 240, 180))
+    fireEvent(canvas, pointer('pointerdown', 240, 180))
+    fireEvent(canvas, pointer('pointerup', 240, 180))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'rectangle' }),
+    )
+    expect(onGestureComplete).toHaveBeenCalledWith(true)
+  })
+
+  it('still refuses a shape with no size, clicked twice in one spot', () => {
+    // Arming must not become a way to store something invisible.
+    const { canvas, onCreateDrawing, onGestureComplete } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 100, 100))
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 100, 100))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
     expect(onGestureComplete).toHaveBeenCalledWith(false)
+  })
+
+  it('places a note where it is clicked', () => {
+    // A point tool commits on the first release; it has one coordinate, so
+    // pressing and releasing in place is the whole gesture.
+    const { canvas, onCreateDrawing } = setup({ tool: 'text' })
+
+    fireEvent(canvas, pointer('pointerdown', 150, 120))
+    fireEvent(canvas, pointer('pointerup', 150, 120))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'text', text: expect.any(String) }),
+    )
+  })
+
+  it('places a horizontal ray where it is clicked', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'horizontal_ray' })
+
+    fireEvent(canvas, pointer('pointerdown', 150, 120))
+    fireEvent(canvas, pointer('pointerup', 150, 120))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'horizontal_ray' }),
+    )
+  })
+
+  it('places a time marker where it is clicked', () => {
+    const { canvas, onCreateDrawing } = setup({ tool: 'vertical' })
+
+    fireEvent(canvas, pointer('pointerdown', 150, 120))
+    fireEvent(canvas, pointer('pointerup', 150, 120))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'vertical' }),
+    )
   })
 
   it('releases the tool once a shape is actually placed', () => {

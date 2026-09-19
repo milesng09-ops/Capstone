@@ -212,7 +212,9 @@ class YahooProvider(MarketDataProvider):
             # failure -- "possibly delisted; no price data found" -- which is
             # exactly what a request over a closed market looks like. Over a
             # window with no trading in it, nothing is the correct answer.
-            if "no price data found" in lowered and not _window_is_open(start, end, tz_name):
+            if "no price data found" in lowered and not _empty_is_a_failure(
+                start, end, interval, tz_name
+            ):
                 return []
             raise ProviderUnavailableError(
                 f"Yahoo request failed: {message}", provider=self.name

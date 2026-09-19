@@ -434,11 +434,13 @@ export function ChartOverlay({
     const height = parent.clientHeight
     if (width === 0 || height === 0) return
 
+    // The backing store only. The element's size on screen is set in CSS
+    // above; writing it here as well made painting the thing that decided how
+    // big it was, which is how it came to be 300x150 whenever the first frame
+    // never arrived.
     if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
       canvas.width = width * ratio
       canvas.height = height * ratio
-      canvas.style.width = `${width}px`
-      canvas.style.height = `${height}px`
     }
 
     const ctx = canvas.getContext('2d')
@@ -1205,7 +1207,20 @@ export function ChartOverlay({
   return (
     <canvas
       ref={canvasRef}
-      className="absolute inset-0 z-10"
+      // `h-full w-full` rather than `inset-0` alone. A canvas is a *replaced*
+      // element, so with `width: auto` it keeps its intrinsic 300x150 and the
+      // `right`/`bottom` offsets are dropped instead of stretching it (CSS 2.1
+      // 10.3.8) -- the rule that makes `inset-0` work for a div does not apply
+      // here. The box only ever reached pane size as a side effect of `draw`
+      // assigning `style.width`, and `draw` runs from a `requestAnimationFrame`
+      // callback, which a tab the compositor is not drawing never runs. Load
+      // the app in a background tab and the overlay stayed 300x150 in the
+      // top-left corner: the tools answered the pointer inside that square and
+      // nowhere else, so a drag anywhere over the candles panned the chart
+      // instead of drawing a line, an arrow or a zone. How big the element is
+      // is CSS's business, so it is stated in CSS and no longer depends on a
+      // frame ever being painted.
+      className="absolute inset-0 z-10 h-full w-full"
       style={{
         // Only a held tool takes the pointer. Everything else -- selecting,
         // moving and reshaping -- is intercepted on the parent, which leaves

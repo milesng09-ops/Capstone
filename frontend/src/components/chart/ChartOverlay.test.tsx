@@ -765,3 +765,34 @@ describe('the freehand brush', () => {
     expect(onGestureComplete).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('the size of the surface', () => {
+  /*
+   * The overlay is only as useful as it is big. These assert that how big it
+   * is comes from CSS and not from having painted, because a canvas is a
+   * replaced element: `inset-0` alone leaves it at its intrinsic 300x150
+   * instead of stretching, which the equivalent rule on a div would not do.
+   *
+   * jsdom reproduces the failing condition for free -- it computes no layout,
+   * so `parent.clientWidth` is 0 and `draw` returns before it sizes anything,
+   * exactly as it does in a real tab whose frames are never painted.
+   */
+  it('carries its own size, so it covers the pane before the first paint', () => {
+    const { canvas } = setup({ tool: 'trendline' })
+
+    expect(canvas.className).toContain('h-full')
+    expect(canvas.className).toContain('w-full')
+  })
+
+  it('does not take its size from the paint loop', () => {
+    // The regression: `draw` assigned `style.width`/`style.height`, so the
+    // element was pane-sized only as a side effect of a frame being painted.
+    // Load the app in a background tab and no frame ever arrives, leaving the
+    // overlay 300x150 in the top-left corner -- the drawing tools answered the
+    // pointer inside that square and a drag anywhere else panned the chart.
+    const { canvas } = setup({ tool: 'trendline' })
+
+    expect(canvas.style.width).toBe('')
+    expect(canvas.style.height).toBe('')
+  })
+})

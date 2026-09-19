@@ -9,6 +9,7 @@ import { PaneIntervalButton } from '@/components/layout/IntervalPicker'
 import { ChartOverlay } from '@/components/chart/ChartOverlay'
 import { DrawingActions } from '@/components/chart/DrawingActions'
 import { useChartInstance } from '@/components/chart/useChartInstance'
+import { Floating } from '@/components/ui/Floating'
 import { Badge, Button, Spinner } from '@/components/ui/primitives'
 import { useBacktestResult } from '@/hooks/useBacktest'
 import { useChartRange } from '@/hooks/useChartRange'
@@ -347,13 +348,16 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
 }
 
 /**
- * Appearance settings on right-click, where charting platforms put them.
+ * Appearance and chart links on right-click, where platforms put them.
  *
  * The same controls the rail button opens, not a second copy: one set of
  * inputs reached two ways cannot drift out of step with itself.
  *
- * Placed at the pointer and nudged back inside the pane when the click lands
- * near an edge -- a menu that opens half off-screen is worse than no menu.
+ * Opened at the pointer and clamped to the *window*, by `Floating`. It used
+ * to be clamped to the pane, which cannot work: the pane hides its overflow,
+ * and a stacked reference chart is shorter than this menu is tall, so the
+ * last section -- the one that links the charts back together -- had nowhere
+ * inside the pane to be.
  */
 function ChartContextMenu() {
   const [at, setAt] = useState<{ x: number; y: number } | null>(null)
@@ -365,45 +369,22 @@ function ChartContextMenu() {
 
     const open = (event: MouseEvent) => {
       event.preventDefault()
-      const box = pane.getBoundingClientRect()
-      setAt({
-        x: Math.min(event.clientX - box.left, Math.max(0, box.width - MENU_W_PX)),
-        y: Math.min(event.clientY - box.top, Math.max(0, box.height - MENU_H_PX)),
-      })
-    }
-    const close = () => setAt(null)
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setAt(null)
+      setAt({ x: event.clientX, y: event.clientY })
     }
 
     pane.addEventListener('contextmenu', open)
-    window.addEventListener('mousedown', close)
-    window.addEventListener('keydown', escape)
-    return () => {
-      pane.removeEventListener('contextmenu', open)
-      window.removeEventListener('mousedown', close)
-      window.removeEventListener('keydown', escape)
-    }
+    return () => pane.removeEventListener('contextmenu', open)
   }, [])
+
+  const close = useCallback(() => setAt(null), [])
 
   return (
     <div ref={paneRef} className="pointer-events-none absolute inset-0 z-40">
       {at && (
-        <div
-          role="menu"
-          aria-label="Chart appearance"
-          // Stop the window-level mousedown that closes it from firing for
-          // clicks inside it.
-          onMouseDown={(event) => event.stopPropagation()}
-          className="pointer-events-auto absolute w-44 rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg"
-          style={{ left: at.x, top: at.y }}
-        >
+        <Floating at={at} onClose={close} label="Chart appearance" className="w-44">
           <ChartSettingsBody />
-        </div>
+        </Floating>
       )}
     </div>
   )
 }
-
-const MENU_W_PX = 176
-const MENU_H_PX = 168

@@ -1,10 +1,14 @@
 /**
- * Keeps several charts locked to the same bar.
+ * Locks several charts to the same bar, for as long as they are asked to be.
  *
- * Miles's workflow depends on this: to spot an SMT divergence you look at NQ
- * and ES side by side and need the cursor sitting on *the same candle* in
- * both, otherwise you are comparing different moments and inventing
- * divergences that are not there.
+ * Off by default. Each pane scrolls, zooms and carries its own crosshair on
+ * its own, so looking closely at one market leaves the others exactly where
+ * they were -- which is what Miles asked for, having found that zooming into
+ * a setup on NQ hauled ES in with it.
+ *
+ * Switched on, this is what an SMT read needs: NQ and ES side by side with
+ * the cursor sitting on *the same candle* in both, otherwise you are
+ * comparing different moments and inventing divergences that are not there.
  *
  * The registry lives outside React on purpose. Crosshair movement fires on
  * every mouse move; routing that through component state would re-render the
@@ -17,6 +21,8 @@
  */
 
 import type { LogicalRange } from 'lightweight-charts'
+
+import { DEFAULT_CHART_SYNC, type ChartSync } from '@/types/market'
 
 export interface SyncedChart {
   /** Place the crosshair on a bar, or clear it when `time` is null. */
@@ -36,18 +42,18 @@ export interface SyncedChart {
  * crosshair movement fires on every mouse move, and reading a store from
  * inside that path would re-render the workspace dozens of times a second.
  * The store pushes changes in here instead.
+ *
+ * Seeded from the shared default rather than written out a second time, so
+ * the gap between this module loading and the store's first push cannot
+ * broadcast a link the workspace never asked for.
  */
-let modes = { interval: true, crosshair: true, time: true }
+let modes: ChartSync = { ...DEFAULT_CHART_SYNC }
 
-export function setSyncModes(next: {
-  interval: boolean
-  crosshair: boolean
-  time: boolean
-}): void {
+export function setSyncModes(next: ChartSync): void {
   modes = next
 }
 
-export function syncModes(): { interval: boolean; crosshair: boolean; time: boolean } {
+export function syncModes(): ChartSync {
   return modes
 }
 
@@ -116,9 +122,11 @@ export function broadcastTimeJump(sourceId: string, time: number): void {
  * Refit every chart.
  *
  * Unlike the two broadcasts above there is no source to exclude: a reset is
- * asked for once, by keyboard, and means all of the panes -- they are locked
- * to one another anyway, so refitting one and leaving the rest would only
- * pull them apart.
+ * asked for once, by keyboard, and means all of the panes. Nor does it read
+ * the links, so an unlinked pane still answers -- `R` is a direct instruction
+ * to every chart rather than one chart telling the others what it just did,
+ * which is the only thing the links govern. A pane on its own has the button
+ * in its legend.
  */
 export function resetAllCharts(): void {
   applying = true

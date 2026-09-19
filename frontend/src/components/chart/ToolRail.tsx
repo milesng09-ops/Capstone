@@ -12,7 +12,7 @@
  * what "snap" or "zone" means to someone opening this for the first time.
  */
 
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   BoxSelect,
@@ -42,6 +42,7 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
+import { Floating } from '@/components/ui/Floating'
 import { Button } from '@/components/ui/primitives'
 import { useWorkspace } from '@/store/workspace'
 import {
@@ -380,47 +381,52 @@ function ColorPicker({
  * the data.
  */
 function ChartSettingsMenu() {
-  const [open, setOpen] = useState(false)
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
 
-  useEffect(() => {
-    if (!open) return
-    const away = (event: MouseEvent) => {
-      if (!boxRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('mousedown', away)
-    window.addEventListener('keydown', escape)
-    return () => {
-      window.removeEventListener('mousedown', away)
-      window.removeEventListener('keydown', escape)
-    }
-  }, [open])
+  const close = useCallback(() => setAt(null), [])
 
   return (
     <div ref={boxRef} className="relative">
       <Button
         size="icon"
         variant="toolbar"
-        data-active={open}
-        onClick={() => setOpen((was) => !was)}
-        title="Chart appearance — grid, volume, candle colours"
+        data-active={at != null}
+        onClick={(event) => {
+          if (at) {
+            setAt(null)
+            return
+          }
+          // Beside the rail, in window coordinates, because the panel is
+          // portalled out to the body -- the rail is a 40px column that
+          // scrolls, and anything laid out inside it is clipped at 40px.
+          const button = event.currentTarget.getBoundingClientRect()
+          setAt({ x: button.right + RAIL_GAP_PX, y: button.top })
+        }}
+        title="Chart appearance and links — grid, volume, candle colours, and what the charts share"
         aria-label="Chart appearance"
-        aria-expanded={open}
+        aria-expanded={at != null}
       >
         <Settings2 size={15} />
       </Button>
 
-      {open && (
-        <div className="absolute left-full top-0 z-40 ml-1 w-44 rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg">
+      {at && (
+        <Floating
+          at={at}
+          onClose={close}
+          anchorRef={boxRef}
+          label="Chart appearance"
+          className="w-44"
+        >
           <ChartSettingsBody />
-        </div>
+        </Floating>
       )}
     </div>
   )
 }
+
+/** Clear of the rail, so the button it belongs to stays visible beside it. */
+const RAIL_GAP_PX = 4
 
 /**
  * The settings themselves, independent of how they were reached.
@@ -461,11 +467,15 @@ export function ChartSettingsBody() {
       />
 
       {/*
-        Three separate links, because they are three different claims. The
-        crosshair is the one that matters most: reading an SMT divergence
-        means having the cursor on the *same candle* on both markets, and
-        without that you are comparing different moments and inventing
-        divergences that are not there.
+        Three separate links, because they are three different claims, and
+        the first two start off: moving one chart moves that chart. Switched
+        on they are what an SMT read wants -- the cursor on the *same candle*
+        on both markets, or you are comparing different moments and inventing
+        divergences that are not there -- but that is something to ask for,
+        not something that should happen to you while you zoom.
+
+        "Scroll & zoom" rather than "Time", which sat directly above
+        "Interval" and read as a second way of saying bar size.
       */}
       <div className="border-t border-border pt-2">
         <div className="label-caps pb-1">Link charts</div>
@@ -475,7 +485,7 @@ export function ChartSettingsBody() {
           onChange={(crosshair) => updateSync({ crosshair })}
         />
         <SettingRow
-          label="Time"
+          label="Scroll & zoom"
           checked={sync.time}
           onChange={(time) => updateSync({ time })}
         />
@@ -484,6 +494,11 @@ export function ChartSettingsBody() {
           checked={sync.interval}
           onChange={(interval) => updateSync({ interval })}
         />
+        <p className="pt-1 text-[10px] leading-snug text-muted">
+          {sync.time
+            ? 'Moving one chart moves them all, so a vertical line is the same moment on each.'
+            : 'Each chart scrolls and zooms on its own.'}
+        </p>
         <p className="pt-1 text-[10px] leading-snug text-muted">
           {sync.interval
             ? 'Every chart is on the same bar size.'

@@ -7,8 +7,10 @@
  * and without that you are comparing different moments and inventing
  * divergences that are not there.
  *
- * A toggle is only real if the broadcast actually stops, so that is what
- * these check, one link at a time.
+ * He then asked for the scroll, the zoom and the crosshair to start *off*,
+ * having found that moving one chart moved all of them. So there are two
+ * things to hold here: that each switch really stops its own broadcast, and
+ * that nothing is broadcast at all until one is asked for.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -24,6 +26,7 @@ import {
   withoutSync,
   type SyncedChart,
 } from '@/lib/chartSync'
+import { DEFAULT_CHART_SYNC } from '@/types/market'
 
 function chart(): SyncedChart & { calls: Record<string, unknown[][]> } {
   const calls: Record<string, unknown[][]> = {
@@ -58,6 +61,42 @@ beforeEach(() => {
 
 // Assigned before the first `beforeEach` body runs.
 detach = []
+
+describe('with nothing switched on, which is how the app starts', () => {
+  beforeEach(() => {
+    setSyncModes(DEFAULT_CHART_SYNC)
+  })
+
+  /*
+   * The complaint these answer: moving one chart moved the others, and
+   * there was no way to look closely at one market without hauling the rest
+   * along. Asserted against the shared default rather than a literal, so
+   * moving that default has to come back through here.
+   */
+  it('keeps a scroll or a zoom to the chart it happened on', () => {
+    broadcastLogicalRange('a', range)
+
+    expect(b.calls.applyLogicalRange).toEqual([])
+  })
+
+  it('keeps the crosshair to the chart the pointer is over', () => {
+    broadcastCrosshair('a', 1_000)
+
+    expect(b.calls.applyCrosshair).toEqual([])
+  })
+
+  it('keeps a click from sending the others anywhere', () => {
+    broadcastTimeJump('a', 1_700_000_000_000)
+
+    expect(b.calls.jumpToTime).toEqual([])
+  })
+
+  it('still shares the bar size', () => {
+    // Bar size is a property of the question, not of one pane's view of the
+    // answer, so it is the one link that did not move.
+    expect(DEFAULT_CHART_SYNC.interval).toBe(true)
+  })
+})
 
 describe('with every link live', () => {
   it('moves the crosshair on the other charts, not on the source', () => {

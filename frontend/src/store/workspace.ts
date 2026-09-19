@@ -288,6 +288,7 @@ export function migrateWorkspace(persisted: unknown, version: number) {
     | {
         ict?: IctSettings
         detectors?: DetectorFilters
+        chartSync?: ChartSync
         interval?: Interval
         rangeDays?: RangeDays
       }
@@ -327,13 +328,37 @@ export function migrateWorkspace(persisted: unknown, version: number) {
     ...clamped,
     ict: { ...DEFAULT_ICT_SETTINGS, ...state.ict },
     detectors: { ...DEFAULT_DETECTOR_FILTERS, ...state.detectors },
+    chartSync: { ...DEFAULT_CHART_SYNC, ...state.chartSync },
   }
 
-  if (version >= 2) return filled
+  /*
+   * The scroll, the zoom and the crosshair are unlinked once, on the way in.
+   *
+   * Same argument as the overlays above, and the same trap: these three were
+   * saved as `true` by every version that existed before the default moved,
+   * so leaving them alone would mean the one person who has actually been
+   * using the app is the one person who never sees the change. Panning NQ
+   * would still drag ES along, and the fix would look like it had not
+   * landed.
+   *
+   * Forced rather than merely defaulted, and only for the switches that
+   * moved -- `interval` keeps whatever was chosen. Linking the panes back up
+   * afterwards sticks, because by then it is an answer rather than a
+   * leftover.
+   */
+  const unlinked =
+    version >= 4
+      ? filled
+      : {
+          ...filled,
+          chartSync: { ...filled.chartSync, crosshair: false, time: false },
+        }
+
+  if (version >= 2) return unlinked
   return {
-    ...filled,
+    ...unlinked,
     ict: {
-      ...filled.ict,
+      ...unlinked.ict,
       showSwings: false,
       showGaps: false,
       showSmt: false,
@@ -616,7 +641,7 @@ export const useWorkspace = create<WorkspaceState>()(
     }),
     {
       name: 'mrl.workspace',
-      version: 3,
+      version: 4,
       /**
        * Version 2 turns the ICT overlays off.
        *
@@ -634,6 +659,12 @@ export const useWorkspace = create<WorkspaceState>()(
        * settings that decide what counts as a level. Defaults are merged
        * *under* what was stored, so every earlier choice survives and only
        * the genuinely absent keys are filled.
+       *
+       * Version 4 unlinks the scroll, the zoom and the crosshair, so that
+       * moving one chart stops moving the rest. `chartSync` joins the two
+       * objects above in being backfilled, for the same reason they are: it
+       * is restored whole, so one saved before a switch existed comes back
+       * without it.
        */
       migrate: migrateWorkspace,
       // The transient bits of a session: which tool is held, what is selected,

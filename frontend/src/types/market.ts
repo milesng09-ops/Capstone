@@ -306,14 +306,24 @@ export interface ChartSettings {
  * What the charts share with each other.
  *
  * Three separate switches rather than one, because they are three different
- * claims and a trader wants them independently. From the review call: the
- * crosshair one matters most -- reading an SMT divergence means having the
- * cursor on *the same candle* on NQ and on ES, and without it you are
- * comparing different moments and inventing divergences that are not there.
+ * claims and a trader wants them independently. `time` is the scroll and the
+ * zoom. `crosshair` is whether the cursor lands on the same candle in every
+ * pane. `interval` is whether every pane is on the same bar size.
  *
- * `time` is the scroll and zoom. `interval` is whether every pane is on the
- * same bar size; with it off, each market keeps its own, which is how you
- * read structure on the weekly against entries on the 3-minute.
+ * **Scroll, zoom and crosshair start off.** Locked panes are exactly what an
+ * SMT read wants -- the cursor on *the same candle* on NQ and on ES, or you
+ * are comparing different moments and inventing divergences that are not
+ * there -- but they are not what the rest of the work wants. Zooming into a
+ * setup on NQ dragged ES in with it, and there was no way to look closely at
+ * one market without hauling the other along behind it. Miles asked for the
+ * panes to move independently, so moving one is now local and linking them
+ * is the deliberate act.
+ *
+ * `interval` stays on, because it is not the same kind of claim. Bar size
+ * belongs to the question being asked rather than to one pane's view of the
+ * answer, and the toolbar's timeframe buttons read as a single choice about
+ * the workspace. Off, each market keeps its own, which is how you read
+ * structure on the weekly against entries on the 3-minute.
  */
 export interface ChartSync {
   interval: boolean
@@ -323,8 +333,8 @@ export interface ChartSync {
 
 export const DEFAULT_CHART_SYNC: ChartSync = {
   interval: true,
-  crosshair: true,
-  time: true,
+  crosshair: false,
+  time: false,
 }
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {

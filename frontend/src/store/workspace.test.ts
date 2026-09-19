@@ -23,7 +23,7 @@ import {
   MAX_RANGE_DAYS,
 } from '@/types/market'
 import { syncModes } from '@/lib/chartSync'
-import type { SymbolKey } from '@/types/market'
+import type { ChartSync, SymbolKey } from '@/types/market'
 
 /**
  * What `useSymbolInterval` answers for one pane, right now.
@@ -494,6 +494,52 @@ describe('migrating a stored workspace', () => {
     expect(migrated.ict.showSmt).toBe(false)
     // And the new keys are filled on that path too.
     expect(migrated.ict.liquidityMinTouches).toBe(DEFAULT_ICT_SETTINGS.liquidityMinTouches)
+  })
+
+  it('unlinks the scroll and the crosshair once, coming from version 3', () => {
+    /*
+     * The trap this exists for: every version before 4 saved these as
+     * `true`, and a stored preference outlives a change of default. Without
+     * this the one person who has actually been using the app is the one
+     * person for whom panning NQ still drags ES along -- the fix would look
+     * like it had not landed.
+     */
+    const stored = { chartSync: { interval: true, crosshair: true, time: true } }
+
+    const migrated = migrateWorkspace(stored, 3) as { chartSync: ChartSync }
+
+    expect(migrated.chartSync.crosshair).toBe(false)
+    expect(migrated.chartSync.time).toBe(false)
+    // Bar size is a different claim and was not part of the complaint.
+    expect(migrated.chartSync.interval).toBe(true)
+  })
+
+  it('keeps a link that was chosen after the default moved', () => {
+    // Forced once, on the way past version 4 -- not on every load, or the
+    // switch would be one you could never turn on.
+    const stored = { chartSync: { interval: false, crosshair: true, time: true } }
+
+    const migrated = migrateWorkspace(stored, 4) as { chartSync: ChartSync }
+
+    expect(migrated.chartSync).toEqual({ interval: false, crosshair: true, time: true })
+  })
+
+  it('fills a link that was saved before the switch existed', () => {
+    // `chartSync` is restored whole, like `ict` and `detectors`, so a
+    // missing key reaches a switch as `undefined` -- an uncontrolled input
+    // that stays wrong until it is clicked.
+    const stored = { chartSync: { time: true } as unknown as ChartSync }
+
+    const migrated = migrateWorkspace(stored, 4) as { chartSync: ChartSync }
+
+    expect(migrated.chartSync.interval).toBe(DEFAULT_CHART_SYNC.interval)
+    expect(migrated.chartSync.crosshair).toBe(DEFAULT_CHART_SYNC.crosshair)
+  })
+
+  it('unlinks a workspace that never stored the links at all', () => {
+    const migrated = migrateWorkspace({ interval: '1h' }, 3) as { chartSync: ChartSync }
+
+    expect(migrated.chartSync).toEqual({ interval: true, crosshair: false, time: false })
   })
 
   it('still clamps a range the interval cannot carry', () => {

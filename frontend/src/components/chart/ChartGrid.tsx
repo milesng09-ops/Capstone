@@ -3,9 +3,14 @@
  *
  * `stacked` is the default and the reason the workspace exists: SMT divergence
  * is read by looking straight down a vertical line -- the same candle on NQ
- * and on ES, one above the other -- and `chartSync` keeps the crosshair and
- * the scroll position locked so that line means the same thing on every pane.
- * Stacking is what makes the comparison sightable at all.
+ * and on ES, one above the other. Stacking is what makes the comparison
+ * sightable at all, and `chartSync` is what makes that line mean the same
+ * moment on every pane, by locking the crosshair and the scroll together.
+ *
+ * Those two links start *off*: panning or zooming one chart used to drag
+ * every other chart with it, so there was no way to look closely at one
+ * market on its own. Each pane now moves by itself, and locking them is a
+ * switch in the chart's right-click menu -- see `DEFAULT_CHART_SYNC`.
  *
  * The other arrangements answer a different question. `columns` gives every
  * chart the full height of the screen, which is what you want when you are

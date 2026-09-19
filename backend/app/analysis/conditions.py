@@ -21,6 +21,10 @@ Detector            Knowable from
                     confirmation -- *not* ``time``, which is the
                     pivot itself and is only recognisable later
 ``SmtDivergence``   ``confirmed_time``, once both swings confirmed
+``LiquidityPool``   ``swept_time`` for this purpose.  The pool
+                    exists from ``formed_time``, but the condition
+                    is about the sweep, and that is the later of
+                    the two
 ==================  ==============================================
 
 Using ``SwingPoint.time`` instead of ``confirmed_time`` is the subtle version
@@ -35,6 +39,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.analysis.fair_value_gap import FairValueGap, gap_containing
+from app.analysis.liquidity import LiquidityPool, pools_swept_before
 from app.analysis.smt import SmtDivergence
 from app.analysis.structure import SwingPoint
 
@@ -52,6 +57,7 @@ class DetectorState:
     fair_value_gap: FairValueGap | None = None
     smt_divergence: SmtDivergence | None = None
     swing_point: SwingPoint | None = None
+    liquidity_pool: LiquidityPool | None = None
 
 
 def detectors_at_entry(
@@ -62,26 +68,58 @@ def detectors_at_entry(
     gaps: list[FairValueGap],
     swings: list[SwingPoint],
     divergences: list[SmtDivergence],
+    pools: list[LiquidityPool] | None = None,
     within_ms: int,
     align_with_direction: bool,
+    gap_past_midpoint: bool = False,
+    entry_bar_known: bool = True,
 ) -> DetectorState:
     """Everything that was knowably true at ``entry_time``, and no more.
 
     ``align_with_direction`` requires each detector to point the same way as
-    the trade: a long wants a bullish gap, a bullish divergence and a swing
-    low.  Switched off, presence alone is enough -- useful for asking whether
-    a detector marks a turning point at all, rather than a directional one.
+    the trade: a long wants a bullish gap, a bullish divergence, a swing low
+    and a shelf of *lows* taken out.  Switched off, presence alone is enough
+    -- useful for asking whether a detector marks a turning point at all,
+    rather than a directional one.
+
+    ``entry_bar_known`` says whether the entry bar has finished when the trade
+    fills, and it is the difference between the two entry types:
+
+    * ``selection_close`` fills at that bar's **close**, so the bar is over
+      and its high, low and close are all knowable.
+    * ``next_open`` fills at that bar's **open**, so nothing about the bar has
+      happened yet.
+
+    Reading the entry bar in the second case is the version of lookahead this
+    module warns about that is easiest to miss and hardest to spot in a
+    result.  It bites the liquidity sweep hardest: a sweep *is* that bar's
+    low, so admitting the bar would let a trade be qualified by the very
+    candle it is filled on -- entering at the open of the one bar known to
+    dip and recover, which is the single most favourable fill in the setup.
     """
+
+    # Timestamps are whole milliseconds, so stepping back one is exactly
+    # "everything strictly before this bar" without a second comparison
+    # operator in four different helpers.
+    cutoff = entry_time if entry_bar_known else entry_time - 1
 
     return DetectorState(
         fair_value_gap=_gap_at(
-            entry_price, entry_time, direction, gaps, align_with_direction
+            entry_price,
+            cutoff,
+            direction,
+            gaps,
+            align_with_direction,
+            gap_past_midpoint,
         ),
         smt_divergence=_divergence_at(
-            entry_time, direction, divergences, within_ms, align_with_direction
+            cutoff, direction, divergences, within_ms, align_with_direction
         ),
         swing_point=_swing_at(
-            entry_time, direction, swings, within_ms, align_with_direction
+            cutoff, direction, swings, within_ms, align_with_direction
+        ),
+        liquidity_pool=_sweep_at(
+            cutoff, direction, pools or [], within_ms, align_with_direction
         ),
     )
 
@@ -92,12 +130,16 @@ def _gap_at(
     direction: Direction,
     gaps: list[FairValueGap],
     align: bool,
+    past_midpoint: bool = False,
 ) -> FairValueGap | None:
     """An unfilled gap whose zone contained the entry price.
 
     Containment rather than mere existence: a gap somewhere on the chart says
     nothing about this entry.  The setup being described is price trading back
     into an imbalance, so the entry has to be *in* it.
+
+    ``past_midpoint`` asks for the deeper half instead of the whole zone --
+    consequent encroachment, the second of the two entries a gap offers.
 
     No recency window applies. A gap stays live until it is filled, however
     long that takes, and its own ``filled_time`` already ends it.
@@ -107,7 +149,9 @@ def _gap_at(
     candidates = [gap for gap in gaps if not align or gap.direction == wanted]
     # `gap_containing` does the time work: a gap revealed after `entry_time`
     # is skipped, and so is one already filled by then.
-    return gap_containing(candidates, entry_price, entry_time)
+    return gap_containing(
+        candidates, entry_price, entry_time, past_midpoint=past_midpoint
+    )
 
 
 def _divergence_at(
@@ -166,12 +210,45 @@ def _swing_at(
     return best
 
 
+def _sweep_at(
+    entry_time: int,
+    direction: Direction,
+    pools: list[LiquidityPool],
+    within_ms: int,
+    align: bool,
+) -> LiquidityPool | None:
+    """The most recently swept shelf at or before the entry.
+
+    A long wants the *lows* taken: the setup is price dipping under a shelf of
+    equal lows, clearing the stops resting there, and turning back up.  Asking
+    for the highs instead would describe a breakout, which is the opposite
+    trade.
+
+    Gated on ``swept_time``, not ``formed_time``.  The shelf existing is not
+    the event -- it can stand untouched for weeks -- and the reason to be in
+    the trade is that it was taken out just now.
+    """
+
+    wanted = "low" if direction == "long" else "high"
+    kinds: tuple[str, ...] = (wanted,) if align else ("low", "high")
+
+    best: LiquidityPool | None = None
+    for kind in kinds:
+        for pool in pools_swept_before(pools, kind, entry_time, within_ms=within_ms):
+            if best is None or (pool.swept_time or 0) > (best.swept_time or 0):
+                best = pool
+            break  # `pools_swept_before` is sorted, so the first is the latest.
+    return best
+
+
 def unmet_condition(
     state: DetectorState,
     *,
     require_fair_value_gap: bool,
     require_smt_divergence: bool,
     require_swing_point: bool,
+    require_liquidity_sweep: bool = False,
+    gap_past_midpoint: bool = False,
 ) -> str | None:
     """Why this entry does not qualify, or ``None`` if it does.
 
@@ -181,9 +258,19 @@ def unmet_condition(
     """
 
     if require_fair_value_gap and state.fair_value_gap is None:
+        # The two settings fail for different reasons, and "no gap contained
+        # the entry" would be wrong for a trade that was inside a gap and
+        # simply had not traded deep enough into it.
+        if gap_past_midpoint:
+            return (
+                "No unfilled fair value gap had been traded past its midpoint "
+                "by the entry price."
+            )
         return "No unfilled fair value gap contained the entry price."
     if require_smt_divergence and state.smt_divergence is None:
         return "No confirmed SMT divergence stood within the window before entry."
     if require_swing_point and state.swing_point is None:
         return "No confirmed swing point stood within the window before entry."
+    if require_liquidity_sweep and state.liquidity_pool is None:
+        return "No liquidity pool was swept within the window before entry."
     return None

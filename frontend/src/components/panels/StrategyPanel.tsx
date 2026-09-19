@@ -64,6 +64,7 @@ const STOPS: { value: StopLossType; label: string }[] = [
 
 const TARGETS: { value: TakeProfitType; label: string }[] = [
   { value: 'risk_reward', label: 'Risk / reward multiple' },
+  { value: 'liquidity', label: 'Nearest liquidity pool' },
   { value: 'percentage', label: 'Percent of entry' },
   { value: 'fixed_price', label: 'Fixed price' },
 ]
@@ -363,14 +364,26 @@ export function StrategyPanel() {
             onChange={(take_profit_type) => updateRules({ take_profit_type })}
           />
           <NumberField
-            label="Target value"
-            hint="With risk/reward, 2 means the target sits twice the stop distance away"
+            label={rules.take_profit_type === 'liquidity' ? 'Minimum reward' : 'Target value'}
+            hint={
+              rules.take_profit_type === 'liquidity'
+                ? 'The least a pool must be worth to be traded to, in multiples of the risk. A shelf closer than this skips the match rather than being taken: a target two points away fills nearly every time and reports a win rate the strategy has not earned.'
+                : 'With risk/reward, 2 means the target sits twice the stop distance away'
+            }
             value={rules.take_profit_value}
             min={0}
             step={0.1}
             onChange={(take_profit_value) => updateRules({ take_profit_value })}
           />
         </div>
+        {rules.take_profit_type === 'liquidity' && (
+          <p className="mt-1 text-2xs leading-relaxed text-muted-foreground">
+            The target is the nearest shelf of equal {rules.direction === 'long' ? 'highs' : 'lows'}{' '}
+            standing in front of the entry, as known at that bar. Every level in between has
+            to be cleared first, so the near one is the one with the odds. A match with
+            nothing in front of it is skipped and counted.
+          </p>
+        )}
       </section>
 
       {/*
@@ -409,6 +422,16 @@ export function StrategyPanel() {
             updateDetectors({ require_fair_value_gap })
           }
         />
+        {detectors.require_fair_value_gap && (
+          <div className="pl-3">
+            <ToggleField
+              label="Past the gap midpoint"
+              hint="Narrow it to the deeper half of the zone -- consequent encroachment. A gap offers two entries: its edge, and its middle line. This asks for the second."
+              checked={detectors.gap_past_midpoint}
+              onChange={(gap_past_midpoint) => updateDetectors({ gap_past_midpoint })}
+            />
+          </div>
+        )}
         <ToggleField
           label="SMT divergence"
           hint="The two symbols had already disagreed at a confirmed pivot"
@@ -420,6 +443,14 @@ export function StrategyPanel() {
           hint="A pivot had been confirmed, not merely formed"
           checked={detectors.require_swing_point}
           onChange={(require_swing_point) => updateDetectors({ require_swing_point })}
+        />
+        <ToggleField
+          label="Liquidity sweep"
+          hint="A shelf of equal highs or lows had just been taken out. A long wants the lows swept -- the stops below the level are cleared and price turns back up."
+          checked={detectors.require_liquidity_sweep}
+          onChange={(require_liquidity_sweep) =>
+            updateDetectors({ require_liquidity_sweep })
+          }
         />
 
         <div className="grid grid-cols-2 gap-2">
@@ -665,6 +696,7 @@ function conditionsSummary(detectors: DetectorFilters): string {
     detectors.require_fair_value_gap && 'fair value gap',
     detectors.require_smt_divergence && 'SMT',
     detectors.require_swing_point && 'swing',
+    detectors.require_liquidity_sweep && 'sweep',
   ].filter(Boolean) as string[]
 
   if (on.length === 0) return 'none required'

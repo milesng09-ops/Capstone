@@ -41,6 +41,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from app.analysis.liquidity import LiquidityPool
 from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade
 from app.models.domain import Candle
 from app.models.schemas import TradeRules
@@ -153,6 +154,7 @@ def random_entry_baseline(
     required_future_bars: int,
     samples: int,
     seed: int,
+    pools: list[LiquidityPool] | None = None,
 ) -> Baseline:
     """Run ``rules`` at ``samples`` windows drawn at random from the same pool.
 
@@ -190,6 +192,7 @@ def random_entry_baseline(
             samples=samples,
             seed=seed,
         ),
+        pools=pools,
     )
     return summarise_baseline(trades, samples=samples, seed=seed)
 
@@ -238,12 +241,26 @@ def baseline_inputs(
 
 
 def run_baseline(
-    candles: list[Candle], rules: TradeRules, inputs: list[MatchInput]
+    candles: list[Candle],
+    rules: TradeRules,
+    inputs: list[MatchInput],
+    pools: list[LiquidityPool] | None = None,
 ) -> list[SimulatedTrade]:
-    """Simulate drawn windows with the sequencing rule forced off."""
+    """Simulate drawn windows with the sequencing rule forced off.
+
+    ``pools`` must be the same shelves the real run was given whenever the
+    rules use a liquidity target.  Withholding them does not make the
+    comparison stricter, it empties it: every random window is skipped for
+    want of a target, and a baseline of nothing is reported as a win rate of
+    zero -- which reads as "random entries never work here" beside a real
+    result, and is the most flattering possible thing to print next to a
+    strategy.  A baseline that cannot fail to be beaten is not a baseline.
+    """
 
     engine = BacktestEngine(
-        candles, rules.model_copy(update={"allow_overlapping_trades": True})
+        candles,
+        rules.model_copy(update={"allow_overlapping_trades": True}),
+        pools=pools,
     )
     trades, skipped = engine.run(inputs)
     if skipped:

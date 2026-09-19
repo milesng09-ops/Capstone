@@ -160,7 +160,8 @@ export const api = {
   },
 
   /**
-   * Swing points, fair value gaps and SMT divergences for one chart.
+   * Swing points, fair value gaps, SMT divergences and liquidity pools for
+   * one chart.
    *
    * `reference` symbols are the correlated markets to check for divergence:
    * pass ES and YM while looking at NQ. Omit them and only the single-chart
@@ -177,6 +178,9 @@ export const api = {
       minGapPercent?: number
       includeFilledGaps?: boolean
       includeInvalidSmt?: boolean
+      liquidityTolerancePercent?: number
+      liquidityMinTouches?: number
+      includeSweptPools?: boolean
     },
     signal?: AbortSignal,
   ) => {
@@ -198,6 +202,15 @@ export const api = {
     }
     if (params.includeInvalidSmt != null) {
       query.set('include_invalid_smt', String(params.includeInvalidSmt))
+    }
+    if (params.liquidityTolerancePercent != null) {
+      query.set('liquidity_tolerance_percent', String(params.liquidityTolerancePercent))
+    }
+    if (params.liquidityMinTouches != null) {
+      query.set('liquidity_min_touches', String(params.liquidityMinTouches))
+    }
+    if (params.includeSweptPools != null) {
+      query.set('include_swept_pools', String(params.includeSweptPools))
     }
     return request<IctAnalysis>(`/api/ict?${query.toString()}`, { signal })
   },

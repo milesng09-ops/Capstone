@@ -16,6 +16,13 @@ Documented modelling assumptions (surfaced in the UI):
 * **Fees** are charged as ``fee_percent`` of notional on entry *and* exit.
 * **Timeout.** A position still open after ``maximum_holding_bars`` closes at
   that bar's close.
+* **Liquidity targets.** With ``take_profit_type="liquidity"`` the target is
+  the nearest standing shelf of equal highs or lows in front of the trade, as
+  known at the entry bar.  A shelf swept *after* entry still counts as
+  standing, or the engine would only ever aim at levels it had already seen
+  get hit.  A match with no shelf in front of it, or one too close to clear
+  ``take_profit_value`` times the risk, is skipped and counted rather than
+  quietly retargeted.
 * Returns are expressed in percent of the entry price; position sizing,
   margin, contract multipliers and financing are out of scope.
 """
@@ -25,6 +32,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from app.analysis.liquidity import LiquidityPool, nearest_unswept_pool
 from app.models.domain import Candle
 from app.models.schemas import TradeRules
 
@@ -112,9 +120,18 @@ def entry_bar(
 class BacktestEngine:
     """Simulates the configured rules over a list of historical matches."""
 
-    def __init__(self, candles: list[Candle], rules: TradeRules) -> None:
+    def __init__(
+        self,
+        candles: list[Candle],
+        rules: TradeRules,
+        pools: list[LiquidityPool] | None = None,
+    ) -> None:
         self._candles = candles
         self._rules = rules
+        # Only read by the liquidity target. Left empty by callers that do not
+        # use it, so nothing else in the engine changes shape for a feature it
+        # does not touch.
+        self._pools = pools or []
         self._true_ranges = _true_ranges(candles)
 
     # ------------------------------------------------------------------
@@ -162,7 +179,15 @@ class BacktestEngine:
 
         entry_price = _apply_slippage(raw_entry, rules.slippage_percent, worsen_up=long)
         stop_price = self._stop_price(match, entry_price, long)
-        target_price = self._target_price(entry_price, stop_price, long)
+        target_price = self._target_price(
+            entry_price,
+            stop_price,
+            long,
+            # A next-open fill happens before its own bar prints, so a shelf
+            # that only becomes knowable on that bar is not yet a target.
+            candles[entry_index].time
+            - (1 if rules.entry_type == "next_open" else 0),
+        )
 
         self._validate_levels(entry_price, stop_price, target_price, long)
 
@@ -264,7 +289,9 @@ class BacktestEngine:
             return entry_price - offset if long else entry_price + offset
         raise _SkipMatch(f"Unsupported stop-loss type '{kind}'")
 
-    def _target_price(self, entry_price: float, stop_price: float, long: bool) -> float:
+    def _target_price(
+        self, entry_price: float, stop_price: float, long: bool, entry_time: int
+    ) -> float:
         rules = self._rules
         kind = rules.take_profit_type
         value = rules.take_profit_value
@@ -280,7 +307,53 @@ class BacktestEngine:
                 raise _SkipMatch("Stop loss sits at the entry price, so risk is zero")
             offset = risk * value
             return entry_price + offset if long else entry_price - offset
+        if kind == "liquidity":
+            return self._liquidity_target(entry_price, stop_price, long, entry_time)
         raise _SkipMatch(f"Unsupported take-profit type '{kind}'")
+
+    def _liquidity_target(
+        self, entry_price: float, stop_price: float, long: bool, entry_time: int
+    ) -> float:
+        """Aim at the nearest shelf of resting orders in front of the trade.
+
+        From the review call, on why a target is not just "a long way away":
+
+            "That's already 287 points, that's way too high.  I'll probably
+            just take it up to here."
+
+        So the nearest standing shelf, not the largest or the furthest.  Every
+        level in between has to be cleared before a further one can be
+        reached, which is what makes the first one the one with the odds.
+
+        ``take_profit_value`` becomes a **floor on the reward**, not the
+        target itself.  Without it a shelf two points above the entry would be
+        a target that almost always fills, and a run of those reports a
+        superb win rate for a strategy that loses money -- the one way this
+        mode could be wrong while looking right.  A shelf too close to clear
+        the floor skips the match with a reason rather than being stretched to
+        meet it, because a target nobody would take is not this setup.
+        """
+
+        risk = abs(entry_price - stop_price)
+        if risk <= 0:
+            raise _SkipMatch("Stop loss sits at the entry price, so risk is zero")
+
+        kind = "high" if long else "low"
+        pool = nearest_unswept_pool(
+            self._pools, kind, price=entry_price, time=entry_time
+        )
+        if pool is None:
+            raise _SkipMatch(
+                "No standing liquidity pool in front of the entry to target"
+            )
+
+        reward = abs(pool.price - entry_price) / risk
+        if reward < self._rules.take_profit_value:
+            raise _SkipMatch(
+                f"Nearest liquidity pool offers {reward:.2f}R, below the "
+                f"{self._rules.take_profit_value:.2f}R minimum"
+            )
+        return pool.price
 
     def _atr(self, index: int, period: int) -> float:
         start = max(1, index - period + 1)

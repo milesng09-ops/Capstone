@@ -238,6 +238,18 @@ async def ict_analysis(
     include_invalid_smt: bool = Query(
         False, description="Keep divergences whose anchors are neither swings nor gap edges"
     ),
+    liquidity_tolerance_percent: float = Query(
+        0.03,
+        ge=0.0,
+        le=5.0,
+        description="How far apart two pivots may sit and still read as one level, as a % of price",
+    ),
+    liquidity_min_touches: int = Query(
+        2, ge=2, le=10, description="Pivots needed before a level counts as a liquidity pool"
+    ),
+    include_swept_pools: bool = Query(
+        True, description="Keep pools price has already traded through"
+    ),
 ) -> IctAnalysisResponse:
     try:
         resolved_interval = normalise_resolution(interval)
@@ -262,6 +274,9 @@ async def ict_analysis(
             min_gap_percent=min_gap_percent,
             include_filled_gaps=include_filled_gaps,
             include_invalid_smt=include_invalid_smt,
+            liquidity_tolerance_percent=liquidity_tolerance_percent,
+            liquidity_min_touches=liquidity_min_touches,
+            include_swept_pools=include_swept_pools,
         )
     except UnknownSymbolError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc

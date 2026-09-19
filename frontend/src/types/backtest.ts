@@ -5,7 +5,7 @@ import type { Interval, SelectionRange } from '@/types/market'
 export type Direction = 'long' | 'short'
 export type EntryType = 'selection_close' | 'next_open'
 export type StopLossType = 'percentage' | 'fixed_price' | 'pattern_extreme' | 'atr_multiple'
-export type TakeProfitType = 'percentage' | 'fixed_price' | 'risk_reward'
+export type TakeProfitType = 'percentage' | 'fixed_price' | 'risk_reward' | 'liquidity'
 export type ExitReason = 'stop_loss' | 'take_profit' | 'timeout' | 'end_of_data'
 
 export const EXIT_REASON_LABELS: Record<ExitReason, string> = {
@@ -48,21 +48,42 @@ export interface SearchSettings {
 export interface DetectorFilters {
   /** The entry price sat inside a fair value gap that was unfilled then. */
   require_fair_value_gap: boolean
+  /**
+   * Narrow that condition to the deeper half of the zone -- consequent
+   * encroachment. "You either hit the gap, get a setup, and then move up. Or
+   * you hit the middle line of the gap, then set up, then move up": two
+   * entries off one zone, and this asks for the second.
+   */
+  gap_past_midpoint: boolean
   require_smt_divergence: boolean
   require_swing_point: boolean
-  /** How recently a swing or divergence must have been confirmed to count. */
+  /**
+   * A shelf of equal highs or lows had been swept. The stop hunt: price
+   * clears the level, takes the orders resting past it, and turns back.
+   * Measured from the sweep, not from when the shelf formed.
+   */
+  require_liquidity_sweep: boolean
+  /** How recently a swing, divergence or sweep must have happened to count. */
   within_bars: number
   align_with_direction: boolean
   swing_strength: number
+  /** How far apart two pivots may sit and still read as one level, in %. */
+  liquidity_tolerance_percent: number
+  /** Pivots needed before a level counts as a shelf. */
+  liquidity_min_touches: number
 }
 
 export const DEFAULT_DETECTOR_FILTERS: DetectorFilters = {
   require_fair_value_gap: false,
+  gap_past_midpoint: false,
   require_smt_divergence: false,
   require_swing_point: false,
+  require_liquidity_sweep: false,
   within_bars: 10,
   align_with_direction: true,
   swing_strength: 2,
+  liquidity_tolerance_percent: 0.03,
+  liquidity_min_touches: 2,
 }
 
 /**

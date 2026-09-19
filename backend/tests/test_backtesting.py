@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.analysis.liquidity import LiquidityPool
+from app.analysis.structure import SwingPoint
 from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade
 from app.backtesting.metrics import compute_metrics
 from app.models.domain import Candle
@@ -195,3 +197,163 @@ class TestProfitFactor:
     def test_is_undefined_with_no_trades_at_all(self):
         summary = compute_metrics([], total_matches=0, skipped_matches=0)
         assert summary.profit_factor is None
+
+
+# --------------------------------------------------------------------------
+def rising_series(count: int, start: float = 100.0, step: float = 1.0) -> list[Candle]:
+    """Candles that climb steadily, so an upside target is eventually met."""
+
+    return [
+        Candle(
+            symbol="NQ",
+            time=index * HOUR_MS,
+            open=start + index * step,
+            high=start + index * step + 0.5,
+            low=start + index * step - 0.5,
+            close=start + index * step,
+            volume=100.0,
+        )
+        for index in range(count)
+    ]
+
+
+def shelf(*, kind="high", price=110.0, formed_time=0, swept_time=None) -> LiquidityPool:
+    touch = SwingPoint(
+        symbol="NQ",
+        kind=kind,
+        index=0,
+        time=formed_time,
+        price=price,
+        confirmed_time=formed_time,
+        strength=2,
+    )
+    return LiquidityPool(
+        symbol="NQ",
+        kind=kind,
+        price=price,
+        start_time=formed_time,
+        end_time=formed_time,
+        formed_time=formed_time,
+        touches=(touch, touch),
+        spread=0.0,
+        spread_percent=0.0,
+        swept=swept_time is not None,
+        swept_time=swept_time,
+    )
+
+
+LIQUIDITY_RULES = TradeRules(
+    direction="long",
+    entry_type="selection_close",
+    stop_loss_type="percentage",
+    stop_loss_value=2.0,
+    take_profit_type="liquidity",
+    take_profit_value=1.0,
+    maximum_holding_bars=40,
+    fee_percent=0.0,
+    slippage_percent=0.0,
+)
+
+
+class TestLiquidityTarget:
+    """The target is the shelf in front of the trade, not a multiple of risk."""
+
+    def test_exits_at_the_shelf(self):
+        candles = rising_series(40)
+        engine = BacktestEngine(candles, LIQUIDITY_RULES, pools=[shelf(price=110.0)])
+        trades, skipped = engine.run([MatchInput("m1", 0, 2, 1.0)])
+
+        assert skipped == []
+        assert len(trades) == 1
+        assert trades[0].target_price == 110.0
+        assert trades[0].exit_reason == "take_profit"
+
+    def test_picks_the_nearer_of_two_shelves(self):
+        candles = rising_series(40)
+        engine = BacktestEngine(
+            candles,
+            LIQUIDITY_RULES,
+            pools=[shelf(price=130.0), shelf(price=110.0)],
+        )
+        trades, _ = engine.run([MatchInput("m1", 0, 2, 1.0)])
+        assert trades[0].target_price == 110.0
+
+    def test_skips_a_match_with_no_shelf_in_front(self):
+        candles = rising_series(40)
+        # The only shelf sits below the entry, so a long has nothing to aim at.
+        engine = BacktestEngine(candles, LIQUIDITY_RULES, pools=[shelf(price=50.0)])
+        trades, skipped = engine.run([MatchInput("m1", 0, 2, 1.0)])
+
+        assert trades == []
+        assert len(skipped) == 1
+        assert "liquidity pool" in skipped[0].reason
+
+    def test_skips_a_shelf_too_close_to_be_worth_taking(self):
+        # Entry near 102, stop 2% below it, so risk is about 2.04. A shelf at
+        # 102.5 offers roughly 0.2R -- a target that nearly always fills and
+        # would report a flattering win rate for a strategy that loses money.
+        candles = rising_series(40)
+        rules = LIQUIDITY_RULES.model_copy(update={"take_profit_value": 2.0})
+        engine = BacktestEngine(candles, rules, pools=[shelf(price=102.5)])
+        trades, skipped = engine.run([MatchInput("m1", 0, 2, 1.0)])
+
+        assert trades == []
+        assert len(skipped) == 1
+        assert "below the" in skipped[0].reason
+        assert "minimum" in skipped[0].reason
+
+    def test_a_shelf_that_has_not_formed_yet_is_not_a_target(self):
+        candles = rising_series(40)
+        engine = BacktestEngine(
+            candles,
+            LIQUIDITY_RULES,
+            pools=[shelf(price=110.0, formed_time=30 * HOUR_MS)],
+        )
+        trades, skipped = engine.run([MatchInput("m1", 0, 2, 1.0)])
+        assert trades == []
+        assert "liquidity pool" in skipped[0].reason
+
+    def test_a_shelf_swept_after_entry_is_still_a_target(self):
+        # The hindsight case. Its sweep is this moment's future; reading it
+        # would leave the engine only ever aiming at levels it knows get hit.
+        candles = rising_series(40)
+        engine = BacktestEngine(
+            candles,
+            LIQUIDITY_RULES,
+            pools=[shelf(price=110.0, swept_time=20 * HOUR_MS)],
+        )
+        trades, _ = engine.run([MatchInput("m1", 0, 2, 1.0)])
+        assert trades[0].target_price == 110.0
+
+    def test_a_shelf_already_swept_before_entry_is_not_a_target(self):
+        candles = rising_series(40)
+        engine = BacktestEngine(
+            candles,
+            LIQUIDITY_RULES,
+            pools=[shelf(price=110.0, swept_time=1 * HOUR_MS)],
+        )
+        trades, skipped = engine.run([MatchInput("m1", 5, 7, 1.0)])
+        assert trades == []
+        assert "liquidity pool" in skipped[0].reason
+
+    def test_a_short_aims_at_the_shelf_below(self):
+        candles = rising_series(40, start=140.0, step=-1.0)
+        rules = LIQUIDITY_RULES.model_copy(update={"direction": "short"})
+        engine = BacktestEngine(
+            candles, rules, pools=[shelf(kind="low", price=130.0)]
+        )
+        trades, skipped = engine.run([MatchInput("m1", 0, 2, 1.0)])
+
+        assert skipped == []
+        assert trades[0].target_price == 130.0
+        assert trades[0].exit_reason == "take_profit"
+
+    def test_other_target_types_ignore_the_pools(self):
+        candles = rising_series(40)
+        rules = LIQUIDITY_RULES.model_copy(
+            update={"take_profit_type": "risk_reward", "take_profit_value": 2.0}
+        )
+        engine = BacktestEngine(candles, rules, pools=[shelf(price=110.0)])
+        trades, _ = engine.run([MatchInput("m1", 0, 2, 1.0)])
+        # Entry 102, stop 2% below, target two risks above -- nowhere near 110.
+        assert trades[0].target_price != 110.0

@@ -9,7 +9,12 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { renderHook } from '@testing-library/react'
 
-import { longestRange, useSymbolInterval, useWorkspace } from '@/store/workspace'
+import {
+  longestRange,
+  migrateWorkspace,
+  useSymbolInterval,
+  useWorkspace,
+} from '@/store/workspace'
 import type { Drawing } from '@/types/drawing'
 import {
   DEFAULT_CHART_SYNC,
@@ -33,7 +38,8 @@ function intervalFor(symbol: SymbolKey) {
   unmount()
   return value
 }
-import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
+import { DEFAULT_ICT_SETTINGS, type IctSettings } from '@/types/ict'
+import { DEFAULT_DETECTOR_FILTERS, type DetectorFilters } from '@/types/backtest'
 
 function level(id: string, price = 100, symbol = 'NQ'): Drawing {
   return { id, kind: 'horizontal', symbol, color: '#818cf8',
@@ -399,5 +405,105 @@ describe('layout', () => {
 
     expect(stored()).toHaveProperty('sidebarRatio', 0.9)
     expect(stored()).toHaveProperty('chartRatio', 0.7)
+  })
+})
+
+describe('migrating a stored workspace', () => {
+  it('fills settings added since the state was saved', () => {
+    // The case that prompted this: a version-2 workspace predates the
+    // liquidity settings, and a number field handed `undefined` is an
+    // uncontrolled input showing nothing.
+    const stored = {
+      interval: '1h',
+      rangeDays: 30,
+      ict: {
+        enabled: true,
+        swingStrength: 4,
+        minGapPercent: 0.2,
+        includeFilledGaps: true,
+        includeInvalidSmt: false,
+        showSwings: true,
+        showGaps: false,
+        showSmt: false,
+        showTradeEvidence: true,
+      },
+    }
+
+    const migrated = migrateWorkspace(stored, 2) as { ict: IctSettings }
+
+    expect(migrated.ict.liquidityTolerancePercent).toBe(
+      DEFAULT_ICT_SETTINGS.liquidityTolerancePercent,
+    )
+    expect(migrated.ict.liquidityMinTouches).toBe(DEFAULT_ICT_SETTINGS.liquidityMinTouches)
+    expect(migrated.ict.showLiquidity).toBe(false)
+    expect(migrated.ict.includeSweptPools).toBe(true)
+  })
+
+  it('fills the detector filters too, not just the chart settings', () => {
+    // Zustand merges shallowly, so every persisted *object* has this hazard.
+    // `detectors` gained three keys in the same change as `ict`, and a
+    // missing boolean reaches a switch as `undefined` -- which JSON.stringify
+    // drops, so the gap survives every reload until the control is clicked.
+    const stored = {
+      detectors: {
+        require_fair_value_gap: true,
+        require_smt_divergence: false,
+        require_swing_point: false,
+        within_bars: 10,
+        align_with_direction: true,
+        swing_strength: 2,
+      },
+    }
+
+    const migrated = migrateWorkspace(stored, 2) as { detectors: DetectorFilters }
+
+    expect(migrated.detectors.require_liquidity_sweep).toBe(false)
+    expect(migrated.detectors.gap_past_midpoint).toBe(false)
+    expect(migrated.detectors.liquidity_tolerance_percent).toBe(
+      DEFAULT_DETECTOR_FILTERS.liquidity_tolerance_percent,
+    )
+    expect(migrated.detectors.liquidity_min_touches).toBe(
+      DEFAULT_DETECTOR_FILTERS.liquidity_min_touches,
+    )
+    // And the choice that was already there survives.
+    expect(migrated.detectors.require_fair_value_gap).toBe(true)
+  })
+
+  it('does not overwrite a setting the user had already chosen', () => {
+    // Defaults are merged *under* the stored object, so backfilling a new key
+    // must not quietly reset an old one.
+    const stored = {
+      ict: { ...DEFAULT_ICT_SETTINGS, swingStrength: 7, showSwings: true },
+    }
+
+    const migrated = migrateWorkspace(stored, 2) as { ict: IctSettings }
+
+    expect(migrated.ict.swingStrength).toBe(7)
+    expect(migrated.ict.showSwings).toBe(true)
+  })
+
+  it('still turns the overlays off when coming from version 1', () => {
+    const stored = {
+      ict: { ...DEFAULT_ICT_SETTINGS, showSwings: true, showGaps: true, showSmt: true },
+    }
+
+    const migrated = migrateWorkspace(stored, 1) as { ict: IctSettings }
+
+    expect(migrated.ict.showSwings).toBe(false)
+    expect(migrated.ict.showGaps).toBe(false)
+    expect(migrated.ict.showSmt).toBe(false)
+    // And the new keys are filled on that path too.
+    expect(migrated.ict.liquidityMinTouches).toBe(DEFAULT_ICT_SETTINGS.liquidityMinTouches)
+  })
+
+  it('still clamps a range the interval cannot carry', () => {
+    const migrated = migrateWorkspace({ interval: '5m', rangeDays: 180 }, 2) as {
+      rangeDays: number
+    }
+    expect(migrated.rangeDays).toBe(longestRange('5m'))
+  })
+
+  it('passes undefined straight through', () => {
+    expect(migrateWorkspace(undefined, 2)).toBeUndefined()
   })
 })

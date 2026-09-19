@@ -135,6 +135,8 @@ def describe_configuration(payload: dict) -> str:
             ("require_fair_value_gap", "FVG"),
             ("require_smt_divergence", "SMT"),
             ("require_swing_point", "swing"),
+            ("require_liquidity_sweep", "sweep"),
+            ("gap_past_midpoint", "CE"),
         )
         if detectors.get(key)
     ]
@@ -175,4 +177,9 @@ def _describe_level(kind: object, value: object, *, risk_unit: bool) -> str:
         return f"@{number}"
     if kind == "risk_reward":
         return f"{number}R" if risk_unit else number
+    if kind == "liquidity":
+        # The number is a floor on the reward, not the target, so it reads as
+        # a bound. Without this the whole mode rendered as a bare "2" -- and
+        # the one job of a label is to tell two attempts apart.
+        return f"liq ≥{number}R"
     return number

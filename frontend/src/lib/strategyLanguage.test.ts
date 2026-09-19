@@ -198,3 +198,140 @@ describe('the strategy it produces', () => {
     expect(rules.maximum_holding_bars).toBe(DEFAULT_TRADE_RULES.maximum_holding_bars)
   })
 })
+
+describe('liquidity', () => {
+  it.each([
+    'sweep the lows then go long',
+    'after a liquidity sweep',
+    'once the equal highs are taken',
+    'price took out the lows',
+    'a stop hunt below the shelf',
+  ])('reads %s as a sweep condition', (text) => {
+    expect(interpret(text).detectors.require_liquidity_sweep).toBe(true)
+  })
+
+  it.each(['target liquidity', 'aim for the next pool', 'take profit at the shelf'])(
+    'reads %s as a liquidity target',
+    (text) => {
+      expect(interpret(text).rules.take_profit_type).toBe('liquidity')
+    },
+  )
+
+  it('keeps the trigger and the target apart', () => {
+    // They share a vocabulary and are different settings. Naming the sweep
+    // must not silently move the exit.
+    const swept = interpret('long after the lows are swept')
+    expect(swept.detectors.require_liquidity_sweep).toBe(true)
+    expect(swept.rules.take_profit_type).toBeUndefined()
+
+    const aimed = interpret('long, target liquidity')
+    expect(aimed.rules.take_profit_type).toBe('liquidity')
+    expect(aimed.detectors.require_liquidity_sweep).toBeUndefined()
+  })
+
+  it('reads both when the sentence asks for both', () => {
+    const both = interpret('long after a liquidity sweep, target the next pool')
+    expect(both.detectors.require_liquidity_sweep).toBe(true)
+    expect(both.rules.take_profit_type).toBe('liquidity')
+  })
+
+  it('does not read a sweep out of an unrelated sentence', () => {
+    expect(interpret('long inside a fair value gap').detectors.require_liquidity_sweep)
+      .toBeUndefined()
+  })
+})
+
+describe('liquidity, the phrases the app itself teaches', () => {
+  it('reads the vocabulary the UI uses for a target', () => {
+    // The panel says "the nearest shelf of equal highs" and every row in the
+    // liquidity list is labelled "Equal highs". Writing the app's own words
+    // must not change the entry condition instead.
+    for (const text of [
+      'target the equal highs',
+      'take profit at the equal highs',
+      'aim for the equal lows',
+      'tp the next pool',
+    ]) {
+      const read = interpret(text)
+      expect(read.rules.take_profit_type, text).toBe('liquidity')
+      expect(read.detectors.require_liquidity_sweep, text).toBeUndefined()
+    }
+  })
+
+  it('reads a sweep in the passive voice', () => {
+    // The liquidity-sweep preset's own summary is written this way.
+    for (const text of [
+      'Enter after the lows are taken',
+      'once the equal highs are swept',
+      'long when liquidity is taken',
+      'enter on a sweep of the lows',
+      'enter after the sweep',
+    ]) {
+      expect(interpret(text).detectors.require_liquidity_sweep, text).toBe(true)
+    }
+  })
+
+  it('does not read a bare noun as a sweep', () => {
+    // A sweep is an event. Naming the level is not claiming it was taken.
+    expect(interpret('I trade equal highs').detectors.require_liquidity_sweep)
+      .toBeUndefined()
+  })
+
+  it('treats a reward number as the floor, not a competing target', () => {
+    // Both orderings, because rules run clause by clause and neither is
+    // canonical. This is the natural sentence for the shipped preset.
+    const after = interpret(
+      'Long after the equal lows are swept, target the next shelf of highs, minimum 1.5R',
+    )
+    expect(after.rules.take_profit_type).toBe('liquidity')
+    expect(after.rules.take_profit_value).toBe(1.5)
+    expect(after.detectors.require_liquidity_sweep).toBe(true)
+
+    const before = interpret('long, 1.5R, target the next liquidity pool')
+    expect(before.rules.take_profit_type).toBe('liquidity')
+    expect(before.rules.take_profit_value).toBe(1.5)
+  })
+
+  it('still reads a plain R target when no pool is named', () => {
+    const plain = interpret('long, 2R')
+    expect(plain.rules.take_profit_type).toBe('risk_reward')
+    expect(plain.rules.take_profit_value).toBe(2)
+  })
+
+  it('reports the reward as a floor once the target is a pool', () => {
+    // The account of what was understood has to match what was set, or it is
+    // the quiet-disagreement failure this module exists to prevent.
+    const read = interpret('target the next pool, minimum 1.5R')
+    const target = read.understood.filter((item) => item.setting.includes('reward'))
+    expect(target).toHaveLength(1)
+    expect(target[0].value).toContain('At least 1.5')
+  })
+
+  it('round-trips the shipped preset summary', () => {
+    const read = interpret('Enter after the lows are taken, target the next shelf of highs.')
+    expect(read.detectors.require_liquidity_sweep).toBe(true)
+    expect(read.rules.take_profit_type).toBe('liquidity')
+    expect(read.unread).toHaveLength(0)
+  })
+})
+
+describe('the gap midpoint', () => {
+  it.each([
+    'enter at consequent encroachment',
+    'wait for the middle of the gap',
+    'long from the gap midpoint',
+    'enter at 50% of the gap',
+  ])('reads %s as the midpoint condition', (text) => {
+    const read = interpret(text)
+    expect(read.detectors.gap_past_midpoint).toBe(true)
+    // Narrowing a condition that is off would mean nothing, so it turns the
+    // gap requirement on too.
+    expect(read.detectors.require_fair_value_gap).toBe(true)
+  })
+
+  it('leaves a plain gap entry at the whole zone', () => {
+    const read = interpret('enter inside a fair value gap')
+    expect(read.detectors.require_fair_value_gap).toBe(true)
+    expect(read.detectors.gap_past_midpoint).toBeUndefined()
+  })
+})

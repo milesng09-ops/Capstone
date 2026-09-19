@@ -21,7 +21,12 @@ from dataclasses import dataclass
 import anyio
 from pydantic import ValidationError
 
-from app.analysis import find_fair_value_gaps, find_smt_divergences, find_swing_points
+from app.analysis import (
+    find_fair_value_gaps,
+    find_liquidity_pools,
+    find_smt_divergences,
+    find_swing_points,
+)
 from app.analysis.conditions import detectors_at_entry, unmet_condition
 from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade, entry_bar
 import numpy as np
@@ -225,6 +230,12 @@ class BacktestService:
                 "Widen the lookback range or reduce the maximum holding period."
             )
 
+        # Detectors are computed here rather than beside the matches because
+        # weight fitting runs first and needs the same pools: it labels its
+        # training windows through the engine, so a liquidity target with no
+        # shelves to aim at labels nothing and the fit silently finds no data.
+        detectors = self._detector_context(request, usable, primary)
+
         # ---- fitted weights, on history the result is not read from ----
         exclusion = (request.selection.start_time, request.selection.end_time)
         learned = None
@@ -242,6 +253,7 @@ class BacktestService:
                         required_future_bars=required_future_bars,
                         exclusion=exclusion,
                         selection_candles=selection_candles,
+                        pools=(detectors.get(primary) or {}).get("pools"),
                     )
                 )
         weights = learned.weights if learned is not None else None
@@ -299,9 +311,8 @@ class BacktestService:
         series_by_symbol = {item.symbol: item for item in usable}
 
         # ---- detector conditions --------------------------------------
-        # Computed once per symbol and consulted per match, always as of the
-        # bar the trade enters on.
-        detectors = self._detector_context(request, usable, primary)
+        # `detectors` was computed above, before the fit that also needs it.
+        # Consulted per match, always as of the bar the trade enters on.
         within_ms = request.detectors.within_bars * interval_ms(interval)
         filtered_total = 0
         if request.detectors.any_required:
@@ -327,7 +338,11 @@ class BacktestService:
         skipped_total = 0
 
         for symbol, entries in by_symbol.items():
-            engine = BacktestEngine(series_by_symbol[symbol].candles, request.trade)
+            engine = BacktestEngine(
+                series_by_symbol[symbol].candles,
+                request.trade,
+                pools=(detectors.get(symbol) or {}).get("pools"),
+            )
             inputs = [
                 MatchInput(
                     id=match_id,
@@ -566,13 +581,15 @@ class BacktestService:
 
     # ------------------------------------------------------------------
     def _detector_context(self, request: BacktestRequest, usable, primary: str) -> dict:
-        """Swings, gaps and divergences per symbol, computed once.
+        """Swings, gaps, divergences and liquidity pools per symbol, once.
 
-        Empty when nothing is required, so a run that asks for no conditions
-        pays nothing for the machinery.
+        Empty when nothing needs them, so a run that asks for no conditions
+        pays nothing for the machinery.  A liquidity *target* needs the pools
+        even with every condition switched off, which is why the test is not
+        simply ``any_required``.
         """
 
-        if not request.detectors.any_required:
+        if not self._needs_detectors(request):
             return {}
 
         strength = request.detectors.swing_strength
@@ -613,8 +630,31 @@ class BacktestService:
                 "gaps": gaps_by_symbol[item.symbol],
                 "swings": swings_by_symbol[item.symbol],
                 "divergences": divergences,
+                # Swept shelves are kept: the sweep condition is asking where
+                # price has just come *from*, which an unswept-only list
+                # cannot answer.
+                "pools": find_liquidity_pools(
+                    item.candles,
+                    swings_by_symbol[item.symbol],
+                    tolerance_percent=request.detectors.liquidity_tolerance_percent,
+                    min_touches=request.detectors.liquidity_min_touches,
+                ),
             }
         return context
+
+    @staticmethod
+    def _needs_detectors(request: BacktestRequest) -> bool:
+        """Whether anything in this run reads the detectors.
+
+        A liquidity target is the case that is not a condition: it decides
+        where a trade exits rather than whether it is taken, so it needs the
+        pools even when the filters are all off.
+        """
+
+        return (
+            request.detectors.any_required
+            or request.trade.take_profit_type == "liquidity"
+        )
 
     def _condition_reason(
         self, *, candles, end_index: int, request: BacktestRequest, context, within_ms: int
@@ -641,14 +681,21 @@ class BacktestService:
             gaps=context["gaps"],
             swings=context["swings"],
             divergences=context["divergences"],
+            pools=context["pools"],
             within_ms=within_ms,
             align_with_direction=request.detectors.align_with_direction,
+            gap_past_midpoint=request.detectors.gap_past_midpoint,
+            # A next-open entry fills before its bar has printed anything, so
+            # that bar's own high and low are not evidence for taking it.
+            entry_bar_known=request.trade.entry_type != "next_open",
         )
         return unmet_condition(
             state,
             require_fair_value_gap=request.detectors.require_fair_value_gap,
             require_smt_divergence=request.detectors.require_smt_divergence,
             require_swing_point=request.detectors.require_swing_point,
+            require_liquidity_sweep=request.detectors.require_liquidity_sweep,
+            gap_past_midpoint=request.detectors.gap_past_midpoint,
         )
 
     @staticmethod
@@ -666,9 +713,12 @@ class BacktestService:
         )
         lines: list[str] = []
         if filters.require_fair_value_gap:
-            lines.append(
-                f"Only matches whose entry price sat inside an unfilled fair value gap{aligned}."
+            where = (
+                "past the midpoint of an unfilled fair value gap"
+                if filters.gap_past_midpoint
+                else "inside an unfilled fair value gap"
             )
+            lines.append(f"Only matches whose entry price sat {where}{aligned}.")
         if filters.require_smt_divergence:
             lines.append(
                 f"Only matches with a valid SMT divergence{aligned} confirmed within "
@@ -678,6 +728,15 @@ class BacktestService:
             lines.append(
                 f"Only matches with a swing point{aligned} confirmed within "
                 f"{filters.within_bars} bars before entry."
+            )
+        if filters.require_liquidity_sweep:
+            side = "lows" if request.trade.direction == "long" else "highs"
+            where = f" of {side}" if filters.align_with_direction else ""
+            lines.append(
+                f"Only matches where a liquidity pool{where} -- at least "
+                f"{filters.liquidity_min_touches} pivots within "
+                f"{filters.liquidity_tolerance_percent:g}% of each other -- was swept "
+                f"within {filters.within_bars} bars before entry."
             )
         lines.append(
             "Conditions are read at the entry bar using only what had been confirmed "
@@ -694,6 +753,7 @@ class BacktestService:
         required_future_bars: int,
         exclusion: tuple[int, int],
         selection_candles: list[Candle],
+        pools: list | None = None,
     ):
         """Fit block weights on the earlier lookback, score them on the later.
 
@@ -750,7 +810,13 @@ class BacktestService:
             return out
 
         engine = BacktestEngine(
-            candles, request.trade.model_copy(update={"allow_overlapping_trades": True})
+            candles,
+            request.trade.model_copy(update={"allow_overlapping_trades": True}),
+            # Labelling the training windows needs the same targets the real
+            # run uses. Without them a liquidity target skips every window,
+            # the fit sees no labels, and the only trace is a log line that
+            # looks identical to "this lookback was too short".
+            pools=pools,
         )
 
         # Win rate asks only whether a trade finished up, so magnitude leaves
@@ -1021,7 +1087,19 @@ class BacktestService:
                     is None
                 ][:samples]
             drawn += len(inputs)
-            trades.extend(run_baseline(candles, request.trade, inputs))
+            # The same shelves the real run was given. Without them a
+            # liquidity target has nothing to aim at, every random window is
+            # skipped, and the baseline comes back as zero -- which reads as
+            # "random entries never work here" beside the result it is
+            # supposed to be a check on.
+            trades.extend(
+                run_baseline(
+                    candles,
+                    request.trade,
+                    inputs,
+                    pools=(detectors.get(symbol) or {}).get("pools"),
+                )
+            )
 
         # `samples` reports what was actually offered to the engine, not the
         # nominal target: with conditions on, the two differ and the smaller

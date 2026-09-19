@@ -67,6 +67,9 @@ export function useIct(
       settings.minGapPercent,
       settings.includeFilledGaps,
       settings.includeInvalidSmt,
+      settings.liquidityTolerancePercent,
+      settings.liquidityMinTouches,
+      settings.includeSweptPools,
     ],
     queryFn: ({ signal }) =>
       api.ict(
@@ -80,6 +83,9 @@ export function useIct(
           minGapPercent: settings.minGapPercent,
           includeFilledGaps: settings.includeFilledGaps,
           includeInvalidSmt: settings.includeInvalidSmt,
+          liquidityTolerancePercent: settings.liquidityTolerancePercent,
+          liquidityMinTouches: settings.liquidityMinTouches,
+          includeSweptPools: settings.includeSweptPools,
         },
         signal,
       ),

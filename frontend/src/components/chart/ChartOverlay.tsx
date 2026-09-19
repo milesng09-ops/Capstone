@@ -106,7 +106,13 @@ import {
   type PositionDrawing,
 } from '@/types/drawing'
 import type { Drawing, DrawingDraft, DrawingPoint, ToolMode } from '@/types/drawing'
-import type { FairValueGap, IctAnalysis, IctSettings, SwingPoint } from '@/types/ict'
+import type {
+  FairValueGap,
+  IctAnalysis,
+  IctSettings,
+  LiquidityPool,
+  SwingPoint,
+} from '@/types/ict'
 import type { ChartPalette } from '@/lib/chart'
 
 /** Pointer distance, in pixels, within which a drag snaps to a swing point. */
@@ -497,6 +503,19 @@ export function ChartOverlay({
       )
     }
 
+    // Shelves sit above the zones and below the markers: they are levels, so
+    // they read as part of the background a trade is judged against rather
+    // than as an annotation on top of it.
+    if (ict && ictSettings.showLiquidity) {
+      for (const pool of ict.liquidity_pools) {
+        // A standing shelf runs to the right edge, so it is on screen
+        // whenever its first pivot is behind the right edge of the pane.
+        const end = pool.swept ? (pool.swept_time ?? pool.end_time) : Number.MAX_SAFE_INTEGER
+        if (!onScreen(pool.start_time, end)) continue
+        paintLiquidityPool(ctx, pool, xOf, yOf, width, palette)
+      }
+    }
+
     if (ict && ictSettings.showSmt) {
       for (const divergence of ict.smt_divergences) {
         if (!onScreen(divergence.start_time, divergence.end_time)) continue
@@ -522,6 +541,18 @@ export function ChartOverlay({
         for (const point of evidence.swings) {
           if (!onScreen(point.time, point.time)) continue
           paintSwing(ctx, point, xOf, yOf, palette.muted)
+        }
+      }
+      // The shelf a liquidity trade was taken against, and the one it aimed
+      // at. Without these, selecting a trade from the sweep preset showed
+      // every other detector's working and not the one that decided it.
+      if (!ictSettings.showLiquidity) {
+        for (const pool of evidence.pools) {
+          const end = pool.swept
+            ? (pool.swept_time ?? pool.end_time)
+            : Number.MAX_SAFE_INTEGER
+          if (!onScreen(pool.start_time, end)) continue
+          paintLiquidityPool(ctx, pool, xOf, yOf, width, palette)
         }
       }
     }
@@ -578,6 +609,7 @@ export function ChartOverlay({
     handle,
     ict,
     ictSettings.showGaps,
+    ictSettings.showLiquidity,
     ictSettings.showSmt,
     ictSettings.showSwings,
     selectedDrawingId,
@@ -1535,6 +1567,63 @@ function paintSmt(
   ctx.textBaseline = 'middle'
   const offset = divergence.kind === 'high' ? -9 : 11
   ctx.fillText(label, x2 + 5, y2 + offset)
+  ctx.restore()
+}
+
+/**
+ * A shelf of equal highs or lows -- the level, and how many times it held.
+ *
+ * Drawn as a line rather than a zone even though a pool has a spread. The
+ * spread is how *tight* the shelf is, which is a property of the level worth
+ * knowing but not worth two pixels of chart: what a trader acts on is the one
+ * price that clears it, and a band invites the eye to read the near edge as
+ * the level when the far edge is the one that matters.
+ *
+ * A standing shelf runs to the right edge, because it is still there. A swept
+ * one stops where it was taken and fades -- the orders are gone, and the only
+ * reason to keep it on the chart is to see where price has already been.
+ */
+function paintLiquidityPool(
+  ctx: CanvasRenderingContext2D,
+  pool: LiquidityPool,
+  xOf: XConverter,
+  yOf: YConverter,
+  width: number,
+  palette: ChartPalette,
+) {
+  const y = yOf(pool.price)
+  if (y == null) return
+
+  const left = xOf(pool.start_time)
+  if (left == null) return
+  const right = pool.swept ? (xOf(pool.swept_time ?? pool.end_time) ?? width) : width
+  if (right <= left) return
+
+  // Highs are where a long is going and where a short is defended, so they
+  // take the bearish colour and lows the bullish one -- the same convention
+  // the gaps use, read from which side of price the level sits on.
+  const colour = pool.kind === 'high' ? palette.bear : palette.bull
+
+  ctx.save()
+  ctx.globalAlpha = pool.swept ? 0.28 : 0.7
+  ctx.strokeStyle = colour
+  ctx.lineWidth = 1
+  // Dashed while it stands, because it is a level price has not reached yet;
+  // solid once taken, because that part is history and did happen.
+  ctx.setLineDash(pool.swept ? [] : [5, 4])
+  ctx.beginPath()
+  ctx.moveTo(left, y + 0.5)
+  ctx.lineTo(right, y + 0.5)
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  // A tick per pivot at the left end: how many times the level held is the
+  // difference between a shelf worth targeting and a coincidence.
+  ctx.globalAlpha = pool.swept ? 0.35 : 0.85
+  ctx.fillStyle = colour
+  for (let index = 0; index < Math.min(pool.touch_count, 5); index += 1) {
+    ctx.fillRect(left + index * 4, y - 2.5, 2, 5)
+  }
   ctx.restore()
 }
 

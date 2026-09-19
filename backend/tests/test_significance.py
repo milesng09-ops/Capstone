@@ -13,6 +13,8 @@ import math
 
 import pytest
 
+from app.analysis.liquidity import LiquidityPool
+from app.analysis.structure import SwingPoint
 from app.backtesting.significance import (
     baseline_inputs,
     baseline_seed,
@@ -234,3 +236,96 @@ class TestWhatTheBaselineReports:
             seed=5,
         )
         assert rising.win_rate > flat.win_rate
+
+
+class TestTheBaselineGetsTheSameTargets:
+    """A baseline that cannot fail to be beaten is not a baseline.
+
+    With a liquidity target the engine needs the shelves to aim at. Withhold
+    them from the baseline and every random window is skipped for want of a
+    target, which is reported as a win rate of zero -- the most flattering
+    possible number to print beside a real result, and it silently removes
+    the p-value the whole module exists to produce.
+    """
+
+    RULES = TradeRules(
+        direction="long",
+        entry_type="selection_close",
+        stop_loss_type="percentage",
+        stop_loss_value=2.0,
+        take_profit_type="liquidity",
+        take_profit_value=1.0,
+        maximum_holding_bars=30,
+        fee_percent=0.0,
+        slippage_percent=0.0,
+    )
+
+    def series(self, count: int = 200) -> list[Candle]:
+        # A steady climb, so an upside target is reachable from anywhere.
+        return [
+            Candle(
+                symbol="NQ",
+                time=T0 + index * HOUR,
+                open=100.0 + index,
+                high=100.5 + index,
+                low=99.5 + index,
+                close=100.0 + index,
+                volume=100.0,
+            )
+            for index in range(count)
+        ]
+
+    def shelf(self, price: float) -> LiquidityPool:
+        touch = SwingPoint(
+            symbol="NQ",
+            kind="high",
+            index=0,
+            time=T0,
+            price=price,
+            confirmed_time=T0,
+            strength=2,
+        )
+        return LiquidityPool(
+            symbol="NQ",
+            kind="high",
+            price=price,
+            start_time=T0,
+            end_time=T0,
+            formed_time=T0,
+            touches=(touch, touch),
+            spread=0.0,
+            spread_percent=0.0,
+            swept=False,
+            swept_time=None,
+        )
+
+    def run(self, pools):
+        return random_entry_baseline(
+            self.series(),
+            self.RULES,
+            window_length=5,
+            exclude_ranges=[],
+            required_future_bars=32,
+            samples=40,
+            seed=7,
+            pools=pools,
+        )
+
+    def test_without_pools_the_baseline_is_empty(self):
+        # Documents the failure rather than the fix: this is what the caller
+        # gets if it forgets, and it does not look like an error.
+        empty = self.run(None)
+        assert empty.trades_executed == 0
+        assert empty.win_rate == 0.0
+        assert empty.samples > 0
+
+    def test_with_pools_the_baseline_actually_trades(self):
+        shelves = [self.shelf(price) for price in (150.0, 200.0, 260.0)]
+        real = self.run(shelves)
+        assert real.trades_executed > 0
+
+    def test_the_two_are_not_the_same_answer(self):
+        # The point of the regression: a forgotten argument changes the
+        # reported baseline from a real rate to zero.
+        shelves = [self.shelf(price) for price in (150.0, 200.0, 260.0)]
+        assert self.run(shelves).trades_executed != self.run(None).trades_executed

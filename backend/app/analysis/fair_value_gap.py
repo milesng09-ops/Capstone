@@ -203,11 +203,36 @@ def _mitigation_state(
     )
 
 
-def gap_containing(gaps: list[FairValueGap], price: float, time: int) -> FairValueGap | None:
+def gap_containing(
+    gaps: list[FairValueGap],
+    price: float,
+    time: int,
+    *,
+    past_midpoint: bool = False,
+) -> FairValueGap | None:
     """Find a gap that was open at ``time`` and whose zone contains ``price``.
 
     Used to answer "is this swing sitting inside a fair value gap?", the
     higher-timeframe confluence Miles described as the actual setup.
+
+    ``past_midpoint`` narrows the zone to its deeper half -- consequent
+    encroachment.  From the review call, on the same gap offering two
+    different entries:
+
+        "A gap has levels, so you either hit the gap, get a setup, and then
+        move up.  Or you hit the middle line of the gap, then set up, then
+        move up."
+
+    They are different claims about the same zone, and the second is the
+    stricter one: price has traded through half the imbalance rather than
+    merely touching its edge.  "Deeper" is directional, because the two kinds
+    of gap are approached from opposite sides -- a bullish gap is support
+    price falls into, so deeper is *lower*, and a bearish gap is resistance
+    price rises into, so deeper is *higher*.
+
+    The midpoint itself counts as reached.  It is a level, and price arriving
+    exactly at a level has arrived at it; requiring a tick beyond would make
+    the condition depend on tick size rather than on the gap.
     """
 
     for gap in gaps:
@@ -215,6 +240,15 @@ def gap_containing(gaps: list[FairValueGap], price: float, time: int) -> FairVal
             continue  # The gap did not exist yet.
         if gap.filled_time is not None and gap.filled_time < time:
             continue  # Already closed before this point.
-        if gap.bottom <= price <= gap.top:
-            return gap
+        if not (gap.bottom <= price <= gap.top):
+            continue
+        if past_midpoint:
+            reached = (
+                price <= gap.midpoint
+                if gap.direction == "bullish"
+                else price >= gap.midpoint
+            )
+            if not reached:
+                continue
+        return gap
     return None

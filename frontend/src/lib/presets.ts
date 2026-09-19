@@ -115,6 +115,34 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     },
   },
   {
+    id: 'liquidity-sweep',
+    name: 'Liquidity sweep',
+    summary: 'Enter after the lows are taken, target the next shelf of highs.',
+    rationale:
+      'The setup Miles walked through on the chart: a shelf of equal lows is ' +
+      'where stops rest, price dips under it to take them, and the move that ' +
+      'took them has no follow-through. Both halves are liquidity -- the ' +
+      'trigger is the shelf behind the trade being cleared, and the target is ' +
+      'the nearest shelf standing in front of it, not a multiple of risk. ' +
+      'The minimum reward is what keeps that honest: a shelf a few points ' +
+      'away fills almost every time, and a run of those reports a superb win ' +
+      'rate for a strategy that loses money, so anything under 1.5R skips the ' +
+      'match and says so rather than being traded.',
+    rules: {
+      direction: 'long',
+      stop_loss_type: 'pattern_extreme',
+      stop_loss_value: 0,
+      take_profit_type: 'liquidity',
+      take_profit_value: 1.5,
+      maximum_holding_bars: 30,
+    },
+    detectors: {
+      require_liquidity_sweep: true,
+      within_bars: 8,
+      align_with_direction: true,
+    },
+  },
+  {
     id: 'volatility-scalp',
     name: 'Volatility scalp',
     summary: 'ATR stop, quick 1.5R, out within eight bars.',

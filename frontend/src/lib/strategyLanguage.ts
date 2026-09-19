@@ -131,9 +131,27 @@ const RULES: Rule[] = [
     pattern: new RegExp(String.raw`\b${NUMBER}\s*r\b|\brisk[- ]?reward\s*(?:of)?\s*${NUMBER}|\b${NUMBER}\s*:\s*1\b`),
     apply: (match, into) => {
       const value = Number(match[1] ?? match[2] ?? match[3])
-      into.rules.take_profit_type = 'risk_reward'
+      /*
+       * A number of R does not overrule an exit that has already been named.
+       *
+       * "Target the next shelf of highs, minimum 1.5R" is one instruction,
+       * not two competing ones: with a liquidity target, `take_profit_value`
+       * *is* the minimum reward. Overwriting the type here produced a plain
+       * 1.5R target while the account of what was understood claimed both --
+       * the exact failure this module exists to prevent, and it fired on the
+       * most natural sentence for the liquidity preset.
+       *
+       * Rules are applied clause by clause, so neither ordering is the
+       * canonical one and this cannot be fixed by moving rules around.
+       */
+      const floor = into.rules.take_profit_type === 'liquidity'
+      if (!floor) into.rules.take_profit_type = 'risk_reward'
       into.rules.take_profit_value = value
-      return { phrase: match[0], setting: 'Target', value: `${value}x the risk` }
+      return {
+        phrase: match[0],
+        setting: floor ? 'Minimum reward' : 'Target',
+        value: floor ? `At least ${value}x the risk` : `${value}x the risk`,
+      }
     },
   },
   {
@@ -143,6 +161,33 @@ const RULES: Rule[] = [
       into.rules.take_profit_type = 'percentage'
       into.rules.take_profit_value = value
       return { phrase: match[0], setting: 'Target', value: `${value}% from entry` }
+    },
+  },
+
+  {
+    /*
+     * Needs an explicit target verb before the noun, because the trigger and
+     * the target are different settings that share a vocabulary.
+     *
+     * "Equal highs" is in the noun list deliberately: it is the phrase the UI
+     * itself teaches -- the panel says "the nearest shelf of equal highs" and
+     * every row in the liquidity list is labelled "Equal highs". A user
+     * writing the app's own words for the target must not get the entry
+     * condition changed instead. The sweep rule below no longer matches a
+     * bare noun, which is what keeps the two apart.
+     */
+    pattern:
+      /\b(?:target|targets|targeting|aim(?:ing)?\s+for|take\s+profit(?:\s+at)?|tp)\s*(?:at\s+)?(?:the\s+)?(?:next\s+)?(?:liquidity(?:\s+pool)?|pool|shelf|equal\s+(?:high|low)s?)\b/,
+    apply: (match, into) => {
+      into.rules.take_profit_type = 'liquidity'
+      // `take_profit_value` is left alone: under a liquidity target it means
+      // the minimum reward, and a number elsewhere in the sentence is that
+      // floor rather than a competing instruction.
+      return {
+        phrase: match[0],
+        setting: 'Target',
+        value: 'The nearest standing liquidity pool',
+      }
     },
   },
 
@@ -176,6 +221,43 @@ const RULES: Rule[] = [
     apply: (match, into) => {
       into.detectors.require_swing_point = true
       return { phrase: match[0], setting: 'Condition', value: 'A confirmed swing point' }
+    },
+  },
+  {
+    /*
+     * A sweep is an *event*, so this matches verbs rather than nouns.
+     *
+     * Matching a bare "equal highs" was wrong twice over: it fired on
+     * "target the equal highs", which is the opposite setting, and it read
+     * "I trade equal highs" as a rule about one particular entry. Requiring
+     * the verb also picks up the passive voice the app's own preset summary
+     * uses -- "enter after the lows are taken" -- which the old alternation
+     * missed entirely.
+     */
+    pattern:
+      /\b(?:liquidity\s+sweep|stop\s+hunt|sweeps?|swept|(?:takes?|took)\s+out|(?:are|were|is|was|been|get|gets|got)\s+(?:taken|swept|cleared))\b/,
+    apply: (match, into) => {
+      into.detectors.require_liquidity_sweep = true
+      return {
+        phrase: match[0],
+        setting: 'Condition',
+        value: 'A liquidity pool had just been swept',
+      }
+    },
+  },
+  {
+    // Consequent encroachment. It only narrows the gap condition, so it turns
+    // that on as well -- "half the gap" with no gap required is not a rule.
+    pattern:
+      /\b(?:consequent\s+encroachment|mid(?:dle|point)?\s*(?:line)?\s+of\s+the\s+gap|gap\s+mid(?:dle|point|line)|50\s*%\s+of\s+the\s+gap)\b/,
+    apply: (match, into) => {
+      into.detectors.require_fair_value_gap = true
+      into.detectors.gap_past_midpoint = true
+      return {
+        phrase: match[0],
+        setting: 'Condition',
+        value: 'Entry past the midpoint of an unfilled gap',
+      }
     },
   },
   {

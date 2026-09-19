@@ -20,9 +20,27 @@ import { useChartRange } from '@/hooks/useChartRange'
 import { useIct } from '@/hooks/useMarketData'
 import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
 import { TOOL_LABELS, drawingTime } from '@/types/drawing'
-import { VALIDITY_LABELS, VALIDITY_NOTES, type SmtDivergence } from '@/types/ict'
+import {
+  VALIDITY_LABELS,
+  VALIDITY_NOTES,
+  type LiquidityPool,
+  type SmtDivergence,
+} from '@/types/ict'
 import { cn } from '@/utils/cn'
 import { formatDateTime, formatNumber, formatPrice } from '@/utils/format'
+
+/**
+ * Shelves listed before the list is cut short.
+ *
+ * The chart draws every one of them; this is only how many are worth reading
+ * as numbers, and a column of forty prices is not read, it is scrolled past.
+ *
+ * Declared above the component that reads it rather than beside the row it
+ * sizes. Written the other way round it threw "POOL_ROWS is not defined" and
+ * took the whole panel down in the browser, while every test stayed green --
+ * none of them renders this component.
+ */
+const POOL_ROWS = 12
 
 export function AnalysisPanel() {
   // Timestamps below are drawn in the zone chosen in the status bar;
@@ -92,6 +110,40 @@ export function AnalysisPanel() {
             onChange={(includeInvalidSmt) => updateIct({ includeInvalidSmt })}
           />
         </div>
+
+        <div className="mt-2 grid grid-cols-2 gap-2 border-t border-border pt-2">
+          <NumberField
+            label="Level width"
+            hint="How far apart two pivots may sit and still read as one level, as a percentage of price. Tighter finds fewer, truer shelves."
+            value={settings.liquidityTolerancePercent}
+            min={0}
+            max={5}
+            step={0.01}
+            suffix="%"
+            disabled={!settings.enabled}
+            onChange={(liquidityTolerancePercent) =>
+              updateIct({ liquidityTolerancePercent })
+            }
+          />
+          <NumberField
+            label="Min touches"
+            hint="Pivots needed before a level counts as a pool of resting orders"
+            value={settings.liquidityMinTouches}
+            min={2}
+            max={10}
+            disabled={!settings.enabled}
+            onChange={(liquidityMinTouches) => updateIct({ liquidityMinTouches })}
+          />
+        </div>
+        <div>
+          <ToggleField
+            label="Keep swept pools"
+            hint="Show levels price has already traded through, faded and solid rather than dashed. Off, only the shelves still standing are listed -- on an hourly chart that is often none of them, because index futures grind through levels."
+            checked={settings.includeSweptPools}
+            disabled={!settings.enabled}
+            onChange={(includeSweptPools) => updateIct({ includeSweptPools })}
+          />
+        </div>
       </section>
 
       <section className="border-t border-border pt-2">
@@ -120,6 +172,13 @@ export function AnalysisPanel() {
           checked={settings.showSmt}
           disabled={!settings.enabled}
           onChange={(showSmt) => updateIct({ showSmt })}
+        />
+        <ToggleField
+          label={`Liquidity pools${analysis ? ` (${analysis.liquidity_pools.length})` : ''}`}
+          hint="Shelves of equal highs and lows. Dashed while they stand, solid where price took them."
+          checked={settings.showLiquidity}
+          disabled={!settings.enabled}
+          onChange={(showLiquidity) => updateIct({ showLiquidity })}
         />
       </section>
 
@@ -191,8 +250,89 @@ export function AnalysisPanel() {
         )}
       </section>
 
+      {/*
+       * Listed as well as drawn, because the number a target is set from is
+       * the price -- and reading a level off a line on a chart is how you end
+       * up two points out on the one number that decides the trade.
+       */}
+      <section className="border-t border-border pt-2">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="label-caps">Liquidity</span>
+        </div>
+
+        {!settings.enabled ? (
+          <p className="text-2xs text-muted-foreground">Detectors are off.</p>
+        ) : query.isLoading ? (
+          <p className="flex items-center gap-2 text-2xs text-muted-foreground">
+            <Spinner /> Scanning...
+          </p>
+        ) : query.isError ? (
+          // Not folded into the empty case. "No shelf here" and "we could not
+          // look" are different answers, and only one of them is about the
+          // market.
+          <p className="text-2xs text-bear">{(query.error as Error).message}</p>
+        ) : analysis && analysis.liquidity_pools.length > 0 ? (
+          <>
+            <ul className="space-y-1.5">
+              {[...analysis.liquidity_pools]
+                .reverse()
+                .slice(0, POOL_ROWS)
+                .map((pool) => (
+                  <PoolRow
+                    key={`${pool.kind}-${pool.price}-${pool.formed_time}`}
+                    pool={pool}
+                  />
+                ))}
+            </ul>
+            {analysis.liquidity_pools.length > POOL_ROWS && (
+              // A list silently cut at twelve reads as "there are twelve".
+              // Every one is still drawn on the chart; only the list is short.
+              <p className="mt-1.5 text-2xs text-muted-foreground">
+                The {POOL_ROWS} most recent of {analysis.liquidity_pools.length}. All of
+                them are on the chart.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-2xs leading-relaxed text-muted-foreground">
+            No shelf of equal highs or lows in this range. Widen the level width, or ask
+            for fewer touches.
+          </p>
+        )}
+      </section>
+
       <DrawingsSection />
     </div>
+  )
+}
+
+function PoolRow({ pool }: { pool: LiquidityPool }) {
+  const high = pool.kind === 'high'
+  return (
+    <li className="rounded-md border border-border bg-surface-2 px-2 py-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span
+          className={cn(
+            'font-mono text-xs tabular-nums',
+            high ? 'text-bear' : 'text-bull',
+          )}
+        >
+          {formatNumber(pool.price, 2)}
+        </span>
+        <span className="text-2xs text-muted-foreground">
+          {high ? 'Equal highs' : 'Equal lows'}
+        </span>
+      </div>
+      <div className="mt-0.5 flex items-center justify-between gap-2 text-2xs text-muted-foreground">
+        <span>
+          {pool.touch_count} touches
+          {pool.spread > 0 ? ` · ${formatNumber(pool.spread, 2)} wide` : ' · exact'}
+        </span>
+        <span className={pool.swept ? 'text-muted-foreground' : 'text-fg'}>
+          {pool.swept ? 'Swept' : 'Standing'}
+        </span>
+      </div>
+    </li>
   )
 }
 

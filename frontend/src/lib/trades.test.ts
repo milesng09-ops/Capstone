@@ -21,7 +21,13 @@ import {
   withinWindow,
 } from '@/lib/trades'
 import type { EquityPoint, PatternMatch, Trade } from '@/types/backtest'
-import type { FairValueGap, IctAnalysis, SmtDivergence, SwingPoint } from '@/types/ict'
+import type {
+  FairValueGap,
+  IctAnalysis,
+  LiquidityPool,
+  SmtDivergence,
+  SwingPoint,
+} from '@/types/ict'
 
 const HOUR = 3_600_000
 const T0 = 1_780_000_000_000
@@ -130,6 +136,7 @@ function analysis(overrides: Partial<IctAnalysis> = {}): IctAnalysis {
     swing_points: [],
     fair_value_gaps: [],
     smt_divergences: [],
+    liquidity_pools: [],
     warnings: [],
     ...overrides,
   }
@@ -321,5 +328,60 @@ describe('cumulativeReturns', () => {
 
   it('has nothing to do for a run with no trades', () => {
     expect(cumulativeReturns([])).toEqual([])
+  })
+})
+
+describe('collectEvidence: liquidity shelves', () => {
+  const window = { start_time: T0 + 10 * HOUR, end_time: T0 + 14 * HOUR }
+
+  function shelf(overrides: Partial<LiquidityPool> = {}): LiquidityPool {
+    return {
+      kind: 'low',
+      symbol: 'NQ',
+      price: 100,
+      start_time: T0,
+      end_time: T0 + 2 * HOUR,
+      formed_time: T0 + 3 * HOUR,
+      touch_count: 2,
+      spread: 0.5,
+      spread_percent: 0.005,
+      swept: false,
+      swept_time: null,
+      ...overrides,
+    }
+  }
+
+  it('keeps a shelf that formed long before the trade', () => {
+    // It is the level the trade was taken against. Filtering it to the
+    // window would hide the reason the trade exists.
+    const evidence = collectEvidence(analysis({ liquidity_pools: [shelf()] }), window)
+    expect(evidence.pools).toHaveLength(1)
+  })
+
+  it('drops a shelf that only became knowable afterwards', () => {
+    // Showing it would suggest the engine acted on something it could not see.
+    const later = shelf({ formed_time: T0 + 50 * HOUR })
+    const evidence = collectEvidence(analysis({ liquidity_pools: [later] }), window)
+    expect(evidence.pools).toHaveLength(0)
+  })
+
+  it('keeps a shelf swept during the trade', () => {
+    // The sweep is the trigger, so this is the evidence that matters most.
+    const swept = shelf({ swept: true, swept_time: T0 + 11 * HOUR })
+    const evidence = collectEvidence(analysis({ liquidity_pools: [swept] }), window)
+    expect(evidence.pools).toHaveLength(1)
+  })
+
+  it('drops a shelf that was already gone before the window', () => {
+    const old = shelf({ swept: true, swept_time: T0 + HOUR })
+    const evidence = collectEvidence(analysis({ liquidity_pools: [old] }), window)
+    expect(evidence.pools).toHaveLength(0)
+  })
+
+  it('counts as evidence on its own', () => {
+    // A liquidity trade may have no gap, swing or divergence behind it, and
+    // "nothing was detected" would be wrong for it.
+    const evidence = collectEvidence(analysis({ liquidity_pools: [shelf()] }), window)
+    expect(hasEvidence(evidence)).toBe(true)
   })
 })

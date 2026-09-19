@@ -20,6 +20,11 @@ from typing import TypeVar
 import anyio
 
 from app.analysis.fair_value_gap import FairValueGap, find_fair_value_gaps
+from app.analysis.liquidity import (
+    LiquidityPool,
+    find_liquidity_pools,
+    maximal_pools,
+)
 from app.analysis.smt import SmtDivergence, find_smt_divergences
 from app.analysis.structure import SwingPoint, find_swing_points
 from app.config import get_settings
@@ -27,6 +32,7 @@ from app.models.domain import Candle
 from app.models.schemas import (
     FairValueGapOut,
     IctAnalysisResponse,
+    LiquidityPoolOut,
     SmtDivergenceOut,
     SwingPointOut,
 )
@@ -54,6 +60,9 @@ class IctService:
         min_gap_percent: float = 0.0,
         include_filled_gaps: bool = True,
         include_invalid_smt: bool = False,
+        liquidity_tolerance_percent: float | None = None,
+        liquidity_min_touches: int | None = None,
+        include_swept_pools: bool = True,
     ) -> IctAnalysisResponse:
         settings = get_settings()
         primary = get_instrument(symbol).symbol
@@ -84,8 +93,23 @@ class IctService:
                 warnings=warnings,
             )
 
-        primary_swings, primary_gaps = await anyio.to_thread.run_sync(
-            _detect, primary_candles, strength, min_gap_percent, include_filled_gaps
+        primary_swings, primary_gaps, primary_pools = await anyio.to_thread.run_sync(
+            _detect,
+            primary_candles,
+            strength,
+            min_gap_percent,
+            include_filled_gaps,
+            (
+                liquidity_tolerance_percent
+                if liquidity_tolerance_percent is not None
+                else settings.liquidity_tolerance_percent
+            ),
+            (
+                liquidity_min_touches
+                if liquidity_min_touches is not None
+                else settings.liquidity_min_touches
+            ),
+            include_swept_pools,
         )
 
         divergences: list[SmtDivergence] = []
@@ -156,6 +180,14 @@ class IctService:
                 f"of {len(divergences)}."
             )
 
+        pools_out, truncated = _trim(primary_pools, settings.max_liquidity_pools)
+        if truncated:
+            warnings.append(
+                f"Showing the {settings.max_liquidity_pools} most recent liquidity pools "
+                f"of {len(primary_pools)}. Tighten the tolerance or ask for more touches "
+                "to see fewer."
+            )
+
         return IctAnalysisResponse(
             symbol=primary,
             interval=interval,
@@ -168,6 +200,7 @@ class IctService:
             swing_points=[_swing_out(point) for point in swings_out],
             fair_value_gaps=[_gap_out(gap) for gap in gaps_out],
             smt_divergences=[_smt_out(item) for item in smt_out],
+            liquidity_pools=[_pool_out(pool) for pool in pools_out],
             warnings=warnings,
         )
 
@@ -214,13 +247,35 @@ def _detect(
     strength: int,
     min_gap_percent: float,
     include_filled_gaps: bool,
-) -> tuple[list[SwingPoint], list[FairValueGap]]:
+    liquidity_tolerance_percent: float,
+    liquidity_min_touches: int,
+    include_swept_pools: bool,
+) -> tuple[list[SwingPoint], list[FairValueGap], list[LiquidityPool]]:
+    swings = find_swing_points(candles, strength=strength)
     return (
-        find_swing_points(candles, strength=strength),
+        swings,
         find_fair_value_gaps(
             candles,
             min_size_percent=min_gap_percent,
             include_filled=include_filled_gaps,
+        ),
+        # Shelves are built from the same pivots, so they are computed here
+        # rather than re-running swing detection on the worker thread.
+        #
+        # Collapsed to one entry per shelf: the detector reports every size a
+        # level has been, which a time-gated question needs and a chart does
+        # not -- four near-identical lines for one level reads as four levels.
+        # The swept filter is applied here too, because "already taken" is a
+        # statement about the end of the series and so belongs to display
+        # rather than to anything that has to answer as of a moment.
+        _pools_for_display(
+            find_liquidity_pools(
+                candles,
+                swings,
+                tolerance_percent=liquidity_tolerance_percent,
+                min_touches=liquidity_min_touches,
+            ),
+            include_swept_pools,
         ),
     )
 
@@ -331,3 +386,26 @@ def get_ict_service() -> IctService:
     if _service is None:
         _service = IctService()
     return _service
+
+
+def _pool_out(pool: LiquidityPool) -> LiquidityPoolOut:
+    return LiquidityPoolOut(
+        kind=pool.kind,
+        symbol=pool.symbol,
+        price=pool.price,
+        start_time=pool.start_time,
+        end_time=pool.end_time,
+        formed_time=pool.formed_time,
+        touch_count=pool.touch_count,
+        spread=pool.spread,
+        spread_percent=pool.spread_percent,
+        swept=pool.swept,
+        swept_time=pool.swept_time,
+    )
+
+
+def _pools_for_display(pools: list[LiquidityPool], include_swept: bool) -> list[LiquidityPool]:
+    shelves = maximal_pools(pools)
+    if include_swept:
+        return shelves
+    return [pool for pool in shelves if not pool.swept]

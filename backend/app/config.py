@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     max_swing_points: int = 600
     max_fair_value_gaps: int = 400
     max_smt_divergences: int = 200
+    #: Lower than the others on purpose. A shelf spans the whole width of the
+    #: chart it is drawn on, so a hundred of them is not a busy chart, it is
+    #: an unreadable one -- and the point of the detector is the handful of
+    #: levels price is actually reaching for.
+    max_liquidity_pools: int = 120
+    #: Defaults for shelf detection; see `app.analysis.liquidity`.
+    liquidity_tolerance_percent: float = 0.03
+    liquidity_min_touches: int = 2
 
     # ---- Server ----------------------------------------------------------
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

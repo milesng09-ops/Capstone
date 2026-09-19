@@ -11,7 +11,7 @@ from app.models.domain import Candle, Instrument, ProviderStatus
 Direction = Literal["long", "short"]
 EntryType = Literal["selection_close", "next_open"]
 StopLossType = Literal["percentage", "fixed_price", "pattern_extreme", "atr_multiple"]
-TakeProfitType = Literal["percentage", "fixed_price", "risk_reward"]
+TakeProfitType = Literal["percentage", "fixed_price", "risk_reward", "liquidity"]
 ExitReason = Literal["stop_loss", "take_profit", "timeout", "end_of_data"]
 
 
@@ -131,6 +131,28 @@ class SmtDivergenceOut(BaseModel):
     separation_bars: int
 
 
+class LiquidityPoolOut(BaseModel):
+    """A shelf of equal highs or lows, as the chart draws it."""
+
+    kind: Literal["high", "low"]
+    symbol: str
+    #: The level: the highest high of a high shelf, the lowest low of a low
+    #: one. Clearing this price takes the whole shelf.
+    price: float
+    #: First and last pivot in the shelf -- where the zone is drawn from.
+    start_time: int
+    end_time: int
+    #: When the shelf became knowable: its last pivot's confirmation bar.
+    formed_time: int
+    #: How many pivots formed it. More is more resting liquidity.
+    touch_count: int
+    #: Price range across the pivots; tight is the "low resistance" shelf.
+    spread: float
+    spread_percent: float
+    swept: bool
+    swept_time: int | None = None
+
+
 class IctAnalysisResponse(BaseModel):
     symbol: str
     interval: str
@@ -143,6 +165,7 @@ class IctAnalysisResponse(BaseModel):
     swing_points: list[SwingPointOut] = Field(default_factory=list)
     fair_value_gaps: list[FairValueGapOut] = Field(default_factory=list)
     smt_divergences: list[SmtDivergenceOut] = Field(default_factory=list)
+    liquidity_pools: list[LiquidityPoolOut] = Field(default_factory=list)
     #: Non-fatal notes: truncation, symbols that could not be compared, etc.
     warnings: list[str] = Field(default_factory=list)
 
@@ -178,7 +201,10 @@ class TradeRules(BaseModel):
     def _check_values(self) -> "TradeRules":
         if self.stop_loss_type in {"percentage", "atr_multiple"} and self.stop_loss_value <= 0:
             raise ValueError("stop_loss_value must be greater than 0")
-        if self.take_profit_type in {"percentage", "risk_reward"} and self.take_profit_value <= 0:
+        if (
+            self.take_profit_type in {"percentage", "risk_reward", "liquidity"}
+            and self.take_profit_value <= 0
+        ):
             raise ValueError("take_profit_value must be greater than 0")
         if self.stop_loss_type == "fixed_price" and self.stop_loss_value <= 0:
             raise ValueError("stop_loss_value must be a positive price")
@@ -198,19 +224,36 @@ class DetectorFilters(BaseModel):
     #: time. Containment, not mere presence -- a gap elsewhere on the chart
     #: says nothing about this entry.
     require_fair_value_gap: bool = False
+    #: Narrow that gap condition to the deeper half of the zone -- consequent
+    #: encroachment. "You either hit the gap, get a setup, and then move up.
+    #: Or you hit the middle line of the gap, then set up, then move up": two
+    #: entries off one zone, and this asks for the second. Has no effect
+    #: unless `require_fair_value_gap` is on, since it only narrows it.
+    gap_past_midpoint: bool = False
     #: A valid SMT divergence had been confirmed within `within_bars`.
     require_smt_divergence: bool = False
     #: A swing point had been confirmed within `within_bars`.
     require_swing_point: bool = False
-    #: How recently a swing or divergence must have been confirmed to count
+    #: A shelf of equal highs or lows had been swept within `within_bars`.
+    #: The stop-hunt setup: price clears the level, takes the orders resting
+    #: beyond it, and turns back. Measured from the sweep, not from when the
+    #: shelf formed -- a level can stand for weeks and the event is it going.
+    require_liquidity_sweep: bool = False
+    #: How recently a swing, divergence or sweep must have happened to count
     #: as this trade's reason. Does not apply to gaps, which stay live until
     #: filled however long that takes.
     within_bars: int = Field(10, ge=1, le=500)
     #: Require each detector to point the same way as the trade: a long wants
-    #: a bullish gap, a bullish divergence, a swing low.
+    #: a bullish gap, a bullish divergence, a swing low, and the lows swept.
     align_with_direction: bool = True
-    #: Confirmation width for swing detection, which also feeds SMT.
+    #: Confirmation width for swing detection, which also feeds SMT and the
+    #: liquidity shelves -- both are built from confirmed pivots.
     swing_strength: int = Field(2, ge=1, le=20)
+    #: How far apart two pivots may sit and still be read as one level, as a
+    #: percentage of price. See `app.analysis.liquidity`.
+    liquidity_tolerance_percent: float = Field(0.03, ge=0.0, le=5.0)
+    #: Pivots needed before a level counts as a shelf.
+    liquidity_min_touches: int = Field(2, ge=2, le=10)
 
     @property
     def any_required(self) -> bool:
@@ -218,6 +261,7 @@ class DetectorFilters(BaseModel):
             self.require_fair_value_gap
             or self.require_smt_divergence
             or self.require_swing_point
+            or self.require_liquidity_sweep
         )
 
 

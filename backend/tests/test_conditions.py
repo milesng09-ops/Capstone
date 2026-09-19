@@ -11,6 +11,7 @@ from __future__ import annotations
 from app.analysis.conditions import detectors_at_entry, unmet_condition
 from app.backtesting.metrics import compute_metrics
 from app.analysis.fair_value_gap import FairValueGap
+from app.analysis.liquidity import LiquidityPool
 from app.analysis.smt import SmtDivergence
 from app.analysis.structure import SwingPoint
 
@@ -81,7 +82,35 @@ def divergence(*, bias="bullish", confirmed_time=T0, valid=True) -> SmtDivergenc
     )
 
 
-def state_at(entry_time, *, price=100.0, direction="long", align=True, within=10, **kw):
+def pool(*, kind="low", price=99.0, formed_time=T0, swept_time=None) -> LiquidityPool:
+    touches = (
+        swing(kind=kind, time=formed_time - 4 * HOUR, confirmed_time=formed_time, price=price),
+    )
+    return LiquidityPool(
+        symbol="ES",
+        kind=kind,
+        price=price,
+        start_time=formed_time - 10 * HOUR,
+        end_time=formed_time - 4 * HOUR,
+        formed_time=formed_time,
+        touches=touches,
+        spread=0.0,
+        spread_percent=0.0,
+        swept=swept_time is not None,
+        swept_time=swept_time,
+    )
+
+
+def state_at(
+    entry_time,
+    *,
+    price=100.0,
+    direction="long",
+    align=True,
+    within=10,
+    past_midpoint=False,
+    **kw,
+):
     return detectors_at_entry(
         entry_price=price,
         entry_time=entry_time,
@@ -89,8 +118,10 @@ def state_at(entry_time, *, price=100.0, direction="long", align=True, within=10
         gaps=kw.get("gaps", []),
         swings=kw.get("swings", []),
         divergences=kw.get("divergences", []),
+        pools=kw.get("pools", []),
         within_ms=within * HOUR,
         align_with_direction=align,
+        gap_past_midpoint=past_midpoint,
     )
 
 
@@ -250,3 +281,308 @@ class TestAnEmptyRunSaysWhatEmptiedIt:
         warning = summary.sample_size_warning or ""
         assert "similarity threshold" in warning
         assert "detector conditions" not in warning
+
+
+# --------------------------------------------------------------------------
+class TestLiquiditySweep:
+    """A long is looking for the lows to have been taken, and taken recently."""
+
+    def test_a_swept_low_pool_stands_for_a_long(self):
+        state = state_at(
+            T0 + 10 * HOUR,
+            pools=[pool(kind="low", formed_time=T0, swept_time=T0 + 8 * HOUR)],
+        )
+        assert state.liquidity_pool is not None
+        assert state.liquidity_pool.kind == "low"
+
+    def test_an_unswept_pool_is_not_a_reason_to_trade(self):
+        # The shelf is there, standing, untouched. That is a target, not a
+        # trigger: nothing has happened yet.
+        state = state_at(T0 + 10 * HOUR, pools=[pool(kind="low", formed_time=T0)])
+        assert state.liquidity_pool is None
+
+    def test_a_sweep_still_in_the_future_does_not_count(self):
+        state = state_at(
+            T0 + 5 * HOUR,
+            pools=[pool(kind="low", formed_time=T0, swept_time=T0 + 8 * HOUR)],
+        )
+        assert state.liquidity_pool is None
+
+    def test_the_window_runs_from_the_sweep_not_the_formation(self):
+        # Formed a long time ago, swept an hour before entry: fresh.
+        state = state_at(
+            T0 + 500 * HOUR,
+            pools=[pool(kind="low", formed_time=T0, swept_time=T0 + 499 * HOUR)],
+            within=10,
+        )
+        assert state.liquidity_pool is not None
+
+    def test_a_stale_sweep_falls_outside_the_window(self):
+        state = state_at(
+            T0 + 100 * HOUR,
+            pools=[pool(kind="low", formed_time=T0, swept_time=T0 + 5 * HOUR)],
+            within=10,
+        )
+        assert state.liquidity_pool is None
+
+    def test_aligned_a_long_ignores_a_swept_high(self):
+        # Highs taken is a breakout, not the reversal a long is being asked for.
+        state = state_at(
+            T0 + 10 * HOUR,
+            pools=[pool(kind="high", price=101.0, formed_time=T0, swept_time=T0 + 8 * HOUR)],
+        )
+        assert state.liquidity_pool is None
+
+    def test_unaligned_either_side_counts(self):
+        state = state_at(
+            T0 + 10 * HOUR,
+            pools=[pool(kind="high", price=101.0, formed_time=T0, swept_time=T0 + 8 * HOUR)],
+            align=False,
+        )
+        assert state.liquidity_pool is not None
+
+    def test_a_short_wants_the_highs_taken(self):
+        state = state_at(
+            T0 + 10 * HOUR,
+            direction="short",
+            pools=[pool(kind="high", price=101.0, formed_time=T0, swept_time=T0 + 8 * HOUR)],
+        )
+        assert state.liquidity_pool is not None
+
+    def test_the_most_recent_sweep_is_the_one_reported(self):
+        state = state_at(
+            T0 + 10 * HOUR,
+            pools=[
+                pool(kind="low", price=98.0, formed_time=T0, swept_time=T0 + 3 * HOUR),
+                pool(kind="low", price=99.0, formed_time=T0, swept_time=T0 + 8 * HOUR),
+            ],
+        )
+        assert state.liquidity_pool is not None
+        assert state.liquidity_pool.swept_time == T0 + 8 * HOUR
+
+
+class TestSweepRequirement:
+    def test_the_requirement_names_itself_when_unmet(self):
+        state = state_at(T0)
+        reason = unmet_condition(
+            state,
+            require_fair_value_gap=False,
+            require_smt_divergence=False,
+            require_swing_point=False,
+            require_liquidity_sweep=True,
+        )
+        assert reason is not None
+        assert "liquidity" in reason.lower()
+
+    def test_a_met_requirement_returns_no_reason(self):
+        state = state_at(
+            T0 + 10 * HOUR,
+            pools=[pool(kind="low", formed_time=T0, swept_time=T0 + 8 * HOUR)],
+        )
+        assert (
+            unmet_condition(
+                state,
+                require_fair_value_gap=False,
+                require_smt_divergence=False,
+                require_swing_point=False,
+                require_liquidity_sweep=True,
+            )
+            is None
+        )
+
+    def test_off_by_default_so_old_runs_are_unchanged(self):
+        state = state_at(T0)
+        assert (
+            unmet_condition(
+                state,
+                require_fair_value_gap=False,
+                require_smt_divergence=False,
+                require_swing_point=False,
+            )
+            is None
+        )
+
+
+# --------------------------------------------------------------------------
+class TestGapMidpoint:
+    """Consequent encroachment: the deeper half of the zone, not the whole of it.
+
+    A bullish gap is support price falls into, so deeper is *lower*; a bearish
+    gap is resistance price rises into, so deeper is *higher*. Getting that
+    backwards would accept exactly the entries the setting exists to exclude.
+    """
+
+    # Bullish gap from 99 to 101, so the midpoint is 100.
+    BULL = dict(direction="bullish", bottom=99.0, top=101.0)
+    # Bearish gap over the same prices, approached from below.
+    BEAR = dict(direction="bearish", bottom=99.0, top=101.0)
+
+    def test_the_edge_of_a_bullish_gap_is_not_past_its_midpoint(self):
+        shallow = state_at(
+            T0 + HOUR, price=100.9, past_midpoint=True, gaps=[gap(**self.BULL)]
+        )
+        assert shallow.fair_value_gap is None
+
+    def test_the_deeper_half_of_a_bullish_gap_qualifies(self):
+        deep = state_at(
+            T0 + HOUR, price=99.4, past_midpoint=True, gaps=[gap(**self.BULL)]
+        )
+        assert deep.fair_value_gap is not None
+
+    def test_the_midpoint_itself_counts_as_reached(self):
+        # A level price arrives at exactly has been arrived at. Demanding a
+        # tick beyond would make the rule depend on tick size.
+        at = state_at(T0 + HOUR, price=100.0, past_midpoint=True, gaps=[gap(**self.BULL)])
+        assert at.fair_value_gap is not None
+
+    def test_a_bearish_gap_is_deeper_upwards(self):
+        # The mirror image, and the case a sign error would break.
+        shallow = state_at(
+            T0 + HOUR,
+            price=99.4,
+            direction="short",
+            past_midpoint=True,
+            gaps=[gap(**self.BEAR)],
+        )
+        assert shallow.fair_value_gap is None
+
+        deep = state_at(
+            T0 + HOUR,
+            price=100.9,
+            direction="short",
+            past_midpoint=True,
+            gaps=[gap(**self.BEAR)],
+        )
+        assert deep.fair_value_gap is not None
+
+    def test_outside_the_zone_never_qualifies(self):
+        # Below a bullish gap is past its midpoint but out of the zone, and
+        # the containment test still has to run first.
+        below = state_at(
+            T0 + HOUR, price=98.0, past_midpoint=True, gaps=[gap(**self.BULL)]
+        )
+        assert below.fair_value_gap is None
+
+    def test_off_by_default_the_whole_zone_counts(self):
+        shallow = state_at(T0 + HOUR, price=100.9, gaps=[gap(**self.BULL)])
+        assert shallow.fair_value_gap is not None
+
+    def test_it_still_respects_the_time_rules(self):
+        # Narrowing the zone must not accidentally bypass the checks that
+        # keep the condition honest.
+        future = state_at(
+            T0, price=99.4, past_midpoint=True, gaps=[gap(time=T0 + 5 * HOUR, **self.BULL)]
+        )
+        assert future.fair_value_gap is None
+
+        closed = state_at(
+            T0 + 10 * HOUR,
+            price=99.4,
+            past_midpoint=True,
+            gaps=[gap(time=T0, filled_time=T0 + 5 * HOUR, **self.BULL)],
+        )
+        assert closed.fair_value_gap is None
+
+    def test_the_reason_says_which_rule_was_missed(self):
+        # "No gap contained the entry" would be a lie for a trade that was
+        # inside one and simply had not traded deep enough.
+        state = state_at(
+            T0 + HOUR, price=100.9, past_midpoint=True, gaps=[gap(**self.BULL)]
+        )
+        reason = unmet_condition(
+            state,
+            require_fair_value_gap=True,
+            require_smt_divergence=False,
+            require_swing_point=False,
+            gap_past_midpoint=True,
+        )
+        assert reason is not None
+        assert "midpoint" in reason
+
+
+# --------------------------------------------------------------------------
+class TestTheEntryBarItself:
+    """A next-open fill happens before its own bar has printed anything.
+
+    The two entry types differ in exactly this: `selection_close` fills at the
+    entry bar's close, so that bar is over and everything about it is known;
+    `next_open` fills at its open, so nothing about it has happened yet.
+    Reading the entry bar in the second case admits evidence that postdates
+    the fill -- and it flatters the result, which is the direction that
+    matters.
+    """
+
+    def sweep_on_the_entry_bar(self, *, known: bool):
+        # The shelf is swept at the entry bar itself.
+        return detectors_at_entry(
+            entry_price=100.0,
+            entry_time=T0,
+            direction="long",
+            gaps=[],
+            swings=[],
+            divergences=[],
+            pools=[pool(kind="low", formed_time=T0 - 5 * HOUR, swept_time=T0)],
+            within_ms=10 * HOUR,
+            align_with_direction=True,
+            entry_bar_known=known,
+        )
+
+    def test_a_close_entry_may_use_its_own_bar(self):
+        # It filled at that bar's close, so the bar's low is already history.
+        assert self.sweep_on_the_entry_bar(known=True).liquidity_pool is not None
+
+    def test_a_next_open_entry_may_not(self):
+        # The sweep *is* that bar's low. Admitting it would qualify the trade
+        # by the very candle it is filled on -- entering at the open of the
+        # one bar known to dip and recover.
+        assert self.sweep_on_the_entry_bar(known=False).liquidity_pool is None
+
+    def test_the_bar_before_still_counts_for_a_next_open_entry(self):
+        # The rule excludes the entry bar, not the history behind it.
+        state = detectors_at_entry(
+            entry_price=100.0,
+            entry_time=T0,
+            direction="long",
+            gaps=[],
+            swings=[],
+            divergences=[],
+            pools=[pool(kind="low", formed_time=T0 - 5 * HOUR, swept_time=T0 - HOUR)],
+            within_ms=10 * HOUR,
+            align_with_direction=True,
+            entry_bar_known=False,
+        )
+        assert state.liquidity_pool is not None
+
+    def test_it_applies_to_every_detector_not_just_the_sweep(self):
+        # Same rule, same reason. A swing confirmed by the entry bar's close
+        # is not knowable at that bar's open either.
+        state = detectors_at_entry(
+            entry_price=100.0,
+            entry_time=T0,
+            direction="long",
+            gaps=[gap(time=T0)],
+            swings=[swing(kind="low", time=T0 - 2 * HOUR, confirmed_time=T0)],
+            divergences=[divergence(confirmed_time=T0)],
+            pools=[],
+            within_ms=10 * HOUR,
+            align_with_direction=True,
+            entry_bar_known=False,
+        )
+        assert state.fair_value_gap is None
+        assert state.swing_point is None
+        assert state.smt_divergence is None
+
+    def test_the_entry_bar_is_readable_by_default(self):
+        # Callers that do not say behave as they always have, which is right
+        # for the close entry that is the default.
+        state = detectors_at_entry(
+            entry_price=100.0,
+            entry_time=T0,
+            direction="long",
+            gaps=[gap(time=T0)],
+            swings=[],
+            divergences=[],
+            within_ms=10 * HOUR,
+            align_with_direction=True,
+        )
+        assert state.fair_value_gap is not None

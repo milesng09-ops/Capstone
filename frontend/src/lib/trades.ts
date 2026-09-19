@@ -12,7 +12,13 @@
  */
 
 import type { EquityPoint, PatternMatch, Trade } from '@/types/backtest'
-import type { FairValueGap, IctAnalysis, SmtDivergence, SwingPoint } from '@/types/ict'
+import type {
+  FairValueGap,
+  IctAnalysis,
+  LiquidityPool,
+  SmtDivergence,
+  SwingPoint,
+} from '@/types/ict'
 import type { TimeWindow } from '@/types/market'
 
 /**
@@ -95,6 +101,7 @@ export interface TradeEvidence {
   gaps: FairValueGap[]
   swings: SwingPoint[]
   divergences: SmtDivergence[]
+  pools: LiquidityPool[]
 }
 
 export const EMPTY_EVIDENCE: TradeEvidence = {
@@ -102,6 +109,7 @@ export const EMPTY_EVIDENCE: TradeEvidence = {
   gaps: [],
   swings: [],
   divergences: [],
+  pools: [],
 }
 
 /**
@@ -143,14 +151,32 @@ export function collectEvidence(
     (divergence: SmtDivergence) => divergence.end_time >= from && divergence.start_time <= to,
   )
 
-  return { window, gaps, swings, divergences }
+  /*
+   * Shelves that had formed by the end of the window.
+   *
+   * Gated on `formed_time`, not on where the pivots sit: a shelf built long
+   * before the trade is exactly the evidence wanted -- it is the level the
+   * trade was taken against -- so filtering it to the window would hide the
+   * reason. What must not appear is a shelf that became knowable afterwards,
+   * which would suggest the engine acted on something it could not see.
+   *
+   * Both jobs are shown, because a liquidity trade has two: the shelf behind
+   * it that was swept, and the shelf in front of it that was the target.
+   */
+  const pools = analysis.liquidity_pools.filter(
+    (pool: LiquidityPool) =>
+      pool.formed_time <= to && (!pool.swept || (pool.swept_time ?? 0) >= from),
+  )
+
+  return { window, gaps, swings, divergences, pools }
 }
 
 export function hasEvidence(evidence: TradeEvidence): boolean {
   return (
     evidence.gaps.length > 0 ||
     evidence.swings.length > 0 ||
-    evidence.divergences.length > 0
+    evidence.divergences.length > 0 ||
+    evidence.pools.length > 0
   )
 }
 

@@ -62,6 +62,34 @@ export interface SmtDivergence {
   separation_bars: number
 }
 
+/**
+ * A shelf of equal highs or equal lows -- where resting orders accumulate.
+ *
+ * Two jobs, and they use different fields. As a *destination*, an unswept
+ * shelf is where a move is likely to run to, which is what makes it a target.
+ * As a *trigger*, a shelf that has just been swept is the stop hunt that
+ * precedes a reversal, and that reads `swept_time`.
+ */
+export interface LiquidityPool {
+  kind: SwingKind
+  symbol: string
+  /** The level: the highest high of a high shelf, the lowest low of a low one. */
+  price: number
+  start_time: number
+  end_time: number
+  /**
+   * When the shelf became knowable -- its last pivot's confirmation bar.
+   * Anything acting on a pool must use this, not `start_time`.
+   */
+  formed_time: number
+  /** Pivots forming it. More touches is more resting liquidity. */
+  touch_count: number
+  spread: number
+  spread_percent: number
+  swept: boolean
+  swept_time: number | null
+}
+
 export interface IctAnalysis {
   symbol: string
   interval: Interval
@@ -74,6 +102,7 @@ export interface IctAnalysis {
   swing_points: SwingPoint[]
   fair_value_gaps: FairValueGap[]
   smt_divergences: SmtDivergence[]
+  liquidity_pools: LiquidityPool[]
   warnings: string[]
 }
 
@@ -109,6 +138,28 @@ export interface IctSettings {
   showSwings: boolean
   showGaps: boolean
   showSmt: boolean
+  showLiquidity: boolean
+  /**
+   * Keep shelves price has already traded through.
+   *
+   * On by default, which is not the obvious choice and was settled by looking
+   * at real data: over three hundred hourly NQ bars every shelf in the window
+   * had been taken, so hiding the swept ones left the overlay and the list
+   * empty and the detector looking broken. Index futures grind through
+   * levels; a standing shelf is a thing of the last few sessions, not of the
+   * chart as a whole.
+   *
+   * Nothing is lost by showing them, because the two states do not look
+   * alike: standing is dashed and bright, swept is solid and faded. And a
+   * swept shelf is not merely history here -- it is the trigger the sweep
+   * condition trades, so seeing where the levels went is half of reading the
+   * setup.
+   */
+  includeSweptPools: boolean
+  /** How far apart two pivots may sit and still read as one level, in %. */
+  liquidityTolerancePercent: number
+  /** Pivots needed before a level counts as a shelf. */
+  liquidityMinTouches: number
   /**
    * Draw the detections behind the *selected* trade even while the overlays
    * above are off: the gap it entered from, the swings it was measured
@@ -139,5 +190,9 @@ export const DEFAULT_ICT_SETTINGS: IctSettings = {
   showSwings: false,
   showGaps: false,
   showSmt: false,
+  showLiquidity: false,
+  includeSweptPools: true,
+  liquidityTolerancePercent: 0.03,
+  liquidityMinTouches: 2,
   showTradeEvidence: true,
 }

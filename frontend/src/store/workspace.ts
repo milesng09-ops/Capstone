@@ -275,6 +275,73 @@ function keepSelection(drawings: Drawing[], selectedId: string | null): string |
   return drawings.some((drawing) => drawing.id === selectedId) ? selectedId : null
 }
 
+/**
+ * Bring a stored workspace up to the current shape.
+ *
+ * Exported so it can be tested directly. A migration only ever runs against
+ * state someone else saved -- by definition never against a fresh install --
+ * so a mistake here is invisible to whoever wrote it, and surfaces as the app
+ * coming back subtly wrong for everyone who used the previous version.
+ */
+export function migrateWorkspace(persisted: unknown, version: number) {
+  const state = persisted as
+    | {
+        ict?: IctSettings
+        detectors?: DetectorFilters
+        interval?: Interval
+        rangeDays?: RangeDays
+      }
+    | undefined
+  if (!state) return state
+
+  /*
+   * A stored range outlives the rule that bounds it.
+   *
+   * The clamp lives in `setInterval`/`setRangeDays`, which a rehydrate never
+   * calls -- so a workspace saved as 5m over 180 days came back exactly as
+   * saved and every chart showed the bar-count error the clamp exists to
+   * prevent. Anyone who hit that combination before upgrading would be stuck
+   * in it, since the way out is to press the interval button that was
+   * already selected.
+   */
+  const clamped =
+    state.interval && state.rangeDays
+      ? {
+          ...state,
+          rangeDays: Math.min(state.rangeDays, longestRange(state.interval)),
+        }
+      : state
+
+  /*
+   * Merged under the stored settings, so a key that has always existed keeps
+   * the user's answer and only a genuinely new one takes the default.
+   *
+   * Both objects, not just `ict`. Zustand's merge is shallow, so a persisted
+   * object replaces its default wholesale rather than being merged into it --
+   * which means every persisted *object* has this hazard, and picking one of
+   * them to backfill fixes half the problem. A missing boolean reaches a
+   * switch as `undefined`, and `undefined` is dropped by `JSON.stringify`, so
+   * the gap survives every reload until the control is clicked.
+   */
+  const filled = {
+    ...clamped,
+    ict: { ...DEFAULT_ICT_SETTINGS, ...state.ict },
+    detectors: { ...DEFAULT_DETECTOR_FILTERS, ...state.detectors },
+  }
+
+  if (version >= 2) return filled
+  return {
+    ...filled,
+    ict: {
+      ...filled.ict,
+      showSwings: false,
+      showGaps: false,
+      showSmt: false,
+      showTradeEvidence: true,
+    },
+  }
+}
+
 export const useWorkspace = create<WorkspaceState>()(
   persist(
     (set) => ({
@@ -549,7 +616,7 @@ export const useWorkspace = create<WorkspaceState>()(
     }),
     {
       name: 'mrl.workspace',
-      version: 2,
+      version: 3,
       /**
        * Version 2 turns the ICT overlays off.
        *
@@ -558,44 +625,17 @@ export const useWorkspace = create<WorkspaceState>()(
        * learn that the default had moved. The flags are reset once, on the
        * first load after the upgrade; turning them back on afterwards sticks,
        * because by then it is a choice rather than a leftover.
+       *
+       * Version 3 backfills the liquidity settings.
+       *
+       * A stored `ict` object is restored whole, so one written before those
+       * fields existed comes back without them -- and a number field handed
+       * `undefined` is an uncontrolled input showing nothing, on the two
+       * settings that decide what counts as a level. Defaults are merged
+       * *under* what was stored, so every earlier choice survives and only
+       * the genuinely absent keys are filled.
        */
-      migrate: (persisted, version) => {
-        const state = persisted as
-          | { ict?: IctSettings; interval?: Interval; rangeDays?: RangeDays }
-          | undefined
-        if (!state) return state
-
-        /*
-         * A stored range outlives the rule that bounds it.
-         *
-         * The clamp lives in `setInterval`/`setRangeDays`, which a rehydrate
-         * never calls -- so a workspace saved as 5m over 180 days came back
-         * exactly as saved and every chart showed the bar-count error the
-         * clamp exists to prevent. Anyone who hit that combination before
-         * upgrading would be stuck in it, since the way out is to press the
-         * interval button that was already selected.
-         */
-        const clamped =
-          state.interval && state.rangeDays
-            ? {
-                ...state,
-                rangeDays: Math.min(state.rangeDays, longestRange(state.interval)),
-              }
-            : state
-
-        if (version >= 2) return clamped
-        return {
-          ...clamped,
-          ict: {
-            ...DEFAULT_ICT_SETTINGS,
-            ...state.ict,
-            showSwings: false,
-            showGaps: false,
-            showSmt: false,
-            showTradeEvidence: true,
-          },
-        }
-      },
+      migrate: migrateWorkspace,
       // The transient bits of a session: which tool is held, what is selected,
       // the pending range, and the undo stack. Restoring these would be
       // confusing on reload -- undoing into a shape from yesterday most of

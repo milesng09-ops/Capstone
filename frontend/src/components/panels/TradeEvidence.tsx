@@ -118,6 +118,12 @@ export function TradeEvidence({
                     {evidence.divergences.length === 1 ? '' : 's'}
                   </Badge>
                 )}
+                {evidence.pools.length > 0 && (
+                  <Badge>
+                    {evidence.pools.length} liquidity pool
+                    {evidence.pools.length === 1 ? '' : 's'}
+                  </Badge>
+                )}
               </span>
               <ul className="space-y-0.5 pt-0.5">
                 {evidence.gaps.slice(0, MAX_ITEMS).map((gap) => (
@@ -136,6 +142,18 @@ export function TradeEvidence({
                     &bull; {divergence.bias} SMT at a {divergence.kind},{' '}
                     {divergence.leading_symbol} led {divergence.lagging_symbol} (
                     {VALIDITY_LABELS[divergence.validity].toLowerCase()})
+                  </li>
+                ))}
+                {/*
+                  Swept or standing is the whole reading of a shelf: the one
+                  behind the trade is why it was taken, the one in front is
+                  where it was going.
+                */}
+                {evidence.pools.slice(0, MAX_ITEMS).map((pool) => (
+                  <li key={`pool-${pool.kind}-${pool.price}-${pool.formed_time}`}>
+                    &bull; {pool.touch_count} equal {pool.kind}s at{' '}
+                    {formatPrice(pool.price)}
+                    {pool.swept ? ', swept' : ', still standing'}
                   </li>
                 ))}
               </ul>

@@ -25,6 +25,13 @@ Detector            Knowable from
                     exists from ``formed_time``, but the condition
                     is about the sweep, and that is the later of
                     the two
+``BiasState``       ``known_from``, the **close** of the higher-
+                    timeframe bar that set the frame -- hours after
+                    the ``time`` that bar is stamped with
+``Reaction``        the bar at the level, which is the entry bar
+                    only when that bar has finished
+``FibZone``         both ends of the leg must be confirmed, so the
+                    later of the two ``confirmed_time``s
 ==================  ==============================================
 
 Using ``SwingPoint.time`` instead of ``confirmed_time`` is the subtle version
@@ -38,10 +45,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.analysis.bias import BiasState, bias_allows, bias_at
+from app.analysis.entries import EntryModel, FibZone, fib_zone_at
 from app.analysis.fair_value_gap import FairValueGap, gap_containing
 from app.analysis.liquidity import LiquidityPool, pools_swept_before
+from app.analysis.reaction import Reaction, reaction_at
+from app.analysis.sessions import SessionWindow, session_at
 from app.analysis.smt import SmtDivergence
 from app.analysis.structure import SwingPoint
+from app.models.domain import Candle
 
 Direction = Literal["long", "short"]
 
@@ -52,12 +64,33 @@ class DetectorState:
 
     ``None`` means the detector did not stand, either because nothing was
     there or because what was there pointed the other way.
+
+    The last four are not detectors in the drawn-on-the-chart sense, but they
+    answer the same kind of question at the same moment and fail the same
+    way if asked a bar too late, so they live here with the rest.
     """
 
     fair_value_gap: FairValueGap | None = None
     smt_divergence: SmtDivergence | None = None
     swing_point: SwingPoint | None = None
     liquidity_pool: LiquidityPool | None = None
+    #: The higher-timeframe frame in force, gated on the close of the bar
+    #: that set it. ``None`` when nothing had been established yet.
+    bias: BiasState | None = None
+    #: Whether that frame agrees with the trade. Kept separate from ``bias``
+    #: because "no frame" and "the wrong frame" are different refusals.
+    bias_agrees: bool = False
+    #: What the bar at the level did. ``None`` for a flat bar, or when there
+    #: was no prior bar to read for a next-open entry.
+    reaction: Reaction | None = None
+    #: The retracement band of the last confirmed leg, and whether the entry
+    #: sat inside it.
+    fib_zone: FibZone | None = None
+    fib_contains_entry: bool = False
+    #: The named window the entry fell in. ``None`` both when no filter was
+    #: asked for and when the entry fell outside every window, which is why
+    #: the caller is told which of those it is rather than inferring it.
+    session: SessionWindow | None = None
 
 
 def detectors_at_entry(
@@ -73,6 +106,12 @@ def detectors_at_entry(
     align_with_direction: bool,
     gap_past_midpoint: bool = False,
     entry_bar_known: bool = True,
+    bias_states: list[BiasState] | None = None,
+    candles: list[Candle] | None = None,
+    entry_index: int | None = None,
+    sessions: list[SessionWindow] | None = None,
+    fib_low: float | None = None,
+    fib_high: float | None = None,
 ) -> DetectorState:
     """Everything that was knowably true at ``entry_time``, and no more.
 
@@ -103,6 +142,20 @@ def detectors_at_entry(
     # operator in four different helpers.
     cutoff = entry_time if entry_bar_known else entry_time - 1
 
+    bias = bias_at(bias_states or [], cutoff)
+
+    reaction = None
+    if candles is not None and entry_index is not None:
+        reaction = reaction_at(
+            candles, entry_index, direction, entry_bar_known=entry_bar_known
+        )
+
+    zone = None
+    if fib_low is not None and fib_high is not None:
+        zone = fib_zone_at(
+            swings, cutoff, direction, low_ratio=fib_low, high_ratio=fib_high
+        )
+
     return DetectorState(
         fair_value_gap=_gap_at(
             entry_price,
@@ -121,6 +174,15 @@ def detectors_at_entry(
         liquidity_pool=_sweep_at(
             cutoff, direction, pools or [], within_ms, align_with_direction
         ),
+        bias=bias,
+        bias_agrees=bias_allows(bias, direction),
+        reaction=reaction,
+        fib_zone=zone,
+        fib_contains_entry=zone is not None and zone.contains(entry_price),
+        # The entry time itself, not the cutoff: what hour a trade was filled
+        # in is knowable the moment it fills, and stepping back a millisecond
+        # would drop a next-open entry out of a window it opened exactly on.
+        session=session_at(entry_time, sessions or []),
     )
 
 
@@ -249,6 +311,12 @@ def unmet_condition(
     require_swing_point: bool,
     require_liquidity_sweep: bool = False,
     gap_past_midpoint: bool = False,
+    require_higher_timeframe_bias: bool = False,
+    require_reaction: bool = False,
+    min_wick_ratio: float = 0.0,
+    min_reaction_percent: float = 0.0,
+    entry_model: EntryModel = "any",
+    require_session: bool = False,
 ) -> str | None:
     """Why this entry does not qualify, or ``None`` if it does.
 
@@ -273,4 +341,46 @@ def unmet_condition(
         return "No confirmed swing point stood within the window before entry."
     if require_liquidity_sweep and state.liquidity_pool is None:
         return "No liquidity pool was swept within the window before entry."
+    if require_higher_timeframe_bias and not state.bias_agrees:
+        # The two refusals are different facts about the run and want
+        # different responses: no frame at all usually means the higher
+        # timeframe has too little history behind the selection, which is
+        # fixed by widening it. The wrong frame is the filter working.
+        if state.bias is None:
+            return (
+                "The higher timeframe had not established a direction by the entry "
+                "bar, so there was no bias to trade with."
+            )
+        return (
+            f"The higher timeframe was {state.bias.direction} at the entry bar, "
+            "which is against this trade."
+        )
+    if require_reaction:
+        if state.reaction is None:
+            return "The bar at the level had no range to measure a reaction from."
+        if not state.reaction.closed_through_open:
+            return "The bar at the level did not close back through its own open."
+        if state.reaction.wick_ratio < min_wick_ratio:
+            return (
+                f"The rejection wick was {state.reaction.wick_ratio:.0%} of the bar's "
+                f"range, short of the {min_wick_ratio:.0%} asked for."
+            )
+        if state.reaction.displacement_percent < min_reaction_percent:
+            return (
+                f"Price came back {state.reaction.displacement_percent:.2f}% off the "
+                f"extreme, short of the {min_reaction_percent:g}% asked for."
+            )
+    if entry_model == "fib_retrace" and not state.fib_contains_entry:
+        if state.fib_zone is None:
+            return (
+                "No confirmed swing leg stood before the entry, so there was no "
+                "retracement to measure it against."
+            )
+        return (
+            f"The entry was outside the {state.fib_zone.low_ratio:g}-"
+            f"{state.fib_zone.high_ratio:g} retracement of the last leg "
+            f"({state.fib_zone.low:g} to {state.fib_zone.high:g})."
+        )
+    if require_session and state.session is None:
+        return "The entry fell outside every session that was asked for."
     return None

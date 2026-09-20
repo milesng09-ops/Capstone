@@ -6,10 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.analysis.sessions import SESSIONS
 from app.models.domain import Candle, Instrument, ProviderStatus
+from app.utils.intervals import UnsupportedIntervalError, interval_ms
 
 Direction = Literal["long", "short"]
 EntryType = Literal["selection_close", "next_open"]
+EntryModel = Literal["any", "immediate", "fib_retrace"]
+BiasDirection = Literal["bullish", "bearish", "neutral"]
+SESSION_KEYS = frozenset(SESSIONS)
 StopLossType = Literal["percentage", "fixed_price", "pattern_extreme", "atr_multiple"]
 TakeProfitType = Literal["percentage", "fixed_price", "risk_reward", "liquidity"]
 ExitReason = Literal["stop_loss", "take_profit", "timeout", "end_of_data"]
@@ -255,6 +260,50 @@ class DetectorFilters(BaseModel):
     #: Pivots needed before a level counts as a shelf.
     liquidity_min_touches: int = Field(2, ge=2, le=10)
 
+    # ---- higher-timeframe bias ------------------------------------------
+    #: Only take entries the higher timeframe is behind: longs while it is
+    #: bullish, shorts while it is bearish. A timeframe that has not yet
+    #: broken structure either way is behind nothing, and takes no trades.
+    #: Needs `BacktestRequest.higher_timeframe` to say which timeframe.
+    require_higher_timeframe_bias: bool = False
+
+    # ---- reaction quality -----------------------------------------------
+    #: The bar at the level has to look like a rejection: closed back through
+    #: its own open, with a wick and a move worth the name.
+    require_reaction: bool = False
+    #: Rejection wick as a share of the bar's whole range.
+    min_wick_ratio: float = Field(0.5, ge=0.0, le=1.0)
+    #: How far price came back off the extreme, as a percentage of price.
+    #: 0 asks only for the shape, which is the weaker claim.
+    min_reaction_percent: float = Field(0.0, ge=0.0, le=50.0)
+
+    # ---- which entry off the level ---------------------------------------
+    #: `immediate` turns straight off the level; `fib_retrace` waits for
+    #: price to come back into the retracement of the last swing leg. `any`
+    #: is the behaviour before there was a choice.
+    entry_model: EntryModel = "any"
+    #: The retracement band, as fractions of the leg. The default is the
+    #: 0.62-0.79 optimal trade entry.
+    fib_low: float = Field(0.62, ge=0.0, le=1.0)
+    fib_high: float = Field(0.79, ge=0.0, le=1.0)
+
+    # ---- time of day ------------------------------------------------------
+    #: Named killzones an entry must fall inside. Empty means no filter at
+    #: all -- not "every session", which would behave the same today but
+    #: would quietly start excluding trades the moment a session is added.
+    sessions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_bands(self) -> "DetectorFilters":
+        if self.fib_low > self.fib_high:
+            raise ValueError("detectors.fib_low must not exceed fib_high")
+        unknown = [key for key in self.sessions if key not in SESSION_KEYS]
+        if unknown:
+            raise ValueError(
+                "detectors.sessions contains unknown sessions: " + ", ".join(unknown)
+            )
+        return self
+
     @property
     def any_required(self) -> bool:
         return (
@@ -262,7 +311,12 @@ class DetectorFilters(BaseModel):
             or self.require_smt_divergence
             or self.require_swing_point
             or self.require_liquidity_sweep
+            or self.require_higher_timeframe_bias
+            or self.require_reaction
+            or self.entry_model == "fib_retrace"
+            or bool(self.sessions)
         )
+
 
 
 class LearningSettings(BaseModel):
@@ -369,6 +423,16 @@ class BacktestRequest(BaseModel):
     symbols: list[str] = Field(default_factory=lambda: ["ES", "NQ", "YM"])
     primary_symbol: str = "ES"
     interval: str = "1h"
+    #: The timeframe the bias is read from, when one is asked for: a 4-hour
+    #: zone driving a 5-minute entry, which is the half of the multi-timeframe
+    #: workflow that is mechanical.
+    #:
+    #: Built by aggregating `interval` rather than fetched, so switching it on
+    #: costs no provider calls against a five-a-minute quota, and the higher
+    #: timeframe is guaranteed to be made of exactly the bars the entries are
+    #: taken on. It must therefore be a coarser interval that this one
+    #: divides into, which `_check_higher_timeframe` enforces.
+    higher_timeframe: str | None = None
     selection: SelectionSpec
     trade: TradeRules = Field(default_factory=TradeRules)
     search: SearchSettings
@@ -379,6 +443,36 @@ class BacktestRequest(BaseModel):
     def _check_symbols(self) -> "BacktestRequest":
         if self.primary_symbol not in self.symbols:
             self.symbols = [self.primary_symbol, *self.symbols]
+        return self
+
+    @model_validator(mode="after")
+    def _check_higher_timeframe(self) -> "BacktestRequest":
+        """A bias timeframe has to be strictly coarser than the entry one.
+
+        Equal is the error worth naming: a "4h bias" on a 4h backtest is not
+        a higher-timeframe rule at all, it is the same structure consulted
+        twice, and it would quietly pass while meaning nothing.
+        """
+
+        if self.higher_timeframe is None:
+            if self.detectors.require_higher_timeframe_bias:
+                raise ValueError(
+                    "detectors.require_higher_timeframe_bias needs "
+                    "higher_timeframe to say which timeframe to read it from"
+                )
+            return self
+
+        try:
+            base = interval_ms(self.interval)
+            higher = interval_ms(self.higher_timeframe)
+        except UnsupportedIntervalError as error:  # pragma: no cover - guarded upstream
+            raise ValueError(str(error)) from error
+
+        if higher <= base:
+            raise ValueError(
+                f"higher_timeframe ({self.higher_timeframe}) must be coarser than "
+                f"interval ({self.interval})"
+            )
         return self
 
 

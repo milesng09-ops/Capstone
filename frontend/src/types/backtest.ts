@@ -71,7 +71,68 @@ export interface DetectorFilters {
   liquidity_tolerance_percent: number
   /** Pivots needed before a level counts as a shelf. */
   liquidity_min_touches: number
+
+  /**
+   * Only take entries the higher timeframe is behind: longs while it is
+   * bullish, shorts while it is bearish. A timeframe that has not broken
+   * structure either way is behind nothing, and takes no trades.
+   *
+   * Needs `higher_timeframe` on the request to say which timeframe.
+   */
+  require_higher_timeframe_bias: boolean
+  /**
+   * The bar at the level has to look like a rejection: closed back through
+   * its own open, with a wick and a move worth the name.
+   */
+  require_reaction: boolean
+  /** Rejection wick as a share of the bar's whole range, 0..1. */
+  min_wick_ratio: number
+  /** How far price came back off the extreme, as a percentage of price. */
+  min_reaction_percent: number
+  /**
+   * Which of the two entries off a level to take. `immediate` turns straight
+   * off it; `fib_retrace` waits for price to come back into the retracement
+   * of the last swing leg. `any` is the behaviour before there was a choice.
+   */
+  entry_model: EntryModel
+  /** The retracement band, as fractions of the leg. 0.62-0.79 is the OTE. */
+  fib_low: number
+  fib_high: number
+  /**
+   * Named killzones an entry must fall inside. Empty means no filter at all
+   * — not "every session", which behaves the same today but would start
+   * excluding trades the moment a session is added.
+   */
+  sessions: SessionKey[]
 }
+
+/** Which entry off a level a run is asking for. */
+export type EntryModel = 'any' | 'immediate' | 'fib_retrace'
+
+/** The named killzones, in New York time, as the backend defines them. */
+export type SessionKey = 'asia' | 'london' | 'new_york_am' | 'new_york_pm'
+
+export const SESSION_LABELS: Record<SessionKey, string> = {
+  asia: 'Asia',
+  london: 'London',
+  new_york_am: 'New York AM',
+  new_york_pm: 'New York PM',
+}
+
+/** The window each one covers, for the label under the switch. */
+export const SESSION_HOURS: Record<SessionKey, string> = {
+  asia: '20:00–00:00 NY',
+  london: '02:00–05:00 NY',
+  new_york_am: '07:00–10:00 NY',
+  new_york_pm: '13:30–16:00 NY',
+}
+
+export const SESSION_KEYS: SessionKey[] = [
+  'asia',
+  'london',
+  'new_york_am',
+  'new_york_pm',
+]
 
 export const DEFAULT_DETECTOR_FILTERS: DetectorFilters = {
   require_fair_value_gap: false,
@@ -84,6 +145,14 @@ export const DEFAULT_DETECTOR_FILTERS: DetectorFilters = {
   swing_strength: 2,
   liquidity_tolerance_percent: 0.03,
   liquidity_min_touches: 2,
+  require_higher_timeframe_bias: false,
+  require_reaction: false,
+  min_wick_ratio: 0.5,
+  min_reaction_percent: 0,
+  entry_model: 'any',
+  fib_low: 0.62,
+  fib_high: 0.79,
+  sessions: [],
 }
 
 /**
@@ -165,6 +234,13 @@ export interface BacktestRequest {
   symbols: string[]
   primary_symbol: string
   interval: Interval
+  /**
+   * The timeframe the bias is read from, when one is asked for. Aggregated
+   * from `interval` on the backend rather than fetched, so it costs no
+   * provider calls and is arithmetically the same data as the entry bars.
+   * Must be strictly coarser than `interval`, which the backend enforces.
+   */
+  higher_timeframe: Interval | null
   selection: { start_time: number; end_time: number }
   trade: TradeRules
   search: SearchSettings

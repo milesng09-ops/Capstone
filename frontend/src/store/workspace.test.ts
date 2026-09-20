@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { renderHook } from '@testing-library/react'
 
 import {
+  canReadBias,
   longestRange,
   migrateWorkspace,
   useSymbolInterval,
@@ -560,5 +561,63 @@ describe('migrating a stored workspace', () => {
 
   it('passes undefined straight through', () => {
     expect(migrateWorkspace(undefined, 2)).toBeUndefined()
+  })
+})
+
+describe('the timeframe a bias is read from', () => {
+  beforeEach(() => {
+    useWorkspace.setState({ interval: '1h', higherTimeframe: '4h' })
+  })
+
+  it('keeps itself strictly coarser than the interval being entered on', () => {
+    // A "1h bias" on an hourly backtest is the same structure consulted
+    // twice, and the backend refuses the run rather than pretending.
+    useWorkspace.getState().setHigherTimeframe('1h')
+
+    expect(useWorkspace.getState().higherTimeframe).toBe('90m')
+  })
+
+  it('is carried up when the entry interval overtakes it', () => {
+    // The two are set from opposite ends of the screen, so neither control
+    // can be relied on to notice the other moved.
+    useWorkspace.getState().setInterval('1d')
+
+    expect(useWorkspace.getState().higherTimeframe).toBe('1w')
+  })
+
+  it('leaves a choice that is already coarser alone', () => {
+    useWorkspace.getState().setHigherTimeframe('1d')
+
+    expect(useWorkspace.getState().higherTimeframe).toBe('1d')
+  })
+
+  it('knows when there is nothing above the interval to read', () => {
+    expect(canReadBias('1h')).toBe(true)
+    expect(canReadBias('1mo')).toBe(false)
+  })
+
+  it('backfills the new conditions onto a workspace saved before them', () => {
+    // `detectors` is restored whole, so one stored before these existed comes
+    // back without them -- and a missing boolean reaches a switch as
+    // `undefined`, which JSON.stringify drops on the way out again.
+    const stored = {
+      detectors: {
+        require_fair_value_gap: true,
+        require_smt_divergence: false,
+        require_swing_point: false,
+        within_bars: 10,
+        align_with_direction: true,
+        swing_strength: 2,
+      },
+    }
+
+    const migrated = migrateWorkspace(stored, 4) as { detectors: DetectorFilters }
+
+    expect(migrated.detectors.require_higher_timeframe_bias).toBe(false)
+    expect(migrated.detectors.entry_model).toBe('any')
+    expect(migrated.detectors.sessions).toEqual([])
+    expect(migrated.detectors.min_wick_ratio).toBe(DEFAULT_DETECTOR_FILTERS.min_wick_ratio)
+    // And the choice that was already there survives.
+    expect(migrated.detectors.require_fair_value_gap).toBe(true)
   })
 })

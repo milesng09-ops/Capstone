@@ -27,7 +27,10 @@ from app.analysis import (
     find_smt_divergences,
     find_swing_points,
 )
+from app.analysis.bias import find_bias_states
 from app.analysis.conditions import detectors_at_entry, unmet_condition
+from app.analysis.sessions import windows_for
+from app.services.aggregation_service import aggregate_candles
 from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade, entry_bar
 import numpy as np
 from dataclasses import replace
@@ -595,11 +598,13 @@ class BacktestService:
         strength = request.detectors.swing_strength
         swings_by_symbol = {}
         gaps_by_symbol = {}
+        bias_by_symbol: dict[str, list] = {}
         for item in usable:
             swings_by_symbol[item.symbol] = find_swing_points(
                 item.candles, strength=strength
             )
             gaps_by_symbol[item.symbol] = find_fair_value_gaps(item.candles)
+            bias_by_symbol[item.symbol] = self._bias_states(request, item.candles)
 
         context: dict = {}
         for item in usable:
@@ -630,6 +635,7 @@ class BacktestService:
                 "gaps": gaps_by_symbol[item.symbol],
                 "swings": swings_by_symbol[item.symbol],
                 "divergences": divergences,
+                "bias": bias_by_symbol[item.symbol],
                 # Swept shelves are kept: the sweep condition is asking where
                 # price has just come *from*, which an unswept-only list
                 # cannot answer.
@@ -641,6 +647,35 @@ class BacktestService:
                 ),
             }
         return context
+
+    @staticmethod
+    def _bias_states(request: BacktestRequest, candles: list[Candle]) -> list:
+        """The higher-timeframe frame over this symbol's own bars.
+
+        The higher timeframe is *aggregated from the series already in hand*
+        rather than fetched.  Two reasons, and the second is the one that
+        decides it: a second fetch costs a request against a five-a-minute
+        quota for bars the cache already holds in finer form, and a fetched
+        series can disagree with this one -- different vendor, different
+        session boundaries -- so a bias could be read from a 4-hour bar whose
+        highs never appear in the 5-minute bars the entries are taken on.
+        Aggregating makes the two views arithmetically the same data.
+
+        Swing strength is deliberately the same number as the entry
+        timeframe's.  It means something different up there -- two 4-hour
+        bars either side, not two 5-minute ones -- which is the point.
+        """
+
+        if request.higher_timeframe is None:
+            return []
+        higher = aggregate_candles(candles, request.higher_timeframe)
+        if not higher:
+            return []
+        return find_bias_states(
+            higher,
+            find_swing_points(higher, strength=request.detectors.swing_strength),
+            interval_ms=interval_ms(request.higher_timeframe),
+        )
 
     @staticmethod
     def _needs_detectors(request: BacktestRequest) -> bool:
@@ -674,6 +709,7 @@ class BacktestService:
             return None
         entry_index, entry_price = entry
 
+        filters = request.detectors
         state = detectors_at_entry(
             entry_price=entry_price,
             entry_time=candles[entry_index].time,
@@ -683,19 +719,31 @@ class BacktestService:
             divergences=context["divergences"],
             pools=context["pools"],
             within_ms=within_ms,
-            align_with_direction=request.detectors.align_with_direction,
-            gap_past_midpoint=request.detectors.gap_past_midpoint,
+            align_with_direction=filters.align_with_direction,
+            gap_past_midpoint=filters.gap_past_midpoint,
             # A next-open entry fills before its bar has printed anything, so
             # that bar's own high and low are not evidence for taking it.
             entry_bar_known=request.trade.entry_type != "next_open",
+            bias_states=context.get("bias") or [],
+            candles=candles,
+            entry_index=entry_index,
+            sessions=windows_for(filters.sessions),
+            fib_low=filters.fib_low,
+            fib_high=filters.fib_high,
         )
         return unmet_condition(
             state,
-            require_fair_value_gap=request.detectors.require_fair_value_gap,
-            require_smt_divergence=request.detectors.require_smt_divergence,
-            require_swing_point=request.detectors.require_swing_point,
-            require_liquidity_sweep=request.detectors.require_liquidity_sweep,
-            gap_past_midpoint=request.detectors.gap_past_midpoint,
+            require_fair_value_gap=filters.require_fair_value_gap,
+            require_smt_divergence=filters.require_smt_divergence,
+            require_swing_point=filters.require_swing_point,
+            require_liquidity_sweep=filters.require_liquidity_sweep,
+            gap_past_midpoint=filters.gap_past_midpoint,
+            require_higher_timeframe_bias=filters.require_higher_timeframe_bias,
+            require_reaction=filters.require_reaction,
+            min_wick_ratio=filters.min_wick_ratio,
+            min_reaction_percent=filters.min_reaction_percent,
+            entry_model=filters.entry_model,
+            require_session=bool(filters.sessions),
         )
 
     @staticmethod
@@ -738,6 +786,44 @@ class BacktestService:
                 f"{filters.liquidity_tolerance_percent:g}% of each other -- was swept "
                 f"within {filters.within_bars} bars before entry."
             )
+        if filters.require_higher_timeframe_bias:
+            lines.append(
+                f"Only matches the {request.higher_timeframe} timeframe agreed with: "
+                f"its structure had to be "
+                f"{'bullish' if request.trade.direction == 'long' else 'bearish'} "
+                "at the entry bar."
+            )
+            lines.append(
+                f"The {request.higher_timeframe} bias is read from the close of the "
+                "bar that set it, not its open, so a trade never sees a higher-"
+                "timeframe bar that had not finished."
+            )
+        if filters.require_reaction:
+            size = (
+                f" and came back at least {filters.min_reaction_percent:g}% off the extreme"
+                if filters.min_reaction_percent > 0
+                else ""
+            )
+            lines.append(
+                "Only matches where the bar at the level closed back through its own "
+                f"open with a rejection wick of at least {filters.min_wick_ratio:.0%} "
+                f"of its range{size}."
+            )
+        if filters.entry_model == "fib_retrace":
+            lines.append(
+                f"Only matches whose entry sat in the {filters.fib_low:g}-"
+                f"{filters.fib_high:g} retracement of the last confirmed swing leg."
+            )
+        elif filters.entry_model == "immediate":
+            lines.append(
+                "Entries taken straight off the level, with no retracement required."
+            )
+        if filters.sessions:
+            named = ", ".join(
+                f"{window.label} ({window.spoken})"
+                for window in windows_for(filters.sessions)
+            )
+            lines.append(f"Only entries falling inside {named}.")
         lines.append(
             "Conditions are read at the entry bar using only what had been confirmed "
             "by then, and the random-entry baseline is held to the same conditions."

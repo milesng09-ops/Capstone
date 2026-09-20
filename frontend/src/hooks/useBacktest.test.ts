@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import { buildBacktestRequest } from '@/hooks/useBacktest'
 import { buildRange } from '@/hooks/useChartRange'
-import { DEFAULT_SEARCH_CONFIG, DEFAULT_TRADE_RULES } from '@/types/backtest'
+import {
+  DEFAULT_DETECTOR_FILTERS,
+  DEFAULT_SEARCH_CONFIG,
+  DEFAULT_TRADE_RULES,
+} from '@/types/backtest'
 import type { SelectionRange } from '@/types/market'
 
 const DAY_MS = 86_400_000
@@ -137,5 +141,35 @@ describe('buildRange', () => {
       const { to } = buildRange(30, now)
       expect(to).toBeGreaterThan(now)
     }
+  })
+})
+
+describe('the higher timeframe a bias is read from', () => {
+  it('is left out entirely when no bias was asked for', () => {
+    /*
+     * The backend refuses a higher timeframe that is not strictly coarser
+     * than the entry one. A stored 4h setting left over from an hourly
+     * workspace would otherwise fail a daily run that never wanted a bias.
+     */
+    const request = build({ interval: '1d', higherTimeframe: '4h' })
+
+    expect(request.higher_timeframe).toBeNull()
+  })
+
+  it('is sent when the bias condition is on', () => {
+    const request = build({
+      detectors: { ...DEFAULT_DETECTOR_FILTERS, require_higher_timeframe_bias: true },
+      higherTimeframe: '4h',
+    })
+
+    expect(request.higher_timeframe).toBe('4h')
+  })
+
+  it('is null when the condition is on but nothing was chosen', () => {
+    const request = build({
+      detectors: { ...DEFAULT_DETECTOR_FILTERS, require_higher_timeframe_bias: true },
+    })
+
+    expect(request.higher_timeframe).toBeNull()
   })
 })

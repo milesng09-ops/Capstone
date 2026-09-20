@@ -43,6 +43,8 @@ export function buildBacktestRequest(params: {
   rangeEnd: number
   /** Explicit history to search. Overrides the lookback when set. */
   testWindow?: TimeWindow | null
+  /** Which timeframe the bias is read from, when the condition is on. */
+  higherTimeframe?: Interval | null
 }): BacktestRequest {
   const {
     selection,
@@ -55,6 +57,7 @@ export function buildBacktestRequest(params: {
     learning = DEFAULT_LEARNING_SETTINGS,
     rangeEnd,
     testWindow,
+    higherTimeframe = null,
   } = params
 
   const searchSymbols = search.searchSymbols.length ? search.searchSymbols : symbols
@@ -71,6 +74,13 @@ export function buildBacktestRequest(params: {
     symbols: uniqueSymbols,
     primary_symbol: primarySymbol,
     interval,
+    // Sent only when the bias condition is actually on. The backend refuses
+    // a higher timeframe equal to or finer than the entry one, and a stored
+    // setting left over from a coarser interval would otherwise fail a run
+    // that never asked for a bias in the first place.
+    higher_timeframe: detectors.require_higher_timeframe_bias
+      ? (higherTimeframe ?? null)
+      : null,
     selection: {
       start_time: selection.start_time,
       end_time: selection.end_time,

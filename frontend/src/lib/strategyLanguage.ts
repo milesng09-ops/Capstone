@@ -29,6 +29,7 @@ import {
   type SearchConfig,
   type TradeRules,
 } from '@/types/backtest'
+import { SESSION_KEYS, SESSION_LABELS, type SessionKey } from '@/types/backtest'
 import { SYMBOLS, type SymbolKey } from '@/types/market'
 
 /** One thing the description asked for, and the words that asked for it. */
@@ -64,6 +65,19 @@ interface Rule {
 }
 
 const NUMBER = String.raw`(\d+(?:\.\d+)?)`
+
+/**
+ * Which words name which killzone.
+ *
+ * Longest first: "new york am" has to be tried before a bare "new york",
+ * or the afternoon session would be unreachable by name.
+ */
+const SESSION_PHRASES: [RegExp, SessionKey][] = [
+  [/new\s+york\s+pm|ny\s+pm/, 'new_york_pm'],
+  [/new\s+york\s+am|ny\s+am|new\s+york\s+open|ny\s+open/, 'new_york_am'],
+  [/london/, 'london'],
+  [/asia/, 'asia'],
+]
 
 /**
  * The grammar, in the order it is applied.
@@ -242,6 +256,108 @@ const RULES: Rule[] = [
         phrase: match[0],
         setting: 'Condition',
         value: 'A liquidity pool had just been swept',
+      }
+    },
+  },
+  {
+    /*
+     * The higher-timeframe frame.
+     *
+     * Only the switch, never which timeframe: that is a workspace setting
+     * with its own control, and a description that said "4h" would be
+     * silently ignored if this pretended to read it. The phrase has to name
+     * the *timeframe* rather than merely a direction, or "bullish setup"
+     * would turn on a condition nobody asked for.
+     */
+    pattern:
+      /\b(?:(?:higher|larger|bigger)\s+time\s?frame|htf|daily|weekly|4\s?h(?:our)?)\s+(?:bias|trend|direction|structure)\b|\b(?:with|in\s+line\s+with|aligned\s+with)\s+the\s+(?:higher\s+time\s?frame|htf|daily|weekly|trend)\b/,
+    apply: (match, into) => {
+      into.detectors.require_higher_timeframe_bias = true
+      return {
+        phrase: match[0],
+        setting: 'Condition',
+        value: 'The higher timeframe agreed with the trade',
+      }
+    },
+  },
+  {
+    /*
+     * A reaction at the level. Verbs and shapes, not the word "wick" alone:
+     * "the wick of the candle" is a description of where a level sits, not a
+     * demand that the entry bar have one.
+     */
+    pattern:
+      /\b(?:strong\s+(?:reaction|rejection)|reacts?|reacted|reject(?:s|ed|ion)?\s+(?:off|from|at)|(?:long|big|large)\s+(?:lower\s+|upper\s+)?wick|rejection\s+wick|wicks?\s+(?:off|through|below|above))\b/,
+    apply: (match, into) => {
+      into.detectors.require_reaction = true
+      return {
+        phrase: match[0],
+        setting: 'Condition',
+        value: 'The bar at the level rejected and closed back through its open',
+      }
+    },
+  },
+  {
+    /*
+     * The retracement entry. "OTE" is the name Miles uses for it, and the
+     * band it refers to is the default, so naming it need not also set the
+     * numbers -- doing that would overwrite a band the user had widened.
+     */
+    pattern:
+      /\b(?:ote|optimal\s+trade\s+entry|fib(?:onacci)?\s*(?:retrace(?:ment)?|entry|level)?|retrace(?:ment|s|d)?\s+(?:into|to|back)|deep\s+retrace(?:ment)?)\b/,
+    apply: (match, into) => {
+      into.detectors.entry_model = 'fib_retrace'
+      return {
+        phrase: match[0],
+        setting: 'Entry',
+        value: 'Only entries inside the retracement of the last swing leg',
+      }
+    },
+  },
+  {
+    // Straight off the level: the other half of the pair, and the one that
+    // has to be said out loud to stop the run taking both.
+    pattern:
+      /\b(?:immediate(?:ly)?\s+(?:reversal|entry|off)|straight\s+(?:off|from)|no\s+retrace(?:ment)?|without\s+(?:a\s+)?retrace(?:ment)?)\b/,
+    apply: (match, into) => {
+      into.detectors.entry_model = 'immediate'
+      return {
+        phrase: match[0],
+        setting: 'Entry',
+        value: 'Only entries taken straight off the level',
+      }
+    },
+  },
+  {
+    /*
+     * Sessions. One rule, but it reads the *whole clause* rather than the
+     * one phrase that tripped it.
+     *
+     * The loop applies each rule once per clause, so a rule that took only
+     * its own match would read "london or new york am" as London and drop
+     * the rest -- a filter narrower than the one that was asked for, which
+     * is the direction of error that silently removes trades.
+     */
+    pattern:
+      /\b(?:asia(?:n)?|london|new\s+york|ny)\b(?:\s+(?:am|pm|open|session|killzone|kill\s+zone))?/,
+    apply: (match, into) => {
+      const found = SESSION_PHRASES.filter(([pattern]) =>
+        pattern.test(match.input ?? match[0]),
+      ).map(([, key]) => key)
+      if (found.length === 0) return null
+
+      const current = into.detectors.sessions ?? []
+      // Canonical order, not the order they were typed, so the summary line
+      // reads the same however the sentence was phrased.
+      into.detectors.sessions = SESSION_KEYS.filter(
+        (item) => found.includes(item) || current.includes(item),
+      )
+      const added = found.filter((key) => !current.includes(key))
+      if (added.length === 0) return null
+      return {
+        phrase: match[0],
+        setting: 'Session',
+        value: `Only entries inside ${added.map((key) => SESSION_LABELS[key]).join(' or ')}`,
       }
     },
   },

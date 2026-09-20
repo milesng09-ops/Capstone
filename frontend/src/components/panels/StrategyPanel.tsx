@@ -24,15 +24,25 @@ import { StrategyStart } from '@/components/panels/StrategyStart'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars } from '@/hooks/useMarketData'
 import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
-import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
-import type {
-  DetectorFilters,
-  LearningSettings,
-  Direction,
-  EntryType,
-  StopLossType,
-  TakeProfitType,
+import {
+  canReadBias,
+  coarserOf,
+  useChartedSymbols,
+  useTimeZone,
+  useWorkspace,
+} from '@/store/workspace'
+import {
+  SESSION_HOURS,
+  SESSION_KEYS,
+  SESSION_LABELS,
+  type DetectorFilters,
+  type LearningSettings,
+  type Direction,
+  type EntryType,
+  type StopLossType,
+  type TakeProfitType,
 } from '@/types/backtest'
+import { INTERVALS, INTERVAL_LABELS, type Interval } from '@/types/market'
 import { indexOfBar } from '@/lib/chart'
 import {
   formatCurrency,
@@ -76,6 +86,8 @@ export function StrategyPanel() {
 
   const range = useChartRange()
   const interval = useWorkspace((state) => state.interval)
+  const higherTimeframe = useWorkspace((state) => state.higherTimeframe)
+  const setHigherTimeframe = useWorkspace((state) => state.setHigherTimeframe)
   const primary = useWorkspace((state) => state.primarySymbol)
   const selection = useWorkspace((state) => state.selection)
   const testWindow = useWorkspace((state) => state.testWindow)
@@ -169,6 +181,7 @@ export function StrategyPanel() {
       learning,
       rangeEnd: range.to,
       testWindow,
+      higherTimeframe,
     })
     runBacktest.mutate(request, {
       onSuccess: (result) => setActiveBacktestId(result.id),
@@ -481,6 +494,154 @@ export function StrategyPanel() {
         />
       </Disclosure>
 
+      {/* ---- the frame the entry sits inside ---- */}
+      <Disclosure label="Higher timeframe" summary={biasSummary(detectors, higherTimeframe)}>
+        <p className="text-2xs leading-relaxed text-muted-foreground">
+          The day has a direction before an entry is considered, read from a
+          coarser timeframe: bullish once it closes above the last swing high,
+          bearish once it closes below the last swing low. It is an assumption
+          you trade inside, not a prediction.
+        </p>
+
+        <ToggleField
+          label="Trade with the higher timeframe"
+          hint="Longs only while it is bullish, shorts only while it is bearish. A timeframe that has not broken structure either way is behind nothing, and takes no trades."
+          checked={detectors.require_higher_timeframe_bias}
+          disabled={!canReadBias(interval)}
+          onChange={(require_higher_timeframe_bias) =>
+            updateDetectors({ require_higher_timeframe_bias })
+          }
+        />
+
+        {!canReadBias(interval) && (
+          <p className="text-2xs leading-relaxed text-warn">
+            {INTERVAL_LABELS[interval]} is the coarsest timeframe there is, so
+            there is nothing above it to read a bias from.
+          </p>
+        )}
+
+        {detectors.require_higher_timeframe_bias && canReadBias(interval) && (
+          <>
+            <SelectField<Interval>
+              label="Read it from"
+              hint="Aggregated from the bars already loaded, so switching this on costs no extra data. It must be coarser than the interval you are entering on."
+              value={higherTimeframe}
+              options={INTERVALS.filter((item) => coarserOf(item, interval) === item).map(
+                (item) => ({ value: item, label: INTERVAL_LABELS[item] }),
+              )}
+              onChange={setHigherTimeframe}
+            />
+            <p className="text-2xs leading-relaxed text-muted-foreground">
+              Read from the <em>close</em> of each {INTERVAL_LABELS[higherTimeframe]}{' '}
+              bar, never its open — so a trade never sees a higher-timeframe bar
+              that had not finished yet.
+            </p>
+          </>
+        )}
+      </Disclosure>
+
+      {/* ---- how price behaved at the level, and which entry off it ---- */}
+      <Disclosure label="Entry" summary={entrySummary(detectors)}>
+        <p className="text-2xs leading-relaxed text-muted-foreground">
+          Two things about the entry itself: whether the bar at the level
+          actually rejected, and which of the two entries off that level you
+          are taking.
+        </p>
+
+        <ToggleField
+          label="Needs a reaction"
+          hint="The bar at the level closed back through its own open, with a rejection wick. A bar that touched and drifted is not a reaction."
+          checked={detectors.require_reaction}
+          onChange={(require_reaction) => updateDetectors({ require_reaction })}
+        />
+
+        {detectors.require_reaction && (
+          <div className="grid grid-cols-2 gap-2">
+            <NumberField
+              label="Wick at least"
+              hint="The rejection wick as a share of the bar's whole range. 0.5 asks for half the bar to be wick."
+              value={detectors.min_wick_ratio}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(min_wick_ratio) => updateDetectors({ min_wick_ratio })}
+            />
+            <NumberField
+              label="Came back"
+              hint="How far price travelled from the extreme to the close. 0 asks only for the shape, which is the weaker claim -- a bar can be all wick and have moved almost nothing."
+              value={detectors.min_reaction_percent}
+              min={0}
+              max={50}
+              step={0.05}
+              suffix="%"
+              onChange={(min_reaction_percent) => updateDetectors({ min_reaction_percent })}
+            />
+          </div>
+        )}
+
+        <SelectField<DetectorFilters['entry_model']>
+          label="Entry off the level"
+          hint="Turn straight off it, or wait for price to come back into the retracement of the last swing leg. Two different trades; a run that mixes them measures neither."
+          value={detectors.entry_model}
+          options={[
+            { value: 'any', label: 'Either' },
+            { value: 'immediate', label: 'Immediate' },
+            { value: 'fib_retrace', label: 'Fib retracement' },
+          ]}
+          onChange={(entry_model) => updateDetectors({ entry_model })}
+        />
+
+        {detectors.entry_model === 'fib_retrace' && (
+          <div className="grid grid-cols-2 gap-2">
+            <NumberField
+              label="From"
+              hint="The shallow edge of the band, as a fraction of the leg"
+              value={detectors.fib_low}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(fib_low) => updateDetectors({ fib_low })}
+            />
+            <NumberField
+              label="To"
+              hint="The deep edge. 0.62 to 0.79 is the optimal trade entry."
+              value={detectors.fib_high}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(fib_high) => updateDetectors({ fib_high })}
+            />
+          </div>
+        )}
+      </Disclosure>
+
+      {/* ---- when in the day ---- */}
+      <Disclosure label="Sessions" summary={sessionSummary(detectors)}>
+        <p className="text-2xs leading-relaxed text-muted-foreground">
+          A setup that only works at the New York open and one that works all
+          day are different setups. With none selected there is no filter at
+          all — every hour is allowed.
+        </p>
+
+        {SESSION_KEYS.map((key) => (
+          <ToggleField
+            key={key}
+            label={SESSION_LABELS[key]}
+            hint={SESSION_HOURS[key]}
+            checked={detectors.sessions.includes(key)}
+            onChange={(on) =>
+              updateDetectors({
+                // Kept in the canonical order rather than the order they were
+                // pressed, so the summary line reads the same way every time.
+                sessions: SESSION_KEYS.filter((item) =>
+                  item === key ? on : detectors.sessions.includes(item),
+                ),
+              })
+            }
+          />
+        ))}
+      </Disclosure>
+
       {/* ---- weights fitted rather than assumed ---- */}
       <Disclosure
         label="Fitted weights"
@@ -701,4 +862,29 @@ function conditionsSummary(detectors: DetectorFilters): string {
 
   if (on.length === 0) return 'none required'
   return on.join(', ')
+}
+
+/** Names the timeframe, because "on" alone does not say which one. */
+function biasSummary(detectors: DetectorFilters, higher: Interval): string {
+  if (!detectors.require_higher_timeframe_bias) return 'any direction'
+  return `with the ${INTERVAL_LABELS[higher]}`
+}
+
+function entrySummary(detectors: DetectorFilters): string {
+  const parts: string[] = []
+  if (detectors.entry_model === 'fib_retrace') {
+    parts.push(`${detectors.fib_low}-${detectors.fib_high} retrace`)
+  } else if (detectors.entry_model === 'immediate') {
+    parts.push('immediate')
+  }
+  if (detectors.require_reaction) {
+    parts.push(`${Math.round(detectors.min_wick_ratio * 100)}% wick`)
+  }
+  return parts.length ? parts.join(', ') : 'anywhere on the level'
+}
+
+function sessionSummary(detectors: DetectorFilters): string {
+  if (detectors.sessions.length === 0) return 'any hour'
+  if (detectors.sessions.length === SESSION_KEYS.length) return 'every session'
+  return detectors.sessions.map((key) => SESSION_LABELS[key]).join(', ')
 }

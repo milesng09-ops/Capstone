@@ -78,6 +78,31 @@ export type RangeDays = (typeof RANGE_PRESETS)[number]
  * are selected used to leave every chart showing an error until the user
  * worked out that the range, not the interval, was the problem.
  */
+/**
+ * The nearest interval strictly coarser than `base`, preferring `wanted`.
+ *
+ * `INTERVALS` is in ascending order of duration, so "coarser" is "later in
+ * the list". The backend refuses a bias timeframe that is not strictly
+ * coarser than the entry one, and the two settings are changed from opposite
+ * ends of the screen, so this keeps the pair legal without either control
+ * having to know about the other.
+ *
+ * At the coarsest interval there is nothing above it, and the answer is the
+ * same interval back. That pair is illegal, which is why `canReadBias` below
+ * exists rather than leaving the run to fail at the backend.
+ */
+export function coarserOf(wanted: Interval, base: Interval): Interval {
+  const baseIndex = INTERVALS.indexOf(base)
+  const wantedIndex = INTERVALS.indexOf(wanted)
+  if (wantedIndex > baseIndex) return wanted
+  return INTERVALS[Math.min(baseIndex + 1, INTERVALS.length - 1)]
+}
+
+/** Whether any interval is coarser than this one, so a bias can be read. */
+export function canReadBias(base: Interval): boolean {
+  return INTERVALS.indexOf(base) < INTERVALS.length - 1
+}
+
 export function longestRange(interval: Interval): RangeDays {
   const cap = MAX_RANGE_DAYS[interval]
   const usable = RANGE_PRESETS.filter((days) => days <= cap)
@@ -111,6 +136,15 @@ interface WorkspaceState {
   /** Correlated charts shown alongside the primary, for SMT comparison. */
   compareSymbols: SymbolKey[]
   interval: Interval
+  /**
+   * The timeframe a higher-timeframe bias is read from.
+   *
+   * A workspace setting rather than one of the detector filters, because it
+   * names a *view* the way `interval` does -- "the 4-hour behind this
+   * 5-minute" -- and stays put while conditions are switched on and off.
+   * Only sent with a run that actually asks for the bias.
+   */
+  higherTimeframe: Interval
   rangeDays: RangeDays
   /**
    * Intervals pinned to the top bar.
@@ -209,6 +243,7 @@ interface WorkspaceState {
   setPrimarySymbol: (symbol: SymbolKey) => void
   toggleCompareSymbol: (symbol: SymbolKey) => void
   setInterval: (interval: Interval) => void
+  setHigherTimeframe: (interval: Interval) => void
   toggleFavouriteInterval: (interval: Interval) => void
   updateChartSync: (patch: Partial<ChartSync>) => void
   setSymbolInterval: (symbol: SymbolKey, interval: Interval) => void
@@ -373,6 +408,7 @@ export const useWorkspace = create<WorkspaceState>()(
       primarySymbol: 'NQ',
       compareSymbols: ['ES'],
       interval: '1h',
+      higherTimeframe: '4h',
       rangeDays: 180,
       favouriteIntervals: DEFAULT_FAVOURITE_INTERVALS,
       chartSync: DEFAULT_CHART_SYNC,
@@ -435,9 +471,25 @@ export const useWorkspace = create<WorkspaceState>()(
           }
         }),
 
+      /*
+       * Kept strictly coarser than the entry interval, because the backend
+       * refuses a run where it is not -- a "1h bias" on a 1h backtest is the
+       * same structure consulted twice. Nudged up rather than refused here:
+       * dropping to the daily should not make you go and fix a second
+       * setting before the button works again.
+       */
+      setHigherTimeframe: (higherTimeframe) =>
+        set((state) => ({
+          higherTimeframe: coarserOf(higherTimeframe, state.interval),
+        })),
+
       setInterval: (interval) =>
         set((state) => ({
           interval,
+          // Carried up with the entry interval when it would otherwise be
+          // left at or below it. Moving to the daily must not silently leave
+          // a 4-hour "higher" timeframe behind it.
+          higherTimeframe: coarserOf(state.higherTimeframe, interval),
           // A finer interval cannot hold as much history, so the range comes
           // down with it rather than being left somewhere the backend will
           // refuse. Visibly: the preset that ends up selected is the one that
@@ -679,6 +731,7 @@ export const useWorkspace = create<WorkspaceState>()(
         primarySymbol: state.primarySymbol,
         compareSymbols: state.compareSymbols,
         interval: state.interval,
+        higherTimeframe: state.higherTimeframe,
         rangeDays: state.rangeDays,
         favouriteIntervals: state.favouriteIntervals,
         chartSync: state.chartSync,

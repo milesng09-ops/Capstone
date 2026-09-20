@@ -100,11 +100,12 @@ describe('StrategyStart', () => {
   it('says plainly what it could not read', () => {
     open()
 
-    describeAs('long, but only during the London session')
+    // The London session was the example here until the grammar learned it.
+    describeAs('long, but only when the VIX is under 20')
 
     expect(screen.getByText('Not understood')).toBeTruthy()
     // Quoted, which also keeps this off the textarea still holding the text.
-    expect(screen.getByText('“but only during the London session”')).toBeTruthy()
+    expect(screen.getByText('“but only when the VIX is under 20”')).toBeTruthy()
   })
 
   it('says so when a description named nothing at all', () => {

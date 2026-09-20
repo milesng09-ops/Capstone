@@ -126,10 +126,13 @@ describe('the search', () => {
 
 describe('what it could not read', () => {
   it('reports a clause it has no rule for', () => {
-    const read = interpret('long, but only during the London session')
+    // This used to be the London session, which the grammar has since learned.
+    // The example has to be something genuinely outside it, or the test
+    // passes for the wrong reason the moment the vocabulary grows.
+    const read = interpret('long, but only when the VIX is under 20')
 
     expect(read.rules.direction).toBe('long')
-    expect(read.unread).toEqual(['but only during the London session'])
+    expect(read.unread).toEqual(['but only when the VIX is under 20'])
   })
 
   it('reports nothing unread when every clause landed', () => {
@@ -333,5 +336,74 @@ describe('the gap midpoint', () => {
     const read = interpret('enter inside a fair value gap')
     expect(read.detectors.require_fair_value_gap).toBe(true)
     expect(read.detectors.gap_past_midpoint).toBeUndefined()
+  })
+})
+
+describe('the trade logic added after the first grammar', () => {
+  it('reads a higher-timeframe bias', () => {
+    expect(interpret('long with the 4h bias').detectors.require_higher_timeframe_bias).toBe(
+      true,
+    )
+    expect(interpret('in line with the daily').detectors.require_higher_timeframe_bias).toBe(
+      true,
+    )
+  })
+
+  it('does not turn the bias on for a bare direction', () => {
+    // "bullish" sets the direction. Reading it as a demand for a higher
+    // timeframe to agree would add a condition nobody asked for, and the
+    // run would come back with far fewer trades than the words implied.
+    expect(interpret('bullish setup off a gap').detectors.require_higher_timeframe_bias)
+      .toBeUndefined()
+  })
+
+  it('reads a reaction at the level', () => {
+    expect(interpret('long on a strong rejection').detectors.require_reaction).toBe(true)
+    expect(interpret('enter after a long lower wick').detectors.require_reaction).toBe(true)
+  })
+
+  it('reads the two entries off a level as different entries', () => {
+    expect(interpret('long into the OTE').detectors.entry_model).toBe('fib_retrace')
+    expect(interpret('buy the fib retracement').detectors.entry_model).toBe('fib_retrace')
+    expect(interpret('take it straight off the level').detectors.entry_model).toBe(
+      'immediate',
+    )
+  })
+
+  it('reads every session a clause names, not just the first', () => {
+    // The rule is applied once per clause, so one that took only its own
+    // match would quietly narrow the filter to London.
+    expect(interpret('london or new york am only').detectors.sessions).toEqual([
+      'london',
+      'new_york_am',
+    ])
+  })
+
+  it('keeps sessions in the canonical order however they were typed', () => {
+    expect(interpret('new york pm and london').detectors.sessions).toEqual([
+      'london',
+      'new_york_pm',
+    ])
+  })
+
+  it('tells the am and pm sessions apart', () => {
+    expect(interpret('ny pm only').detectors.sessions).toEqual(['new_york_pm'])
+    expect(interpret('the new york open').detectors.sessions).toEqual(['new_york_am'])
+  })
+
+  it('leaves the sessions alone when none is named', () => {
+    expect(interpret('long, 1% stop').detectors.sessions).toBeUndefined()
+  })
+
+  it('reads a full description into every part of it', () => {
+    const read = interpret(
+      'long into the fib retracement during london with the daily bias, 1% stop, 2R',
+    )
+
+    expect(read.detectors.entry_model).toBe('fib_retrace')
+    expect(read.detectors.sessions).toEqual(['london'])
+    expect(read.detectors.require_higher_timeframe_bias).toBe(true)
+    expect(read.rules.direction).toBe('long')
+    expect(read.unread).toEqual([])
   })
 })

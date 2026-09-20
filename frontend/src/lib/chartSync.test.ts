@@ -86,15 +86,12 @@ describe('with nothing switched on, which is how the app starts', () => {
   })
 
   it('keeps a click from sending the others anywhere', () => {
+    // Click-to-jump rides on the same switch as the scroll, so it is off out
+    // of the box too. The switch's own help text has to say so, or the
+    // feature is missing and unnameable.
     broadcastTimeJump('a', 1_700_000_000_000)
 
     expect(b.calls.jumpToTime).toEqual([])
-  })
-
-  it('still shares the bar size', () => {
-    // Bar size is a property of the question, not of one pane's view of the
-    // answer, so it is the one link that did not move.
-    expect(DEFAULT_CHART_SYNC.interval).toBe(true)
   })
 })
 

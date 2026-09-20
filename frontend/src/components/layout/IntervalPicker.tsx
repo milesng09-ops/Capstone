@@ -12,9 +12,10 @@
  * further. Which is which is the trader's choice, not ours, and it persists.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { ChevronDown, Pin, PinOff } from 'lucide-react'
 
+import { Floating } from '@/components/ui/Floating'
 import { Button } from '@/components/ui/primitives'
 import { SegmentedControl } from '@/components/ui/fields'
 import { useWorkspace } from '@/store/workspace'
@@ -34,28 +35,19 @@ function reachOf(interval: Interval): string {
   return `${days}d history`
 }
 
-/** Close on a press outside the box, or on Escape. */
-function useDismiss(open: boolean, close: () => void) {
-  const boxRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const away = (event: MouseEvent) => {
-      if (!boxRef.current?.contains(event.target as Node)) close()
-    }
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close()
-    }
-    window.addEventListener('mousedown', away)
-    window.addEventListener('keydown', escape)
-    return () => {
-      window.removeEventListener('mousedown', away)
-      window.removeEventListener('keydown', escape)
-    }
-  }, [open, close])
-
-  return boxRef
+/**
+ * Where a menu hanging off this control should open, in window coordinates.
+ *
+ * Both of these menus used to be laid out inside their own box, which does
+ * not work here: the top bar and the chart pane each clip their overflow, and
+ * a 454px list of thirteen intervals inside a 36px header is cut down to the
+ * header. `Floating` portals them out and needs a point rather than a box.
+ */
+function below(box: DOMRect): { x: number; y: number } {
+  return { x: box.left, y: box.bottom + MENU_GAP_PX }
 }
+
+const MENU_GAP_PX = 4
 
 /**
  * The full list, grouped, with a pin against each.
@@ -119,35 +111,49 @@ export function PaneIntervalButton({
   value: Interval
   onChange: (interval: Interval) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const boxRef = useDismiss(open, () => setOpen(false))
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  const boxRef = useRef<HTMLDivElement | null>(null)
+
+  const close = useCallback(() => setAt(null), [])
 
   return (
     <div ref={boxRef} className="pointer-events-auto relative">
       <button
         type="button"
-        onClick={() => setOpen((was) => !was)}
-        aria-expanded={open}
+        onClick={(event) => {
+          if (at) {
+            setAt(null)
+            return
+          }
+          setAt(below(event.currentTarget.getBoundingClientRect()))
+        }}
+        aria-expanded={at != null}
         title={`${INTERVAL_LABELS[value]} bars on this chart — ${reachOf(value)}`}
         className={cn(
           'rounded px-1 text-xs text-muted-foreground transition-colors hover:bg-[hsl(var(--accent))] hover:text-foreground',
-          open && 'bg-[hsl(var(--accent))] text-foreground',
+          at && 'bg-[hsl(var(--accent))] text-foreground',
         )}
       >
         {INTERVAL_LABELS[value]}
       </button>
 
-      {open && (
-        <div className="absolute left-0 top-full z-40 mt-1 w-60 rounded-md border border-border bg-[hsl(var(--popover))] p-2 text-left shadow-lg">
+      {at && (
+        <Floating
+          at={at}
+          onClose={close}
+          anchorRef={boxRef}
+          label="Timeframe for this chart"
+          className="w-60 text-left"
+        >
           <IntervalMenu
             value={value}
             pinnable={false}
             onPick={(item) => {
               onChange(item)
-              setOpen(false)
+              setAt(null)
             }}
           />
-        </div>
+        </Floating>
       )}
     </div>
   )
@@ -158,8 +164,10 @@ export function IntervalPicker() {
   const setInterval = useWorkspace((state) => state.setInterval)
   const favourites = useWorkspace((state) => state.favouriteIntervals)
 
-  const [open, setOpen] = useState(false)
-  const boxRef = useDismiss(open, () => setOpen(false))
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  const boxRef = useRef<HTMLDivElement | null>(null)
+
+  const close = useCallback(() => setAt(null), [])
 
   /*
    * An interval chosen from the menu but not pinned still has to show as
@@ -186,26 +194,41 @@ export function IntervalPicker() {
       <Button
         size="icon"
         variant="toolbar"
-        data-active={open}
-        onClick={() => setOpen((was) => !was)}
+        data-active={at != null}
+        onClick={() => {
+          if (at) {
+            setAt(null)
+            return
+          }
+          // Measured from the whole control, not the chevron, so the menu
+          // lines up with the left edge of the interval strip as before.
+          const box = boxRef.current?.getBoundingClientRect()
+          if (box) setAt(below(box))
+        }}
         title="All timeframes"
         aria-label="All timeframes"
-        aria-expanded={open}
+        aria-expanded={at != null}
       >
         <ChevronDown size={14} />
       </Button>
 
-      {open && (
-        <div className="absolute left-0 top-full z-40 mt-1 w-60 rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg">
+      {at && (
+        <Floating
+          at={at}
+          onClose={close}
+          anchorRef={boxRef}
+          label="All timeframes"
+          className="w-60"
+        >
           <IntervalMenu
             value={interval}
             pinnable
             onPick={(item) => {
               setInterval(item)
-              setOpen(false)
+              setAt(null)
             }}
           />
-        </div>
+        </Floating>
       )}
     </div>
   )

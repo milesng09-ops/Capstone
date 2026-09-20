@@ -12,7 +12,7 @@
  * what "snap" or "zone" means to someone opening this for the first time.
  */
 
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   BoxSelect,
@@ -298,39 +298,31 @@ function ColorPicker({
   value: string
   onChange: (color: string) => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
-  // Close on an outside press or on Escape, the two ways anyone expects to
-  // dismiss a popover without choosing from it.
-  useEffect(() => {
-    if (!open) return
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-
-    document.addEventListener('pointerdown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [open])
+  const close = useCallback(() => setAt(null), [])
 
   return (
     <div ref={rootRef} className="relative">
       <Button
         size="icon"
         variant="toolbar"
-        onClick={() => setOpen((current) => !current)}
+        onClick={(event) => {
+          if (at) {
+            setAt(null)
+            return
+          }
+          // Beside the rail, in window coordinates, for the same reason the
+          // settings panel is: laid out inside a 40px column that scrolls,
+          // the swatches were clipped away entirely.
+          const button = event.currentTarget.getBoundingClientRect()
+          setAt({ x: button.right + RAIL_GAP_PX, y: button.top })
+        }}
         title="Colour used by the next drawing"
         aria-label="Drawing colour"
         aria-haspopup="true"
-        aria-expanded={open}
+        aria-expanded={at != null}
       >
         <span className="relative">
           <Palette size={15} />
@@ -341,11 +333,13 @@ function ColorPicker({
         </span>
       </Button>
 
-      {open && (
-        <div
-          role="group"
-          aria-label="Drawing colour"
-          className="absolute left-full top-0 z-40 ml-1 grid grid-cols-3 gap-1 rounded border border-border bg-[hsl(var(--popover))] p-1.5 shadow-lg"
+      {at && (
+        <Floating
+          at={at}
+          onClose={close}
+          anchorRef={rootRef}
+          label="Drawing colours"
+          className="grid grid-cols-3 gap-1 p-1.5"
         >
           {DRAWING_COLORS.map((color) => (
             <button
@@ -355,7 +349,7 @@ function ColorPicker({
               aria-pressed={color === value}
               onClick={() => {
                 onChange(color)
-                setOpen(false)
+                setAt(null)
               }}
               style={{ backgroundColor: color }}
               className={cn(
@@ -366,7 +360,7 @@ function ColorPicker({
               )}
             />
           ))}
-        </div>
+        </Floating>
       )}
     </div>
   )
@@ -415,7 +409,7 @@ function ChartSettingsMenu() {
           at={at}
           onClose={close}
           anchorRef={boxRef}
-          label="Chart appearance"
+          label="Chart appearance and links"
           className="w-44"
         >
           <ChartSettingsBody />
@@ -494,10 +488,15 @@ export function ChartSettingsBody() {
           checked={sync.interval}
           onChange={(interval) => updateSync({ interval })}
         />
+        {/*
+          Says all three things the switch governs. It also gates
+          click-to-jump, and a help line naming only the scroll and the zoom
+          left that feature missing with nothing to point the user at.
+        */}
         <p className="pt-1 text-[10px] leading-snug text-muted">
           {sync.time
-            ? 'Moving one chart moves them all, so a vertical line is the same moment on each.'
-            : 'Each chart scrolls and zooms on its own.'}
+            ? 'Moving one chart moves them all, and clicking a candle takes every chart to that moment.'
+            : 'Each chart scrolls, zooms, and jumps to a clicked candle on its own.'}
         </p>
         <p className="pt-1 text-[10px] leading-snug text-muted">
           {sync.interval

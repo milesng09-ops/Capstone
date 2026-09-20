@@ -22,7 +22,7 @@ import {
   INTERVALS,
   MAX_RANGE_DAYS,
 } from '@/types/market'
-import { syncModes } from '@/lib/chartSync'
+import { setSyncModes, syncModes } from '@/lib/chartSync'
 import type { ChartSync, SymbolKey } from '@/types/market'
 
 /**
@@ -334,12 +334,21 @@ describe('the interval link', () => {
   })
 
   it('pushes the links to the broadcast layer, not just into state', () => {
-    // The broadcasts read a module variable rather than the store, because
-    // crosshair movement fires on every mouse move. A toggle that only
-    // reached the store would be a switch that visibly did nothing.
-    useWorkspace.getState().updateChartSync({ crosshair: false })
+    /*
+     * The broadcasts read a module variable rather than the store, because
+     * crosshair movement fires on every mouse move. A toggle that only
+     * reached the store would be a switch that visibly did nothing.
+     *
+     * Switched *on*, and from a known-off starting point. The links now
+     * default to off, so a test that turned one off and asserted `false`
+     * asserted the state it started in: deleting the push from the store
+     * left the whole suite green.
+     */
+    setSyncModes({ interval: true, crosshair: false, time: false })
 
-    expect(syncModes().crosshair).toBe(false)
+    useWorkspace.getState().updateChartSync({ crosshair: true })
+
+    expect(syncModes().crosshair).toBe(true)
   })
 })
 

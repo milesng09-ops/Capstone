@@ -380,8 +380,14 @@ function ChartContextMenu() {
 
   return (
     <div ref={paneRef} className="pointer-events-none absolute inset-0 z-40">
+      {/*
+        The panel is named differently from the button that opens it. Sharing
+        one name made two elements answer to "Chart appearance" whenever the
+        panel was open -- ambiguous to a screen reader, and to any test
+        reaching for either of them by name.
+      */}
       {at && (
-        <Floating at={at} onClose={close} label="Chart appearance" className="w-44">
+        <Floating at={at} onClose={close} label="Chart appearance and links" className="w-44">
           <ChartSettingsBody />
         </Floating>
       )}

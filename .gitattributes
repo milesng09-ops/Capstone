@@ -1,0 +1,20 @@
+# Normalise line endings, so a Windows checkout stops showing whole files as
+# modified when only a line or two changed.
+#
+# The repo already stores LF -- `core.autocrlf` happens to be on for the one
+# machine this is developed on -- but nothing states it, so it survives only
+# as a local setting. A second clone without that setting would commit CRLF
+# and produce a diff touching every line of the file.
+#
+# This is deliberately declaration-only: no `git add --renormalize` is run,
+# because the stored content is already LF and renormalising would churn
+# every file for no change in content.
+* text=auto eol=lf
+
+# Binary, and must never be touched.
+*.png binary
+*.jpg binary
+*.ico binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary

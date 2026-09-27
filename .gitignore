@@ -18,6 +18,14 @@ build/
 .vite/
 *.tsbuildinfo
 npm-debug.log*
+
+# --- Playwright output ---
+# Traces, screenshots and the HTML report are per-run artefacts; CI uploads
+# them on failure rather than anyone committing them.
+test-results/
+playwright-report/
+blob-report/
+.playwright/
 yarn-error.log*
 pnpm-debug.log*
 

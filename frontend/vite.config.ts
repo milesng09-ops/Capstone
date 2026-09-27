@@ -31,5 +31,10 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // Vitest owns `src`; Playwright owns `e2e`. Without this, vitest's
+    // default glob picks up the browser specs, loads them under jsdom, and
+    // the fast suite fails on tests that were never meant for it.
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
   },
 } as never)

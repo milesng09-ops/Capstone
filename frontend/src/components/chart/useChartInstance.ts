@@ -101,6 +101,7 @@ export function useChartInstance({
 
   const [ready, setReady] = useState(false)
   const resetViewRef = useRef<() => void>(() => {})
+  const fittedIntervalRef = useRef<string | null>(null)
 
   candlesRef.current = candles
   hoverRef.current = onHoverBar
@@ -114,6 +115,7 @@ export function useChartInstance({
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    fittedIntervalRef.current = null
 
     const palette = readChartPalette()
     paletteRef.current = palette
@@ -270,7 +272,7 @@ export function useChartInstance({
       ),
     )
     notify()
-  }, [candles, notify, ready])
+  }, [candles, notify, ready, id, precision])
 
   // ---- stable handle ---------------------------------------------------
   const handleRef = useRef<ChartHandle>({
@@ -360,7 +362,7 @@ export function useChartInstance({
     })
 
     volume?.applyOptions({ visible: settings.showVolume })
-  }, [settings])
+  }, [settings, ready, id, precision])
 
   /**
    * Put the whole series back in view, on both axes.
@@ -399,13 +401,12 @@ export function useChartInstance({
    * to fix. Waiting until the candles change and comparing against the last
    * interval actually fitted refits once, against the bars it is describing.
    */
-  const fittedIntervalRef = useRef<string | null>(null)
   useEffect(() => {
     if (!ready || candles.length === 0) return
     if (fittedIntervalRef.current === interval) return
     fittedIntervalRef.current = interval
     resetView()
-  }, [candles, interval, ready, resetView])
+  }, [candles, interval, ready, resetView, id, precision])
 
   return { containerRef, handle: handleRef.current, ready, resetView }
 }

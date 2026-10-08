@@ -3,7 +3,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/services/api'
-import { DEFAULT_DETECTOR_FILTERS, DEFAULT_LEARNING_SETTINGS } from '@/types/backtest'
+import { DEFAULT_DETECTOR_FILTERS, DEFAULT_LEARNING_SETTINGS, MAX_PATTERN_MATCHES } from '@/types/backtest'
+import { canReadBias, coarserOf } from '@/store/workspace'
 import type {
   BacktestRequest,
   BacktestResult,
@@ -69,6 +70,9 @@ export function buildBacktestRequest(params: {
   const lookbackEnd = testWindow
     ? Math.max(testWindow.start_time, testWindow.end_time)
     : rangeEnd
+  const effectiveDetectors = canReadBias(interval) ? detectors : {
+    ...detectors, require_higher_timeframe_bias: false,
+  }
 
   return {
     symbols: uniqueSymbols,
@@ -78,8 +82,8 @@ export function buildBacktestRequest(params: {
     // a higher timeframe equal to or finer than the entry one, and a stored
     // setting left over from a coarser interval would otherwise fail a run
     // that never asked for a bias in the first place.
-    higher_timeframe: detectors.require_higher_timeframe_bias
-      ? (higherTimeframe ?? null)
+    higher_timeframe: effectiveDetectors.require_higher_timeframe_bias
+      ? coarserOf(higherTimeframe ?? interval, interval)
       : null,
     selection: {
       start_time: selection.start_time,
@@ -90,12 +94,12 @@ export function buildBacktestRequest(params: {
       lookback_start: lookbackStart,
       lookback_end: lookbackEnd,
       pattern_length: search.patternLength,
-      maximum_matches: search.maximumMatches,
+      maximum_matches: Math.min(MAX_PATTERN_MATCHES, Math.max(1, Math.round(search.maximumMatches))),
       minimum_similarity: search.minimumSimilarity,
       minimum_separation_bars: null,
       search_symbols: uniqueSymbols,
     },
-    detectors,
+    detectors: effectiveDetectors,
     learning,
   }
 }

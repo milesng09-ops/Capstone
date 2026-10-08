@@ -84,8 +84,10 @@ export function Workspace() {
       const typing =
         target?.tagName === 'INPUT' ||
         target?.tagName === 'TEXTAREA' ||
+        target?.tagName === 'SELECT' ||
+        target?.closest('[role="combobox"], [role="listbox"], [role="menu"]') ||
         target?.isContentEditable
-      if (typing || event.metaKey || event.ctrlKey || event.altKey) return
+      if (typing || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
 
       if (event.key === 'f' || event.key === 'F') {
         event.preventDefault()

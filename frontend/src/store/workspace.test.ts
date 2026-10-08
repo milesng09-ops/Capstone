@@ -574,7 +574,7 @@ describe('the timeframe a bias is read from', () => {
     // twice, and the backend refuses the run rather than pretending.
     useWorkspace.getState().setHigherTimeframe('1h')
 
-    expect(useWorkspace.getState().higherTimeframe).toBe('90m')
+    expect(useWorkspace.getState().higherTimeframe).toBe('4h')
   })
 
   it('is carried up when the entry interval overtakes it', () => {

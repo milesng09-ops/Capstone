@@ -110,6 +110,7 @@ def detectors_at_entry(
     candles: list[Candle] | None = None,
     entry_index: int | None = None,
     sessions: list[SessionWindow] | None = None,
+    session_time: int | None = None,
     fib_low: float | None = None,
     fib_high: float | None = None,
 ) -> DetectorState:
@@ -128,6 +129,10 @@ def detectors_at_entry(
       and its high, low and close are all knowable.
     * ``next_open`` fills at that bar's **open**, so nothing about the bar has
       happened yet.
+
+    Detector timestamps refer to bar opens. ``session_time`` may supply the
+    actual fill time separately, so a close entry uses its bar's close for
+    the time-of-day filter.
 
     Reading the entry bar in the second case is the version of lookahead this
     module warns about that is easiest to miss and hardest to spot in a
@@ -182,7 +187,7 @@ def detectors_at_entry(
         # The entry time itself, not the cutoff: what hour a trade was filled
         # in is knowable the moment it fills, and stepping back a millisecond
         # would drop a next-open entry out of a window it opened exactly on.
-        session=session_at(entry_time, sessions or []),
+        session=session_at(session_time if session_time is not None else entry_time, sessions or []),
     )
 
 
@@ -208,7 +213,11 @@ def _gap_at(
     """
 
     wanted = "bullish" if direction == "long" else "bearish"
-    candidates = [gap for gap in gaps if not align or gap.direction == wanted]
+    candidates = [
+        gap for gap in gaps
+        if (not align or gap.direction == wanted)
+        and (gap.filled_time is None or gap.filled_time > entry_time)
+    ]
     # `gap_containing` does the time work: a gap revealed after `entry_time`
     # is skipped, and so is one already filled by then.
     return gap_containing(

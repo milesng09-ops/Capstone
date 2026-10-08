@@ -106,7 +106,7 @@ describe('conditions', () => {
 
 describe('the search', () => {
   it('reads a match limit', () => {
-    expect(interpret('top 40 matches').search.maximumMatches).toBe(40)
+    expect(interpret('top 40 matches').search.maximumMatches).toBe(25)
   })
 
   it('reads a similarity threshold written either way', () => {

@@ -19,13 +19,13 @@ import { Sparkles, Wand2 } from 'lucide-react'
 
 import { Button, Disclosure } from '@/components/ui/primitives'
 import { applyPreset, STRATEGY_PRESETS, type StrategyPreset } from '@/lib/presets'
-import { interpret, type Interpretation } from '@/lib/strategyLanguage'
+import { interpret, strategyFrom, type Interpretation } from '@/lib/strategyLanguage'
 import { useWorkspace } from '@/store/workspace'
 import { cn } from '@/utils/cn'
 
 const EXAMPLE =
   'Long NQ inside a fair value gap within 5 bars, 1% stop, 2R target, ' +
-  'hold at most 24 bars, top 30 matches over the last 180 days.'
+  'hold at most 24 bars, top 25 matches over the last 180 days.'
 
 export function StrategyStart() {
   const updateRules = useWorkspace((state) => state.updateRules)
@@ -49,9 +49,10 @@ export function StrategyStart() {
 
   const readDescription = () => {
     const interpretation = interpret(text)
-    updateRules(interpretation.rules)
-    updateSearch(interpretation.search)
-    updateDetectors(interpretation.detectors)
+    const next = strategyFrom(interpretation)
+    updateRules(next.rules)
+    updateSearch(next.search)
+    updateDetectors(next.detectors)
     setRead(interpretation)
     setChosen(null)
   }

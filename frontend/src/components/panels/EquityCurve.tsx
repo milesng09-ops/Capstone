@@ -136,9 +136,9 @@ function EquityTooltip({
       <p className="numeric text-2xs text-muted-foreground">
         Cumulative <span className="text-foreground">{formatPercent(point.equity)}</span>
       </p>
-      {point.drawdown > 0 && (
+      {point.drawdown < 0 && (
         <p className="numeric text-2xs text-muted-foreground">
-          Drawdown <span className="text-bear">-{point.drawdown.toFixed(2)}%</span>
+          Drawdown <span className="text-bear">{point.drawdown.toFixed(2)}%</span>
         </p>
       )}
       {point.time > 0 && (

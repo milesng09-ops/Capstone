@@ -165,11 +165,11 @@ describe('the higher timeframe a bias is read from', () => {
     expect(request.higher_timeframe).toBe('4h')
   })
 
-  it('is null when the condition is on but nothing was chosen', () => {
+  it('selects a valid default when the condition is on but nothing was chosen', () => {
     const request = build({
       detectors: { ...DEFAULT_DETECTOR_FILTERS, require_higher_timeframe_bias: true },
     })
 
-    expect(request.higher_timeframe).toBeNull()
+    expect(request.higher_timeframe).toBe('4h')
   })
 })

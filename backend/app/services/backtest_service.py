@@ -30,8 +30,10 @@ from app.analysis import (
 from app.analysis.bias import find_bias_states
 from app.analysis.conditions import detectors_at_entry, unmet_condition
 from app.analysis.sessions import windows_for
-from app.services.aggregation_service import aggregate_candles
-from app.backtesting.engine import BacktestEngine, MatchInput, SimulatedTrade, entry_bar
+from app.services.aggregation_service import aggregate_candles, bucket_end
+from app.backtesting.engine import (
+    BacktestEngine, MatchInput, SimulatedTrade, entry_bar, non_overlapping_trades,
+)
 import numpy as np
 from dataclasses import replace
 
@@ -343,7 +345,7 @@ class BacktestService:
         for symbol, entries in by_symbol.items():
             engine = BacktestEngine(
                 series_by_symbol[symbol].candles,
-                request.trade,
+                request.trade.model_copy(update={"allow_overlapping_trades": True}),
                 pools=(detectors.get(symbol) or {}).get("pools"),
             )
             inputs = [
@@ -362,6 +364,11 @@ class BacktestService:
                 logger.info("Skipped match %s: %s", record.pattern_match_id, record.reason)
 
         all_trades.sort(key=lambda trade: trade.entry_time)
+        if not request.trade.allow_overlapping_trades:
+            all_trades, overlaps = non_overlapping_trades(all_trades)
+            skipped_total += len(overlaps)
+            for record in overlaps:
+                logger.info("Skipped match %s: %s", record.pattern_match_id, record.reason)
 
         # ---- null baseline --------------------------------------------
         # The same rules at windows drawn by chance rather than resemblance,
@@ -377,6 +384,7 @@ class BacktestService:
                 series_by_symbol=series_by_symbol,
                 detectors=detectors,
                 within_ms=within_ms,
+                train_range=train_range,
             )
         )
 
@@ -675,6 +683,8 @@ class BacktestService:
             higher,
             find_swing_points(higher, strength=request.detectors.swing_strength),
             interval_ms=interval_ms(request.higher_timeframe),
+            interval=request.higher_timeframe,
+            timezone=get_instrument(candles[0].symbol).timezone,
         )
 
     @staticmethod
@@ -728,6 +738,11 @@ class BacktestService:
             candles=candles,
             entry_index=entry_index,
             sessions=windows_for(filters.sessions),
+            session_time=(
+                candles[entry_index].time if request.trade.entry_type == "next_open"
+                else bucket_end(candles[entry_index].time, request.interval,
+                                get_instrument(candles[entry_index].symbol).timezone)
+            ),
             fib_low=filters.fib_low,
             fib_high=filters.fib_high,
         )
@@ -887,8 +902,9 @@ class BacktestService:
                 end_time = int(times[index + window_length - 1])
                 if start_time < search.lookback_start or end_time > search.lookback_end:
                     continue
-                inside = end_time <= train_end
-                if inside != in_training:
+                if in_training and end_time > train_end:
+                    continue
+                if not in_training and start_time <= train_end:
                     continue
                 if start_time <= exclusion[1] and end_time >= exclusion[0]:
                     continue
@@ -909,8 +925,9 @@ class BacktestService:
         # the objective: a match landing in a volatile stretch no longer
         # scores well merely for the size of the move it caught.
         want_win_rate = request.learning.objective == "win_rate"
+        timezone = get_instrument(candles[0].symbol).timezone
 
-        def label(starts: list[int]) -> tuple[list[int], np.ndarray]:
+        def label(starts: list[int], *, training: bool = False) -> tuple[list[int], np.ndarray]:
             """What each window actually paid, dropping any that cannot run."""
 
             if not starts:
@@ -931,11 +948,15 @@ class BacktestService:
                     float(trade.net_return > 0) if want_win_rate else trade.net_return
                 )
                 for trade in trades
+                # The exit bar's range and close are only known at its close.
+                # Even a bar opening exactly on the split must not label training.
+                if bucket_end(trade.exit_time, request.interval, timezone)
+                <= (train_end if training else search.lookback_end)
             }
             kept = [index for index in starts if index in paid]
             return kept, np.array([paid[index] for index in kept], dtype=np.float64)
 
-        train_starts, train_outcomes = label(eligible(in_training=True))
+        train_starts, train_outcomes = label(eligible(in_training=True), training=True)
         if len(train_starts) < MINIMUM_TRAINING_WINDOWS:
             logger.info(
                 "Not fitting weights: %d labelled training windows, fewer than %d",
@@ -1103,6 +1124,7 @@ class BacktestService:
         series_by_symbol: dict,
         detectors: dict,
         within_ms: int,
+        train_range: tuple[int, int] | None = None,
     ):
         """The same rules at windows chosen by chance, pooled across symbols.
 
@@ -1154,7 +1176,8 @@ class BacktestService:
                 # Only the primary series holds the selection, so only it has
                 # a region to keep the baseline out of -- the same rule the
                 # search applies when it builds `exclude`.
-                exclude_ranges=[exclusion] if symbol == primary else [],
+                exclude_ranges=([exclusion] if symbol == primary else [])
+                + ([train_range] if train_range is not None else []),
                 required_future_bars=required_future_bars,
                 samples=draw,
                 seed=seed,

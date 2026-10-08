@@ -9,7 +9,7 @@ way it fails is misleading: `pytest` collects most of the suite fine and only
 `ModuleNotFoundError: No module named 'sqlalchemy'`. That reads like two
 broken test files rather than the wrong interpreter, and a run that reports
 "84 passed" alongside those errors looks close enough to green to wave
-through. The real suite is 545 tests.
+through. The real suite is 579 tests.
 
 ```bash
 cd backend && .venv/Scripts/python.exe -m pytest tests -q
@@ -27,7 +27,7 @@ cd frontend && npm run test
 ```
 
 `npm run typecheck` runs `tsc --noEmit`; `npm run dev` starts Vite. The suite
-is 454 tests across 23 files.
+is 475 tests across 26 files.
 
 ## Running the browser tests
 
@@ -35,7 +35,7 @@ is 454 tests across 23 files.
 cd frontend && npm run test:e2e
 ```
 
-Twenty Playwright tests in `frontend/e2e/`, separate from the vitest suite
+Twenty-two Playwright tests in `frontend/e2e/`, separate from the vitest suite
 because they answer a question vitest structurally cannot. **jsdom computes no
 layout**: every element has a zero-sized box, so nothing there can tell
 whether a surface covers its pane or a menu fits on the screen — and both of

@@ -163,7 +163,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       maximum_holding_bars: 8,
     },
     search: {
-      maximumMatches: 50,
+      maximumMatches: 25,
       minimumSimilarity: 0.65,
     },
   },

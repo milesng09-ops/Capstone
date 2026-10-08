@@ -10,6 +10,7 @@ Documented modelling assumptions (surfaced in the UI):
   target, we cannot know which came first without lower-timeframe data, so the
   **stop loss is assumed to trigger first**.  Every affected trade is flagged
   and counted.
+  An open beyond either level resolves at the open before this ambiguity applies.
 * **Gaps.** If a bar opens beyond the stop or target, the fill happens at the
   open, not at the level -- gaps are not assumed to be filled at your price.
 * **Slippage** worsens both entry and exit prices by ``slippage_percent``.
@@ -39,7 +40,7 @@ from app.models.schemas import TradeRules
 logger = logging.getLogger(__name__)
 
 ASSUMPTIONS: list[str] = [
-    "When one candle touches both the stop loss and the take profit, the stop loss "
+    "When a candle opens between the exit levels and then touches both, the stop loss "
     "is assumed to trigger first (conservative).",
     "A bar that opens beyond the stop or target fills at the open price, not at the level.",
     "Slippage worsens both the entry and the exit price.",
@@ -90,6 +91,25 @@ class MatchInput:
     start_index: int
     end_index: int
     similarity: float
+
+
+def non_overlapping_trades(
+    trades: list[SimulatedTrade],
+) -> tuple[list[SimulatedTrade], list[SkippedMatch]]:
+    """Apply one chronological portfolio limit across every symbol."""
+    kept: list[SimulatedTrade] = []
+    skipped: list[SkippedMatch] = []
+    last_exit = -1
+    ordered = sorted(trades, key=lambda item: (item.entry_time, item.symbol, item.pattern_match_id))
+    for trade in ordered:
+        if trade.entry_time < last_exit:
+            skipped.append(SkippedMatch(
+                trade.pattern_match_id, "Overlaps an earlier trade that was still open"
+            ))
+            continue
+        kept.append(trade)
+        last_exit = max(last_exit, trade.exit_time)
+    return kept, skipped
 
 
 def entry_bar(
@@ -200,6 +220,15 @@ class BacktestEngine:
 
         for index in range(first_scan_index, last_index + 1):
             candle = candles[index]
+            # The open precedes every intrabar touch, so a gap is unambiguous
+            # even if the bar later trades through both exit levels.
+            open_stop = candle.open <= stop_price if long else candle.open >= stop_price
+            open_target = candle.open >= target_price if long else candle.open <= target_price
+            if open_stop or open_target:
+                exit_index = index
+                exit_reason = "stop_loss" if open_stop else "take_profit"
+                raw_exit = candle.open
+                break
             hit_stop = candle.low <= stop_price if long else candle.high >= stop_price
             hit_target = candle.high >= target_price if long else candle.low <= target_price
 

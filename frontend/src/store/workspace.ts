@@ -37,6 +37,7 @@ import {
   DEFAULT_FAVOURITE_INTERVALS,
   INTERVALS,
   MAX_RANGE_DAYS,
+  validBiasInterval,
 } from '@/types/market'
 import type {
   ChartSettings,
@@ -79,28 +80,25 @@ export type RangeDays = (typeof RANGE_PRESETS)[number]
  * worked out that the range, not the interval, was the problem.
  */
 /**
- * The nearest interval strictly coarser than `base`, preferring `wanted`.
+ * A coarser interval made of whole entry bars, preferring `wanted`.
  *
- * `INTERVALS` is in ascending order of duration, so "coarser" is "later in
- * the list". The backend refuses a bias timeframe that is not strictly
- * coarser than the entry one, and the two settings are changed from opposite
+ * The backend requires the higher timeframe to divide into whole entry
+ * bars, and the two settings are changed from opposite
  * ends of the screen, so this keeps the pair legal without either control
  * having to know about the other.
  *
- * At the coarsest interval there is nothing above it, and the answer is the
- * same interval back. That pair is illegal, which is why `canReadBias` below
+ * With weekly or monthly entry bars no valid higher interval remains. The
+ * same interval is returned, which is why `canReadBias` below
  * exists rather than leaving the run to fail at the backend.
  */
 export function coarserOf(wanted: Interval, base: Interval): Interval {
-  const baseIndex = INTERVALS.indexOf(base)
-  const wantedIndex = INTERVALS.indexOf(wanted)
-  if (wantedIndex > baseIndex) return wanted
-  return INTERVALS[Math.min(baseIndex + 1, INTERVALS.length - 1)]
+  if (validBiasInterval(base, wanted)) return wanted
+  return INTERVALS.find((item) => validBiasInterval(base, item)) ?? base
 }
 
-/** Whether any interval is coarser than this one, so a bias can be read. */
+/** Whether any higher interval can be assembled from whole entry bars. */
 export function canReadBias(base: Interval): boolean {
-  return INTERVALS.indexOf(base) < INTERVALS.length - 1
+  return INTERVALS.some((item) => validBiasInterval(base, item))
 }
 
 export function longestRange(interval: Interval): RangeDays {
@@ -490,6 +488,9 @@ export const useWorkspace = create<WorkspaceState>()(
           // left at or below it. Moving to the daily must not silently leave
           // a 4-hour "higher" timeframe behind it.
           higherTimeframe: coarserOf(state.higherTimeframe, interval),
+          detectors: canReadBias(interval) ? state.detectors : {
+            ...state.detectors, require_higher_timeframe_bias: false,
+          },
           // A finer interval cannot hold as much history, so the range comes
           // down with it rather than being left somewhere the backend will
           // refuse. Visibly: the preset that ends up selected is the one that

@@ -255,10 +255,13 @@ def _per_query(
 
     order = np.argsort(-matrix, axis=1, kind="stable")[:, :take]
     picked = outcomes[order]
-    return np.where(
-        np.isneginf(np.take_along_axis(matrix, order, axis=1)).all(axis=1),
-        np.nan,
-        picked.mean(axis=1),
+    valid = np.isfinite(np.take_along_axis(matrix, order, axis=1))
+    counts = valid.sum(axis=1)
+    return np.divide(
+        np.where(valid, picked, 0.0).sum(axis=1),
+        counts,
+        out=np.full(matrix.shape[0], np.nan),
+        where=counts > 0,
     )
 
 

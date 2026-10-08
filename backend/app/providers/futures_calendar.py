@@ -19,7 +19,7 @@ would show prices no one could ever have traded.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 #: CME month codes.  Only the quarterly four are ever produced here, but the
@@ -46,7 +46,7 @@ QUARTERLY_MONTHS: tuple[int, ...] = (3, 6, 9, 12)
 #: is the second Thursday.
 ROLL_OFFSET_DAYS = 8
 
-#: Exchange timezone for CME index futures.  Rolls happen at local midnight.
+#: Exchange timezone for CME index futures. Rolls begin with the trading session.
 EXCHANGE_TIMEZONE = "America/Chicago"
 
 
@@ -106,11 +106,11 @@ def front_month(on: date) -> ContractMonth:
 
 
 def roll_boundary_ms(contract: ContractMonth, tz_name: str = EXCHANGE_TIMEZONE) -> int:
-    """Exchange-local midnight of ``contract``'s roll date, in Unix ms."""
+    """17:00 on the evening before the roll trading date, in Unix ms."""
 
     tz = ZoneInfo(tz_name)
-    midnight = datetime.combine(contract.roll_date, datetime.min.time(), tzinfo=tz)
-    return int(midnight.timestamp() * 1000)
+    opening = datetime.combine(contract.roll_date - timedelta(days=1), time(17), tzinfo=tz)
+    return int(opening.timestamp() * 1000)
 
 
 @dataclass(frozen=True)
@@ -132,8 +132,7 @@ def contract_segments(
     """Split ``[start_ms, end_ms]`` into consecutive front-month segments.
 
     A window inside one contract's life yields a single segment; a window that
-    spans a roll yields one segment per contract, cut at exchange-local
-    midnight on each roll date.
+    spans a roll yields one segment per contract, cut at the roll session open.
     """
 
     if end_ms < start_ms:
@@ -144,8 +143,9 @@ def contract_segments(
     cursor = start_ms
 
     while cursor <= end_ms:
-        local_day = datetime.fromtimestamp(cursor / 1000, tz=tz).date()
-        contract = front_month(local_day)
+        local = datetime.fromtimestamp(cursor / 1000, tz=tz)
+        trading_day = local.date() + (timedelta(days=1) if local.hour >= 17 else timedelta())
+        contract = front_month(trading_day)
         boundary = roll_boundary_ms(contract, tz_name)
         segment_end = min(end_ms, boundary - 1)
         segments.append(ContractSegment(contract, cursor, segment_end))

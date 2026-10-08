@@ -24,7 +24,9 @@
 
 import {
   DEFAULT_DETECTOR_FILTERS,
+  DEFAULT_SEARCH_CONFIG,
   DEFAULT_TRADE_RULES,
+  MAX_PATTERN_MATCHES,
   type DetectorFilters,
   type SearchConfig,
   type TradeRules,
@@ -66,6 +68,10 @@ interface Rule {
 
 const NUMBER = String.raw`(\d+(?:\.\d+)?)`
 
+function bounded(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
 /**
  * Which words name which killzone.
  *
@@ -89,14 +95,14 @@ const SESSION_PHRASES: [RegExp, SessionKey][] = [
 const RULES: Rule[] = [
   // ---- direction --------------------------------------------------------
   {
-    pattern: /\b(short|sell|bearish|downside)\b/,
+    pattern: /\b(short(?![\s-]+(?:wick|term)\b)|sell(?![-\s]+side\b)|bearish|downside)\b/,
     apply: (match, into) => {
       into.rules.direction = 'short'
       return { phrase: match[0], setting: 'Direction', value: 'Short' }
     },
   },
   {
-    pattern: /\b(long|buy|bullish|upside)\b/,
+    pattern: /\b(long(?![\s-]+(?:(?:lower|upper)\s+)?(?:wick|term)\b)|buy(?![-\s]+side\b)|bullish|upside)\b/,
     apply: (match, into) => {
       into.rules.direction = 'long'
       return { phrase: match[0], setting: 'Direction', value: 'Long' }
@@ -118,8 +124,8 @@ const RULES: Rule[] = [
     apply: (match, into) => {
       const value = Number(match[1] ?? match[2])
       into.rules.stop_loss_type = 'atr_multiple'
-      into.rules.stop_loss_value = value
-      return { phrase: match[0], setting: 'Stop loss', value: `${value} x ATR` }
+      into.rules.stop_loss_value = bounded(value, 0.01, Number.MAX_SAFE_INTEGER)
+      return { phrase: match[0], setting: 'Stop loss', value: `${into.rules.stop_loss_value} x ATR` }
     },
   },
   {
@@ -131,12 +137,12 @@ const RULES: Rule[] = [
     },
   },
   {
-    pattern: new RegExp(String.raw`\b${NUMBER}\s*%\s*stop\b|\bstop\s*(?:of|at|loss)?\s*${NUMBER}\s*%`),
+    pattern: new RegExp(String.raw`\b${NUMBER}\s*%\s*stop\b|\bstop(?:[\s-]+loss)?\s*(?:of|at)?\s*${NUMBER}\s*%`),
     apply: (match, into) => {
       const value = Number(match[1] ?? match[2])
       into.rules.stop_loss_type = 'percentage'
-      into.rules.stop_loss_value = value
-      return { phrase: match[0], setting: 'Stop loss', value: `${value}% from entry` }
+      into.rules.stop_loss_value = bounded(value, 0.01, Number.MAX_SAFE_INTEGER)
+      return { phrase: match[0], setting: 'Stop loss', value: `${into.rules.stop_loss_value}% from entry` }
     },
   },
 
@@ -144,7 +150,7 @@ const RULES: Rule[] = [
   {
     pattern: new RegExp(String.raw`\b${NUMBER}\s*r\b|\brisk[- ]?reward\s*(?:of)?\s*${NUMBER}|\b${NUMBER}\s*:\s*1\b`),
     apply: (match, into) => {
-      const value = Number(match[1] ?? match[2] ?? match[3])
+      const value = bounded(Number(match[1] ?? match[2] ?? match[3]), 0.01, Number.MAX_SAFE_INTEGER)
       /*
        * A number of R does not overrule an exit that has already been named.
        *
@@ -173,8 +179,8 @@ const RULES: Rule[] = [
     apply: (match, into) => {
       const value = Number(match[1])
       into.rules.take_profit_type = 'percentage'
-      into.rules.take_profit_value = value
-      return { phrase: match[0], setting: 'Target', value: `${value}% from entry` }
+      into.rules.take_profit_value = bounded(value, 0.01, Number.MAX_SAFE_INTEGER)
+      return { phrase: match[0], setting: 'Target', value: `${into.rules.take_profit_value}% from entry` }
     },
   },
 
@@ -209,7 +215,7 @@ const RULES: Rule[] = [
   {
     pattern: new RegExp(String.raw`\b(?:hold|exit|close|out)[^.]{0,20}?${NUMBER}\s*bars?\b|\b${NUMBER}\s*bars?\b[^.]{0,12}?(?:max|maximum|at most)`),
     apply: (match, into) => {
-      const value = Math.round(Number(match[1] ?? match[2]))
+      const value = bounded(Math.round(Number(match[1] ?? match[2])), 1, 2000)
       into.rules.maximum_holding_bars = value
       return { phrase: match[0], setting: 'Maximum hold', value: `${value} bars` }
     },
@@ -379,7 +385,7 @@ const RULES: Rule[] = [
   {
     pattern: new RegExp(String.raw`\bwithin\s*${NUMBER}\s*bars?\b`),
     apply: (match, into) => {
-      const value = Math.round(Number(match[1]))
+      const value = bounded(Math.round(Number(match[1])), 1, 500)
       into.detectors.within_bars = value
       return { phrase: match[0], setting: 'Condition age', value: `Within ${value} bars` }
     },
@@ -389,7 +395,7 @@ const RULES: Rule[] = [
   {
     pattern: new RegExp(String.raw`\b(?:top|best|up to|at most)\s*${NUMBER}\s*(?:matches|instances|examples)\b`),
     apply: (match, into) => {
-      const value = Math.round(Number(match[1]))
+      const value = bounded(Math.round(Number(match[1])), 1, MAX_PATTERN_MATCHES)
       into.search.maximumMatches = value
       return { phrase: match[0], setting: 'Matches', value: `At most ${value}` }
     },
@@ -399,7 +405,7 @@ const RULES: Rule[] = [
     apply: (match, into) => {
       // Written either way round: "similarity 0.7" and "similarity 70".
       const raw = Number(match[1])
-      const value = raw > 1 ? raw / 100 : raw
+      const value = bounded(raw > 1 ? raw / 100 : raw, 0, 1)
       into.search.minimumSimilarity = value
       return { phrase: match[0], setting: 'Similarity', value: `At least ${value.toFixed(2)}` }
     },
@@ -416,11 +422,11 @@ const RULES: Rule[] = [
           : unit.startsWith('year')
             ? count * 365
             : count
-      into.search.lookbackDays = Math.round(days)
+      into.search.lookbackDays = bounded(Math.round(days), 1, 730)
       return {
         phrase: match[0],
         setting: 'Lookback',
-        value: `${Math.round(days)} days`,
+        value: `${into.search.lookbackDays} days`,
       }
     },
   },
@@ -510,9 +516,11 @@ export function interpret(text: string): Interpretation {
 export function strategyFrom(interpretation: Interpretation): {
   rules: TradeRules
   detectors: DetectorFilters
+  search: SearchConfig
 } {
   return {
     rules: { ...DEFAULT_TRADE_RULES, ...interpretation.rules },
     detectors: { ...DEFAULT_DETECTOR_FILTERS, ...interpretation.detectors },
+    search: { ...DEFAULT_SEARCH_CONFIG, ...interpretation.search },
   }
 }

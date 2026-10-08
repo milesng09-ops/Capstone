@@ -51,6 +51,7 @@ from app.providers.trading_hours import (
 from app.services.aggregation_service import aggregate_candles
 from app.services.cache_service import (
     align_range,
+    align_down,
     fresh_horizon,
     cacheable_end,
     edge_padding_ms,
@@ -379,6 +380,13 @@ class CandleService:
         retry_after: float | None = None
 
         for gap in gaps:
+            # Coverage edges need not coincide with bar opens. A finer
+            # provider response must contain the whole bucket before it can
+            # replace an already cached aggregate.
+            gap = TimeRange(
+                align_down(gap.start, store_interval),
+                align_down(gap.end, store_interval) + interval_ms(store_interval) - 1,
+            )
             try:
                 result = await self._provider.fetch(
                     symbol,
@@ -679,7 +687,8 @@ class CandleService:
         """
 
         settings = get_settings()
-        step = max(1, settings.max_bars_per_request) * interval_ms(interval)
+        step = max(1, settings.max_bars_per_request) * interval_ms(storage_interval(interval))
+        step = min(step, settings.max_intraday_history_days * 24 * 60 * 60 * 1000)
         collected: dict[int, Candle] = {}
         chunks: list[BarsResult] = []
         cursor = start

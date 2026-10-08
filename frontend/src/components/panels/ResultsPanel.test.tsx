@@ -105,6 +105,12 @@ beforeEach(() => {
   useWorkspace.getState().setActiveBacktestId('bt-1')
 })
 
+it('shows an undefined achieved ratio when no trade lost', () => {
+  show({ ...SUMMARY, losses: 0, average_loser: 0, risk_reward_achieved: 0 })
+  expect(screen.getByText('Achieved R:R').parentElement).toHaveTextContent('--')
+  expect(screen.getByText('Achieved R:R').parentElement).not.toHaveTextContent('0.00x')
+})
+
 describe('the win rate is never quoted alone', () => {
   it('shows the span the sample supports beside the rate', () => {
     show(SUMMARY)

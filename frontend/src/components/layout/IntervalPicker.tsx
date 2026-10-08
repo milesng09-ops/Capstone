@@ -188,7 +188,10 @@ export function IntervalPicker() {
           label: INTERVAL_LABELS[item],
           title: `${INTERVAL_LABELS[item]} bars — ${reachOf(item)}`,
         }))}
-        onChange={setInterval}
+        onChange={(item) => {
+          setInterval(item)
+          setAt(null)
+        }}
       />
 
       <Button

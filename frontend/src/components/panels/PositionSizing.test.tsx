@@ -4,13 +4,21 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { PositionSizing } from '@/components/panels/PositionSizing'
 import { useWorkspace } from '@/store/workspace'
-import { DEFAULT_SIZING } from '@/types/backtest'
+import { DEFAULT_SIZING, DEFAULT_TRADE_RULES } from '@/types/backtest'
 
 beforeEach(() => {
   useWorkspace.getState().updateSizing(DEFAULT_SIZING)
 })
 
 describe('PositionSizing risk budget', () => {
+  it('labels a liquidity target as a minimum estimate', () => {
+    useWorkspace.setState({ rules: { ...DEFAULT_TRADE_RULES, take_profit_type: 'liquidity' } })
+    const candles = [0, 1, 2].map(time => ({ symbol: 'ES', time, open: 100, high: 101,
+      low: 99, close: 100, volume: 1 }))
+    render(<PositionSizing candles={candles} setup={{ startIndex: 0, endIndex: 2 }} />)
+    expect(screen.getByText('Target (at least)')).toBeInTheDocument()
+    expect(screen.getByText(/The target is a minimum/)).toBeInTheDocument()
+  })
   it('shows the budget in money with nothing selected on the chart', () => {
     // The whole point of the figure: a percentage of the account needs no
     // setup, no levels and no plan, so it must not wait for one.

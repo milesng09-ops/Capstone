@@ -8,6 +8,7 @@ and query parsing) and are always timezone aware.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import math
 from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
@@ -51,6 +52,8 @@ def parse_time_param(value: str | int | float | datetime) -> int:
 
 
 def _numeric_to_ms(value: float) -> float | int:
+    if not math.isfinite(value):
+        raise ValueError("Timestamp must be finite")
     # Anything below this threshold cannot plausibly be milliseconds (it would
     # be 1970), so treat it as seconds.  1e11 ms == 1973-03-03.
     if abs(value) < 1e11:

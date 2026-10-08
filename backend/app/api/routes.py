@@ -42,7 +42,7 @@ from app.models.schemas import (
 )
 from app.providers.base import ProviderRateLimitError
 from app.providers.health import get_health_registry
-from app.providers.instruments import UnknownSymbolError, list_instruments
+from app.providers.instruments import UnknownSymbolError, get_instrument, list_instruments
 from app.services.backtest_service import (
     BacktestBusyError,
     BacktestService,
@@ -405,6 +405,11 @@ async def delete_cache(
             status.HTTP_403_FORBIDDEN,
             "Cache deletion is only available in development mode.",
         )
+    if symbol is not None:
+        try:
+            symbol = get_instrument(symbol).symbol
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
     with session_scope() as session:
         removed = clear_cache(session, symbol)
     target = symbol or "all symbols"

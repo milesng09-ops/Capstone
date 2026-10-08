@@ -84,6 +84,13 @@ export const INTERVAL_MS: Record<Interval, number> = {
   '1mo': 30 * 24 * 60 * 60_000,
 }
 
+/** Match the backend's whole-bar aggregation rule for bias timeframes. */
+export function validBiasInterval(base: Interval, higher: Interval): boolean {
+  if (INTERVAL_MS[higher] <= INTERVAL_MS[base] || base === '1w' || base === '1mo') return false
+  return (higher === '1w' || higher === '1mo' ? INTERVAL_MS['1d'] : INTERVAL_MS[higher])
+    % INTERVAL_MS[base] === 0
+}
+
 /**
  * The longest history each interval can be asked for in one request.
  *

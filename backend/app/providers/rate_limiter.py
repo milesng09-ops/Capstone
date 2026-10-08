@@ -72,6 +72,7 @@ class SlidingWindowRateLimiter:
         # and a limit of five a minute means the fifth in a burst would
         # otherwise be told a short wait and then serve a long one.
         deadline = self._now() + max_wait
+        waited = self._lock.locked()
 
         # The lock is held across the sleep on purpose.  Waiters that checked
         # concurrently would each see the same free slot and all take it; the
@@ -84,7 +85,7 @@ class SlidingWindowRateLimiter:
 
                 if len(self._calls) < self._max_calls:
                     self._calls.append(now)
-                    return max(0.0, now - (deadline - max_wait))
+                    return max(0.0, now - (deadline - max_wait)) if waited else 0.0
 
                 ready_at = self._calls[0] + self._per
                 if ready_at > deadline:
@@ -97,6 +98,7 @@ class SlidingWindowRateLimiter:
                     self._per,
                     ready_at - now,
                 )
+                waited = True
                 await asyncio.sleep(max(0.0, ready_at - now))
 
     def snapshot(self) -> tuple[int, int]:

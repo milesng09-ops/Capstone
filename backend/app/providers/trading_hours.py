@@ -147,13 +147,11 @@ def trading_hours_between(
     cursor = end - remainder
     step = timedelta(hours=1)
     while cursor < end:
-        # An hour is credited whole when its *start* is open, so a step that
-        # begins just before the daily halt counts the closed minutes with it.
-        # The error is bounded by the sub-week remainder -- under an hour
-        # either way -- which is far inside the headroom the bar cap is chosen
-        # with, and never enough to move a preset across it.
+        # Credit only the portion inside the request. Rounding a ten-minute
+        # window up to an hour can refuse an analysis slice under a small cap.
+        # A step crossing the daily halt is still a conservative estimate.
         if is_trading_minute(cursor.astimezone(tz)):
-            hours += 1.0
+            hours += min(step, end - cursor).total_seconds() / 3600
         cursor += step
 
     return hours

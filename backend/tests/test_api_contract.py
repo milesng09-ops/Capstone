@@ -326,6 +326,21 @@ class TestIctValidation:
 
 
 class TestCache:
+    def test_lowercase_symbol_deletes_the_canonical_series(self, client, monkeypatch):
+        from app.api import routes
+
+        deleted = []
+        monkeypatch.setattr(routes, "clear_cache", lambda session, symbol: deleted.append(symbol) or 2)
+        response = client.delete("/api/cache", params={"symbol": "es"})
+        assert response.status_code == 200
+        assert deleted == ["ES"]
+
+    @pytest.mark.parametrize("path", ["/api/bars", "/api/ict"])
+    @pytest.mark.parametrize("value", ["inf", "-inf", "nan"])
+    def test_invalid_times_return_400(self, client, path, value):
+        response = client.get(path, params={"symbol": "ES", "from": value, "to": "2026-09-01"})
+        assert response.status_code == 400
+
     def test_returns_exactly_the_documented_keys(self, client):
         # Not asserting on total_candles/per_symbol values: earlier tests in
         # this module may already have pulled bars through the cache, so the
@@ -338,3 +353,48 @@ class TestCache:
         assert isinstance(body["total_candles"], int)
         assert isinstance(body["per_symbol"], list)
         assert isinstance(body["database_path"], str) and body["database_path"]
+
+
+def test_no_overlap_is_enforced_across_symbols_in_a_saved_run(client, monkeypatch):
+    from app.api.deps import backtest_service
+    from app.models.domain import BarsResult, Candle
+    from app.services import backtest_service as module
+    from app.services.pattern_service import PatternWindow
+
+    hour = 3_600_000
+
+    class Candles:
+        async def get_series_for_analysis(self, symbol, interval, start, end):
+            bars = [Candle(symbol=symbol, time=i * hour, open=100, high=100.1,
+                           low=99.9, close=100, volume=10) for i in range(100)
+                    if start <= i * hour <= end]
+            return BarsResult(symbol=symbol, interval=interval, provider="yahoo", quality="live",
+                              cached=True, fallback_active=False, bars=bars)
+
+    def matches(query, candles, interval, **kwargs):
+        positions = [(0, 5)] if candles[0].symbol == "ES" else [(2, 7), (17, 22)]
+        return [PatternWindow(candles[0].symbol, interval, start, end,
+                              candles[start].time, candles[end].time, 0.9, 0.1, 100)
+                for start, end in positions]
+
+    monkeypatch.setattr(module, "find_similar_windows", matches)
+    service = module.BacktestService(candle_service=Candles())
+    app.dependency_overrides[backtest_service] = lambda: service
+    try:
+        response = client.post("/api/backtests", json={
+            "primary_symbol": "ES", "symbols": ["ES", "NQ"], "interval": "1h",
+            "selection": {"start_time": 70 * hour, "end_time": 75 * hour},
+            "search": {"lookback_start": 0, "lookback_end": 100 * hour},
+            "trade": {"allow_overlapping_trades": False, "maximum_holding_bars": 10,
+                      "stop_loss_value": 50, "take_profit_type": "percentage",
+                      "take_profit_value": 50, "fee_percent": 0, "slippage_percent": 0},
+        })
+        assert response.status_code == 201, response.text
+        run = response.json()
+        assert run["summary"]["skipped_matches"] == 1
+        assert [trade["symbol"] for trade in run["trades"]] == ["ES", "NQ"]
+        assert run["trades"][1]["entry_time"] >= run["trades"][0]["exit_time"]
+        saved = client.get(f'/api/backtests/{run["id"]}').json()
+        assert saved["summary"]["trades_executed"] == 2
+    finally:
+        app.dependency_overrides.pop(backtest_service, None)

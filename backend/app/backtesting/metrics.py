@@ -216,7 +216,7 @@ def _compound(returns: list[float]) -> float:
 
     equity = STARTING_EQUITY
     for value in returns:
-        equity *= 1.0 + value / 100.0
+        equity *= max(0.0, 1.0 + value / 100.0)
     return equity - STARTING_EQUITY
 
 
@@ -227,7 +227,7 @@ def _equity_curve(trades: list[SimulatedTrade]) -> tuple[list[EquityPoint], floa
     points: list[EquityPoint] = []
 
     for number, trade in enumerate(trades, start=1):
-        equity *= 1.0 + trade.net_return / 100.0
+        equity *= max(0.0, 1.0 + trade.net_return / 100.0)
         peak = max(peak, equity)
         drawdown = (equity - peak) / peak * 100.0 if peak > 0 else 0.0
         max_drawdown = min(max_drawdown, drawdown)

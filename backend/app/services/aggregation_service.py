@@ -90,6 +90,17 @@ def bucket_start(timestamp_ms: int, interval: str, timezone: str = "America/Chic
     return opening + (elapsed // spec.milliseconds) * spec.milliseconds
 
 
+def bucket_end(timestamp_ms: int, interval: str, timezone: str = "America/Chicago") -> int:
+    """Exclusive close boundary, using the calendar for weeks and months."""
+    spec = get_interval(interval)
+    if spec.calendar is None:
+        return bucket_start(timestamp_ms, interval, timezone) + spec.milliseconds
+    tz = ZoneInfo(timezone)
+    start = bucket_start(timestamp_ms, interval, timezone)
+    anchor = datetime.fromtimestamp(start / 1000, tz=tz).date()
+    return _session_open_on(_next_anchor_date(anchor, spec.calendar), tz)
+
+
 #: The session open last computed, as (timezone, opening, next opening).
 #: Aggregation walks bars in ascending order, so consecutive bars almost
 #: always share a session and the answer can be reused.

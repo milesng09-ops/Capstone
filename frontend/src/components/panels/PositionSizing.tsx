@@ -154,13 +154,14 @@ export function PositionSizing({ candles, setup, precision = 2 }: Props) {
           <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 rounded-md border border-border bg-[hsl(var(--panel-raised))] p-2.5 text-2xs">
             <Row label="Entry" value={formatPrice(plan.levels.entry, precision)} />
             <Row label="Stop" value={formatPrice(plan.levels.stop, precision)} />
-            <Row label="Target" value={formatPrice(plan.levels.target, precision)} />
+            <Row label={rules.take_profit_type === 'liquidity' ? 'Target (at least)' : 'Target'} value={formatPrice(plan.levels.target, precision)} />
             <Row label="Reward / risk" value={`${formatNumber(plan.rewardToRisk, 2)}x`} />
             <Row label="Size" value={`${formatNumber(plan.units, 3)} units`} />
             <Row label="Notional" value={formatCurrency(plan.notional, 0)} />
           </div>
 
           <p className="text-2xs leading-relaxed text-muted-foreground">
+            {rules.take_profit_type === 'liquidity' && 'The target is a minimum; each trade exits at its nearest qualifying liquidity pool. '}
             The engine reports percentage returns and does not use position size; these
             figures scale one trade at {formatNumber(sizing.riskPercent, 2)}% risk.{' '}
             {stopVariesPerMatch

@@ -355,6 +355,11 @@ export function ChartOverlay({
     [scheduleDraw],
   )
 
+  useEffect(() => {
+    updatePending(null)
+    updateDrag(null)
+  }, [tool, updatePending, updateDrag])
+
   const updateHover = useCallback((value: DrawingHit | null) => {
     hoverRef.current = value
     setHover(value)

@@ -26,7 +26,6 @@ import { useBars } from '@/hooks/useMarketData'
 import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
 import {
   canReadBias,
-  coarserOf,
   useChartedSymbols,
   useTimeZone,
   useWorkspace,
@@ -42,7 +41,7 @@ import {
   type StopLossType,
   type TakeProfitType,
 } from '@/types/backtest'
-import { INTERVALS, INTERVAL_LABELS, type Interval } from '@/types/market'
+import { INTERVALS, INTERVAL_LABELS, validBiasInterval, type Interval } from '@/types/market'
 import { indexOfBar } from '@/lib/chart'
 import {
   formatCurrency,
@@ -515,8 +514,9 @@ export function StrategyPanel() {
 
         {!canReadBias(interval) && (
           <p className="text-2xs leading-relaxed text-warn">
-            {INTERVAL_LABELS[interval]} is the coarsest timeframe there is, so
-            there is nothing above it to read a bias from.
+            {interval === '1mo'
+              ? `${INTERVAL_LABELS[interval]} is the coarsest timeframe there is, so there is nothing above it to read a bias from.`
+              : `No higher timeframe is composed of whole ${INTERVAL_LABELS[interval]} bars.`}
           </p>
         )}
 
@@ -524,9 +524,9 @@ export function StrategyPanel() {
           <>
             <SelectField<Interval>
               label="Read it from"
-              hint="Aggregated from the bars already loaded, so switching this on costs no extra data. It must be coarser than the interval you are entering on."
+              hint="Aggregated from the bars already loaded, so switching this on costs no extra data. It must be composed of whole entry bars."
               value={higherTimeframe}
-              options={INTERVALS.filter((item) => coarserOf(item, interval) === item).map(
+              options={INTERVALS.filter((item) => validBiasInterval(interval, item)).map(
                 (item) => ({ value: item, label: INTERVAL_LABELS[item] }),
               )}
               onChange={setHigherTimeframe}

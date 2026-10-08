@@ -234,6 +234,8 @@ function targetPhrase(rules: TradeRules): string {
   switch (rules.take_profit_type) {
     case 'risk_reward':
       return `${rules.take_profit_value}x the stop distance`
+    case 'liquidity':
+      return `at the nearest standing liquidity pool offering at least ${rules.take_profit_value}R`
     case 'percentage':
       return `${rules.take_profit_value}% from entry`
     default:

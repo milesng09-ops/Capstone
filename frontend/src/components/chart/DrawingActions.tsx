@@ -12,7 +12,7 @@
  * so it stays where the shape is instead of where the shape used to be.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import { SeparatorHorizontal, Trash2 } from 'lucide-react'
 
 import type { ChartHandle } from '@/components/chart/useChartInstance'
@@ -51,6 +51,22 @@ export function DrawingActions({ handle, drawings }: Props) {
   const drawing = drawings.find((item) => item.id === selectedId) ?? null
   const [anchor, setAnchor] = useState<Anchor | null>(null)
   const [pane, setPane] = useState<HTMLElement | null>(null)
+  const [bar, setBar] = useState<HTMLElement | null>(null)
+  const [size, setSize] = useState({ width: BAR_WIDTH_PX, height: BAR_HEIGHT_PX })
+
+  useLayoutEffect(() => {
+    if (!bar) return
+    const measure = () => {
+      const box = bar.getBoundingClientRect()
+      if (!box.width || !box.height) return
+      setSize((current) => current.width === box.width && current.height === box.height
+        ? current : { width: box.width, height: box.height })
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(bar)
+    return () => observer.disconnect()
+  }, [bar, drawing])
 
   useEffect(() => {
     if (!drawing || !pane) {
@@ -68,13 +84,13 @@ export function DrawingActions({ handle, drawings }: Props) {
       const width = pane.clientWidth
       const height = pane.clientHeight
       setAnchor({
-        x: clamp(point.x - BAR_WIDTH_PX / 2, 4, Math.max(4, width - BAR_WIDTH_PX - 4)),
+        x: clamp(point.x - size.width / 2, 4, Math.max(4, width - size.width - 4)),
         // Above the shape by default; below it when the shape is near the top
         // of the pane and there is no room above.
         y:
-          point.y - BAR_HEIGHT_PX - 8 < 4
-            ? clamp(point.y + 10, 4, Math.max(4, height - BAR_HEIGHT_PX - 4))
-            : point.y - BAR_HEIGHT_PX - 8,
+          point.y - size.height - 8 < 4
+            ? clamp(point.y + 10, 4, Math.max(4, height - size.height - 4))
+            : clamp(point.y - size.height - 8, 4, Math.max(4, height - size.height - 4)),
       })
     }
 
@@ -82,7 +98,7 @@ export function DrawingActions({ handle, drawings }: Props) {
     // The chart notifies imperatively on pan, zoom and resize, which is what
     // keeps the bar attached without re-rendering the tree on every frame.
     return handle.subscribe(place)
-  }, [drawing, handle, pane])
+  }, [drawing, handle, pane, size])
 
   if (!drawing) return null
 
@@ -94,10 +110,11 @@ export function DrawingActions({ handle, drawings }: Props) {
     >
       {anchor && (
         <div
+          ref={setBar}
           role="toolbar"
           aria-label={`${TOOL_LABELS[drawing.kind]} actions`}
-          className="pointer-events-auto absolute flex items-center gap-1 rounded border border-border bg-[hsl(var(--popover))] px-1.5 py-1 shadow-lg"
-          style={{ left: anchor.x, top: anchor.y }}
+          className="pointer-events-auto absolute flex flex-wrap items-center gap-1 rounded border border-border bg-[hsl(var(--popover))] px-1.5 py-1 shadow-lg"
+          style={{ left: anchor.x, top: anchor.y, width: 'max-content', maxWidth: 'calc(100% - 8px)' }}
         >
           <span className="label-caps pr-0.5">{TOOL_LABELS[drawing.kind]}</span>
 

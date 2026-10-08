@@ -16,6 +16,8 @@
  * model is a maintenance cost, and it is paid so that the figures on the
  * screen and the figures in the results panel cannot disagree. If the engine's
  * model changes, this changes with it.
+ * Liquidity targets use the configured minimum R as a lower-bound estimate;
+ * the actual pool price is chosen by the backend for each historical match.
  *
  * No contract multiplier appears anywhere below. Size is expressed as notional
  * and as units of the index, which is what a percentage return is a percentage
@@ -263,6 +265,7 @@ function resolveTarget(
     }
     case 'fixed_price':
       return value
+    case 'liquidity':
     case 'risk_reward': {
       const risk = Math.abs(entry - stop)
       if (risk <= 0) return null

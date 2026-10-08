@@ -35,6 +35,7 @@ from typing import Literal
 
 from app.analysis.structure import SwingPoint
 from app.models.domain import Candle
+from app.services.aggregation_service import bucket_end
 
 BiasDirection = Literal["bullish", "bearish", "neutral"]
 
@@ -61,6 +62,8 @@ def find_bias_states(
     swings: list[SwingPoint],
     *,
     interval_ms: int,
+    interval: str | None = None,
+    timezone: str = "America/Chicago",
 ) -> list[BiasState]:
     """Walk the higher-timeframe series and record every change of frame.
 
@@ -88,7 +91,8 @@ def find_bias_states(
     last_low: SwingPoint | None = None
 
     for candle in candles:
-        close_time = candle.time + interval_ms
+        close_time = (bucket_end(candle.time, interval, timezone)
+                      if interval is not None else candle.time + interval_ms)
 
         # Only swings whose confirmation had *completed* by the time this bar
         # opened are eligible. A pivot confirmed halfway through this bar is

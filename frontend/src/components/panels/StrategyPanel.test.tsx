@@ -77,7 +77,7 @@ describe('the higher timeframe section', () => {
   })
 
   it('only offers timeframes coarser than the one being entered on', () => {
-    // On 1h the backend accepts 90m upward. 1h itself, or anything finer,
+    // On 1h the backend accepts whole-bar aggregation from 4h upward.
     // is a bias timeframe that is not strictly coarser than the entry one,
     // and a run configured that way is refused only after the button is
     // pressed -- this list is what keeps that pairing off the form.
@@ -90,7 +90,7 @@ describe('the higher timeframe section', () => {
     const select = screen.getByLabelText('Read it from') as HTMLSelectElement
     const offered = Array.from(select.options).map((option) => option.value)
 
-    expect(offered).toEqual(['90m', '4h', '6h', '1d', '1w', '1mo'])
+    expect(offered).toEqual(['4h', '6h', '1d', '1w', '1mo'])
   })
 
   it('disables the bias toggle on the coarsest interval and explains why', () => {

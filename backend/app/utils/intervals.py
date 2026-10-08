@@ -166,6 +166,19 @@ def is_intraday(interval: str) -> bool:
     return get_interval(interval).milliseconds < DAY_MS
 
 
+def can_aggregate_from(base: str, higher: str) -> bool:
+    """Whether a coarser bucket is composed of whole entry bars.
+
+    Calendar months contain whole session days, but never whole weeks.
+    """
+    source, target = get_interval(base), get_interval(higher)
+    if target.milliseconds <= source.milliseconds or source.calendar is not None:
+        return False
+    if target.calendar is not None:
+        return DAY_MS % source.milliseconds == 0
+    return target.milliseconds % source.milliseconds == 0
+
+
 def base_interval_for(interval: str) -> str:
     """Return the interval that should be *fetched* to build ``interval``.
 

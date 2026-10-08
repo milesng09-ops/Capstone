@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.analysis.sessions import SESSIONS
 from app.models.domain import Candle, Instrument, ProviderStatus
-from app.utils.intervals import UnsupportedIntervalError, interval_ms
+from app.utils.intervals import UnsupportedIntervalError, can_aggregate_from, interval_ms
 
 Direction = Literal["long", "short"]
 EntryType = Literal["selection_close", "next_open"]
@@ -473,6 +473,8 @@ class BacktestRequest(BaseModel):
                 f"higher_timeframe ({self.higher_timeframe}) must be coarser than "
                 f"interval ({self.interval})"
             )
+        if not can_aggregate_from(self.interval, self.higher_timeframe):
+            raise ValueError("higher_timeframe must be composed of whole interval bars")
         return self
 
 

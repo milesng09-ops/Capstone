@@ -31,6 +31,17 @@ START = datetime(2026, 9, 2, tzinfo=timezone.utc)
 END = START + timedelta(hours=4)
 
 
+@pytest.fixture(autouse=True)
+def stub_provider_settings(monkeypatch):
+    from app.config import reset_settings_cache
+
+    monkeypatch.setenv("DATA_PROVIDER", "auto")
+    monkeypatch.setenv("MASSIVE_API_KEY", "offline-test-key")
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
+
+
 class StubProvider(MarketDataProvider):
     """A provider that does exactly one thing, on demand."""
 

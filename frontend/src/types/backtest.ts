@@ -8,6 +8,8 @@ export type StopLossType = 'percentage' | 'fixed_price' | 'pattern_extreme' | 'a
 export type TakeProfitType = 'percentage' | 'fixed_price' | 'risk_reward' | 'liquidity'
 export type ExitReason = 'stop_loss' | 'take_profit' | 'timeout' | 'end_of_data'
 
+export const MAX_PATTERN_MATCHES = 25
+
 export const EXIT_REASON_LABELS: Record<ExitReason, string> = {
   stop_loss: 'Stop loss',
   take_profit: 'Take profit',

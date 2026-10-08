@@ -101,9 +101,9 @@ function setup(overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {}) {
     ...overrides,
   }
 
-  const { container } = render(<ChartOverlay {...props} />)
+  const { container, rerender } = render(<ChartOverlay {...props} />)
   const canvas = container.querySelector('canvas') as HTMLCanvasElement
-  return { ...props, canvas, container }
+  return { ...props, canvas, container, rerender }
 }
 
 beforeAll(() => {
@@ -172,6 +172,25 @@ describe('placing a level', () => {
 })
 
 describe('drawing a shape', () => {
+  it('abandons a two-click shape when the tool changes', () => {
+    const props = setup({ tool: 'trendline' })
+    fireEvent(props.canvas, pointer('pointerdown', 100, 100))
+    fireEvent(props.canvas, pointer('pointerup', 100, 100))
+    props.rerender(<ChartOverlay {...props} tool="rectangle" />)
+    fireEvent(props.canvas, pointer('pointerdown', 200, 200))
+    fireEvent(props.canvas, pointer('pointerup', 200, 200))
+    expect(props.onCreateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('does not consume Escape for a gesture abandoned on tool change', () => {
+    const props = setup({ tool: 'trendline' })
+    fireEvent(props.canvas, pointer('pointerdown', 100, 100))
+    fireEvent(props.canvas, pointer('pointerup', 100, 100))
+    props.rerender(<ChartOverlay {...props} tool="cursor" />)
+    const event = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
+    expect(window.dispatchEvent(event)).toBe(true)
+    expect(props.onGestureComplete).not.toHaveBeenCalled()
+  })
   it('discards a click that never became a drag', () => {
     const { canvas, onCreateDrawing } = setup({ tool: 'trendline' })
 

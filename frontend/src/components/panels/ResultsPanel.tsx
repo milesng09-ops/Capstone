@@ -236,7 +236,7 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
       />
       <Metric
         label="Achieved R:R"
-        value={formatRatio(summary.risk_reward_achieved)}
+        value={summary.average_loser < 0 ? formatRatio(summary.risk_reward_achieved) : '--'}
         hint="Average winner divided by average loser"
       />
     </div>

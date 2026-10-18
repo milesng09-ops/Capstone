@@ -351,6 +351,22 @@ function keepSelection(drawings: Drawing[], selectedId: string | null): string |
   return drawings.some((drawing) => drawing.id === selectedId) ? selectedId : null
 }
 
+/**
+ * Keep the selection only if its drawing is on a market still charted.
+ *
+ * A drawing stays selected across a change of market, and Delete acts on
+ * whatever is selected: switch the primary from NQ to YM with an NQ line
+ * picked and NQ off screen, and the next Delete -- or a Backspace meant for
+ * something else -- removed a line nobody could see.
+ */
+function keepChartedSelection(
+  state: Pick<WorkspaceState, 'drawings' | 'selectedDrawingId'>,
+  charted: string[],
+): string | null {
+  const selected = state.drawings.find((drawing) => drawing.id === state.selectedDrawingId)
+  return selected && charted.includes(selected.symbol) ? selected.id : null
+}
+
 type IntervalState = Pick<
   WorkspaceState,
   'interval' | 'chartSync' | 'intervalOverrides' | 'primarySymbol'
@@ -619,18 +635,17 @@ export const useWorkspace = create<WorkspaceState>()(
           // Pressing the market that is already primary changes nothing, so
           // it must not cost the setup drawn on it either.
           if (symbol === state.primarySymbol) return state
+          // Keep the new primary out of the comparison row so it is not
+          // charted twice, and never compare a symbol against itself.
+          const compareSymbols = state.compareSymbols.filter((item) => item !== symbol)
           return {
-            ...followPrimaryInterval(state, {
-              primarySymbol: symbol,
-              // Keep the new primary out of the comparison row so it is not
-              // charted twice, and never compare a symbol against itself.
-              compareSymbols: state.compareSymbols.filter((item) => item !== symbol),
-            }),
+            ...followPrimaryInterval(state, { primarySymbol: symbol, compareSymbols }),
             // A selection is a range of candles on one instrument; carrying it
             // across to a different instrument would silently retarget the test.
             selection: null,
             // The results on screen were computed for the old instrument.
             selectedTradeId: null,
+            selectedDrawingId: keepChartedSelection(state, [symbol, ...compareSymbols]),
           }
         }),
 
@@ -638,10 +653,15 @@ export const useWorkspace = create<WorkspaceState>()(
         set((state) => {
           if (symbol === state.primarySymbol) return state
           const active = state.compareSymbols.includes(symbol)
+          const compareSymbols = active
+            ? state.compareSymbols.filter((item) => item !== symbol)
+            : [...state.compareSymbols, symbol]
           return {
-            compareSymbols: active
-              ? state.compareSymbols.filter((item) => item !== symbol)
-              : [...state.compareSymbols, symbol],
+            compareSymbols,
+            selectedDrawingId: keepChartedSelection(state, [
+              state.primarySymbol,
+              ...compareSymbols,
+            ]),
           }
         }),
 

@@ -9,7 +9,10 @@ vi.mock('lightweight-charts', () => ({ ColorType: { Solid: 'solid' }, createChar
 const instances: ReturnType<typeof chart>[] = []
 function chart() {
   const priceScale = { applyOptions: vi.fn() }
-  const series = { setData: vi.fn(), applyOptions: vi.fn(), priceScale: () => priceScale }
+  const primitives: Array<{ updateAllViews?: () => void }> = []
+  const series = { setData: vi.fn(), applyOptions: vi.fn(), priceScale: () => priceScale,
+    attachPrimitive: vi.fn((primitive: { updateAllViews?: () => void }) => primitives.push(primitive)),
+    primitives }
   const volume = { setData: vi.fn(), applyOptions: vi.fn(), priceScale: () => priceScale }
   const timeScale = { fitContent: vi.fn(), subscribeVisibleLogicalRangeChange: vi.fn(),
     unsubscribeVisibleLogicalRangeChange: vi.fn() }
@@ -123,4 +126,66 @@ it('relabels the time axis for the new interval without rebuilding the chart', (
 
   expect(instances).toHaveLength(1)
   expect(instances[0].applyOptions.mock.calls.length).toBeGreaterThan(before)
+})
+
+it('tells the overlay when only the price scale moves', () => {
+  // Dragging the price axis changes no time range, so the range event never
+  // fired and the drawings stayed at their old heights over moved candles.
+  let handle: ReturnType<typeof useChartInstance>['handle'] | null = null
+  function Probe() {
+    const result = useChartInstance({ id: 'scale', candles: hourly, interval: '1h', precision: 2, settings })
+    handle = result.handle
+    return <div ref={result.containerRef} />
+  }
+  render(<Probe />)
+  const listener = vi.fn()
+  handle!.subscribe(listener)
+
+  for (const primitive of instances[0].series.primitives) primitive.updateAllViews?.()
+  expect(listener).toHaveBeenCalled()
+})
+
+it('places points off a single candle a bar of the interval apart', () => {
+  // A monthly chart over a short history holds one candle; every point used
+  // to collapse onto it, so nothing drawn there could be given any width.
+  let handle: ReturnType<typeof useChartInstance>['handle'] | null = null
+  function Probe() {
+    const result = useChartInstance({ id: 'single', candles, interval: '1h', precision: 2, settings })
+    handle = result.handle
+    return <div ref={result.containerRef} />
+  }
+  render(<Probe />)
+  Object.assign(instances[0].scale, {
+    timeToCoordinate: () => null,
+    logicalToCoordinate: (logical: number) => 100 + logical * 10,
+    coordinateToLogical: (x: number) => (x - 100) / 10,
+  })
+
+  expect(handle!.timeToXFree(candles[0].time + 2 * HOUR)).toBeCloseTo(120)
+  expect(handle!.xToTimeFree(130)).toBe(candles[0].time + 3 * HOUR)
+})
+
+it("hands a wheel event to the chart's own element and reports whether it was used", () => {
+  // The overlay holds the pointer while a tool is held; the wheel it catches
+  // is passed on so the chart still zooms about the pointer.
+  let handle: ReturnType<typeof useChartInstance>['handle'] | null = null
+  function Probe() {
+    const result = useChartInstance({ id: 'wheel', candles: hourly, interval: '1h', precision: 2, settings })
+    handle = result.handle
+    return <div ref={result.containerRef} />
+  }
+  render(<Probe />)
+  const root = document.createElement('div')
+  const seen: WheelEvent[] = []
+  root.addEventListener('wheel', (event) => {
+    seen.push(event)
+    event.preventDefault()
+  })
+  Object.assign(instances[0], { chartElement: () => root })
+
+  const original = new WheelEvent('wheel', { deltaY: -120, clientX: 240, cancelable: true })
+  expect(handle!.forwardWheel!(original)).toBe(true)
+  expect(seen).toHaveLength(1)
+  expect(seen[0]).not.toBe(original)
+  expect([seen[0].deltaY, seen[0].clientX]).toEqual([-120, 240])
 })

@@ -412,7 +412,7 @@ function DrawingsSection() {
         <EmptyState
           className="py-4"
           title="Nothing drawn yet"
-          description="Pick a tool in the toolbar, then drag on the chart. Drawings snap to swing points and survive an interval change."
+          description="Pick a tool in the toolbar, then drag on the chart. With the magnet on, points land on a candle's open, high, low or close, and drawings survive an interval change."
         />
       ) : (
         <ul className="mt-1.5 space-y-1">

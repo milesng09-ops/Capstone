@@ -42,7 +42,8 @@ import {
   registerChart,
 } from '@/lib/chartSync'
 import { useTimeZone, useWorkspace } from '@/store/workspace'
-import type { Candle, ChartSettings } from '@/types/market'
+import { INTERVAL_MS } from '@/types/market'
+import type { Candle, ChartSettings, Interval } from '@/types/market'
 
 export interface ChartHandle {
   timeToX: (ms: number) => number | null
@@ -56,7 +57,7 @@ export interface ChartHandle {
    */
   timeToXFree: (ms: number) => number | null
   xToTimeFree: (x: number) => number | null
-  /** Called whenever the visible range or the element size changes. */
+  /** Called whenever the visible range, the price scale or the size changes. */
   subscribe: (listener: () => void) => () => void
   palette: () => ChartPalette
   /**
@@ -65,6 +66,11 @@ export interface ChartHandle {
    * then treated as the plot.
    */
   plotSize?: () => { width: number; height: number } | null
+  /**
+   * Give the chart a wheel event that landed on something laid over it, and
+   * say whether the chart used it. Optional, like `plotSize`.
+   */
+  forwardWheel?: (event: WheelEvent) => boolean
 }
 
 interface Options {
@@ -187,6 +193,19 @@ export function useChartInstance({
       priceScaleId: '',
     })
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.86, bottom: 0 } })
+
+    /*
+     * Told whenever the chart recomputes where prices sit.
+     *
+     * The range-change event below covers the time axis only. Dragging the
+     * price axis, or an autoscale that settles after the last step of a pan,
+     * moves every price on screen without moving the time range -- and the
+     * overlay, told nothing, kept painting the drawings at their old heights
+     * while the candles moved under them and the hit test used the new ones.
+     * The chart updates a series' views on every such change, so a view-less
+     * primitive hears all of them; hovering the crosshair does not touch them.
+     */
+    series.attachPrimitive({ updateAllViews: () => notify() })
 
     chartRef.current = chart
     seriesRef.current = series
@@ -348,7 +367,11 @@ export function useChartInstance({
       const exact = timeScale.timeToCoordinate(toChartTime(ms) as UTCTimestamp)
       if (exact != null) return Number(exact)
 
-      const logical = logicalFromTime(candlesRef.current, ms)
+      const logical = logicalFromTime(
+        candlesRef.current,
+        ms,
+        INTERVAL_MS[intervalRef.current as Interval],
+      )
       if (logical == null) return null
       // The library only places whole bar positions: any fraction comes back
       // as 0, the left edge of the pane. A time between two bars -- every
@@ -371,7 +394,11 @@ export function useChartInstance({
       // what blocked drawing there. Logical coordinates stay defined.
       const logical = chart.timeScale().coordinateToLogical(x)
       if (logical == null) return null
-      return timeFromLogical(candlesRef.current, Number(logical))
+      return timeFromLogical(
+        candlesRef.current,
+        Number(logical),
+        INTERVAL_MS[intervalRef.current as Interval],
+      )
     },
     yToPrice: (y) => {
       const series = seriesRef.current
@@ -384,6 +411,14 @@ export function useChartInstance({
       if (!chart) return null
       const size = chart.paneSize()
       return size.width > 0 && size.height > 0 ? size : null
+    },
+    forwardWheel: (event) => {
+      const chart = chartRef.current
+      if (!chart) return false
+      // A copy, because an event can only be dispatched once. The chart
+      // listens on its own root and zooms about the pointer's clientX, which
+      // the copy carries; it cancels the wheel when it uses it.
+      return !chart.chartElement().dispatchEvent(new WheelEvent(event.type, event))
     },
     subscribe: (listener) => {
       listenersRef.current.add(listener)

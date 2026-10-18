@@ -613,10 +613,15 @@ class BacktestService:
         # a symbol dropped for a short fetch is the strongest evidence that
         # the window was incomplete, and it is exactly the one that would be
         # missing from a list of what got used.
+        # Two causes share the label: an outage, which a reload fixes, and a
+        # vendor whose archive starts later than the window, which no reload
+        # will. Each market's own reason follows below and says which; this
+        # line must not promise the fix for both.
         if any(item.quality == "partial" for item in series):
             notes.append(
-                "Part of the requested history could not be fetched, so this run "
-                "searched fewer candles than the window asked for. Reload the range "
+                "Part of the requested history was not available, so this run "
+                "searched fewer candles than the window asked for. The note for "
+                "each market below says why; if it was an outage, reload the range "
                 "once the provider recovers and run it again before trusting the "
                 "win rate."
             )

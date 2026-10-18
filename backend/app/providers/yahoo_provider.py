@@ -25,6 +25,7 @@ from app.models.domain import Candle, Instrument
 from app.providers.base import (
     MarketDataProvider,
     ProviderDataError,
+    ProviderNoDataError,
     ProviderNotConfiguredError,
     ProviderRateLimitError,
     ProviderUnavailableError,
@@ -149,7 +150,7 @@ class YahooProvider(MarketDataProvider):
         if not candles and _empty_is_a_failure(
             start, end, interval, instrument.timezone
         ):
-            raise ProviderDataError(
+            raise ProviderNoDataError(
                 f"Yahoo returned no bars for {ticker} {interval}", provider=self.name
             )
         return candles

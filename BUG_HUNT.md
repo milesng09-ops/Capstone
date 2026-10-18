@@ -1,11 +1,14 @@
 # Bug hunt — 18 October 2026
 
-71 defects confirmed (2 critical, 9 high, 44 medium, 16 low) by a browser pass
+87 defects confirmed (2 critical, 9 high, 54 medium, 22 low) by a browser pass
 over the running app, a Codex review of the backend trading logic, three Claude
 reviewers (data layer, frontend state, components) and a Codex review of the
-finished diff, which caught four problems in the fixes themselves. All are
-fixed in the working tree with a regression test that fails on the old code,
-except where noted. The full report and the tracker live outside the repo, in
+finished diff, which caught four problems in the fixes themselves. A second
+pass over the drawing tools -- every tool created, edited, undone and reloaded
+by hand, and a Codex review of the drawing code -- found fifteen more, and
+the one limitation the first pass had left open was fixed on request. All are
+fixed with a regression test that fails on the old code, except where noted.
+The full report and the tracker live outside the repo, in
 `qa-evidence/Miles-2026-10-18/` (`report.md`, `bugs.xlsx`).
 
 ## The two critical ones
@@ -44,6 +47,11 @@ except where noted. The full report and the tracker live outside the repo, in
   reported as a wait; analysis ranges are capped; empty answers for the future
   no longer demote Massive; timestamps outside 1970-2100 are refused; SQLite
   waits 30 s for a busy writer.
+- History older than anything Massive has served for a series is asked for
+  once: an empty answer there is recorded as answered rather than demoting
+  Massive on every view, and the window reads as partial, naming the date the
+  vendor's history starts. Holes inside the history it holds still count as
+  failures.
 - A five-candle selection is accepted.
 
 ## Charts, drawings and panels
@@ -57,6 +65,21 @@ except where noted. The full report and the tracker live outside the repo, in
 - The magnet is a weak one: it takes a bar's open/high/low/close only within
   12px of the pointer, so a dragged end follows the cursor instead of sticking
   to the high or low.
+- The second drawing pass: drawings follow the price axis when it is dragged
+  (they stayed at their old height); a note just dropped takes the keyboard,
+  where typing had run the F and R shortcuts and Backspace deleted it; a
+  position's stop and target stay on their side of the entry, its end stays a
+  bar after it, and the R label is signed; the long/short preview is the box
+  the release places; an undo pressed mid-drag stays undone; Delete no longer
+  reaches a drawing on a market that has left the screen; a click on an axis
+  no longer finishes a two-click shape; a ray runs on in whichever direction
+  it was drawn and can be grabbed by its extension; a setup cannot be marked
+  across the previous interval's bars while the new ones load; and labels use
+  the instrument's precision (YM in whole points); a note's plate is sized
+  for the widest system monospace face, not only Windows' Consolas.
+- With a drawing tool held, the price and time axes can be dragged and the
+  wheel zooms: the overlay is clipped to the candle area, the same rectangle
+  its paint already was, and hands the wheel to the chart.
 - Panels use the primary pane's own interval; runs survive the panel
   unmounting; trade evidence is read per trade and states what it could not
   load; menus take and
@@ -65,12 +88,11 @@ except where noted. The full report and the tracker live outside the repo, in
 - "Describe it" honours negation, ratios like 1:3, leading-dot decimals and
   trade verbs over adjectives, and reads each phrase for one setting.
 
-## Left open
+## Worth knowing
 
-- When Massive's history starts inside the requested window, the older stretch
-  is re-asked on each request and demotes Massive for 120 s. Fixing it means
-  remembering the earliest bar served -- a policy decision, since it could also
-  hide a real gap in the vendor's data.
+- History recorded as older than Massive's archive is not asked for again. If
+  the archive grows -- a plan upgrade -- clear the cache for that market
+  (`DELETE /api/cache?symbol=ES`) to pull the older bars in.
 
 # Bug hunt — 8 October 2026
 

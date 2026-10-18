@@ -202,6 +202,54 @@ export async function drawingCount(page: Page): Promise<number> {
   })
 }
 
+/**
+ * Where the primary overlay paints the colour a drawing starts with
+ * (#818cf8) along one column or one row, in CSS pixels: the middle of what
+ * carries it, or null where nothing does. Reading the pixels back is what
+ * tells a shape that moved on screen from one that only moved in the store.
+ */
+async function paintedMiddle(
+  page: Page,
+  along: 'column' | 'row',
+  at: number,
+): Promise<number | null> {
+  return page
+    .locator(OVERLAY)
+    .first()
+    .evaluate(
+      (canvas: HTMLCanvasElement, [line, position]) => {
+        const context = canvas.getContext('2d')
+        if (!context || canvas.width === 0) return null
+        const scaleX = canvas.width / canvas.clientWidth
+        const scaleY = canvas.height / canvas.clientHeight
+        const pixels =
+          line === 'column'
+            ? context.getImageData(Math.round(position * scaleX), 0, 1, canvas.height).data
+            : context.getImageData(0, Math.round(position * scaleY), canvas.width, 1).data
+        const scale = line === 'column' ? scaleY : scaleX
+        const hits: number[] = []
+        for (let index = 0; index < pixels.length / 4; index += 1) {
+          const [r, g, b, a] = pixels.slice(index * 4, index * 4 + 4)
+          if (a > 150 && Math.abs(r - 129) < 25 && Math.abs(g - 140) < 25 && Math.abs(b - 248) < 25) {
+            hits.push(index / scale)
+          }
+        }
+        return hits.length === 0 ? null : Math.round(((hits[0] + hits.at(-1)!) / 2) * 2) / 2
+      },
+      [along, at] as const,
+    )
+}
+
+/** How far down the pane a level is painted, read at one column. */
+export function levelRow(page: Page, cssX: number): Promise<number | null> {
+  return paintedMiddle(page, 'column', cssX)
+}
+
+/** How far across the pane a time marker is painted, read at one row. */
+export function markerColumn(page: Page, cssY: number): Promise<number | null> {
+  return paintedMiddle(page, 'row', cssY)
+}
+
 export async function drawingKinds(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const raw = window.localStorage.getItem('mrl.workspace')

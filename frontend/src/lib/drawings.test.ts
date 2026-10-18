@@ -18,7 +18,7 @@ import {
   type DrawingHit,
   type ProjectedDrawing,
 } from '@/lib/drawings'
-import { fibLevels, positionFromDrag } from '@/types/drawing'
+import { fibLevels, positionDraft, positionFromDrag } from '@/types/drawing'
 import type {
   Drawing,
   HorizontalDrawing,
@@ -534,5 +534,172 @@ describe('shiftByBars', () => {
 
   it('still moves by the plain delta where the candles cannot place a time', () => {
     expect(shiftByBars([], 0, 5_000)(1_000)).toBe(6_000)
+  })
+})
+
+describe('drawing audit, 18 Oct', () => {
+  const trade: Drawing = {
+    id: 'trade',
+    kind: 'long',
+    symbol: 'NQ',
+    color: '#818cf8',
+    width: 2,
+    createdAt: 0,
+    entry: { time: 1_000, price: 100 },
+    endTime: 2_000,
+    stop: 90,
+    target: 120,
+  }
+  const short: Drawing = { ...trade, kind: 'short', stop: 110, target: 80 }
+  const grab = (level: 'entry' | 'stop' | 'target' | 'end'): DrawingHit => ({
+    id: 'trade',
+    part: 'level',
+    level,
+  })
+
+  it('stops a target dragged across the entry at the entry', () => {
+    // Accepted, a long's target under its entry still read "Long 2.00R".
+    expect(resizeDrawing(trade, grab('target'), { time: 0, price: 80 })).toMatchObject({
+      target: 100,
+    })
+    expect(resizeDrawing(short, grab('target'), { time: 0, price: 130 })).toMatchObject({
+      target: 100,
+    })
+  })
+
+  it('stops a stop dragged across the entry at the entry', () => {
+    expect(resizeDrawing(trade, grab('stop'), { time: 0, price: 105 })).toMatchObject({
+      stop: 100,
+    })
+    expect(resizeDrawing(short, grab('stop'), { time: 0, price: 95 })).toMatchObject({
+      stop: 100,
+    })
+  })
+
+  it('keeps the entry between the stop and the target', () => {
+    expect(resizeDrawing(trade, grab('entry'), { time: 0, price: 150 })).toMatchObject({
+      entry: { time: 1_000, price: 120 },
+    })
+    expect(resizeDrawing(trade, grab('entry'), { time: 0, price: 50 })).toMatchObject({
+      entry: { time: 1_000, price: 90 },
+    })
+  })
+
+  it('keeps the end at least a bar after the entry', () => {
+    // Dragged back past the entry, the trade closed before it opened, and
+    // the sorted grips then swapped sides.
+    expect(resizeDrawing(trade, grab('end'), { time: 400, price: 0 }, 60)).toMatchObject({
+      endTime: 1_060,
+    })
+    expect(resizeDrawing(trade, grab('end'), { time: 1_000, price: 0 }, 60)).toMatchObject({
+      endTime: 1_060,
+    })
+  })
+
+  it('puts each grip of a trade on the coordinate it edits', () => {
+    // A box saved reversed, end before entry: the end grip stays on the end.
+    const reversed: ProjectedDrawing = {
+      id: 'trade',
+      kind: 'long',
+      x1: 300,
+      x2: 100,
+      yEntry: 200,
+      yStop: 260,
+      yTarget: 80,
+    }
+    expect(hitTestDrawing(reversed, 100, 200)).toEqual(grab('end'))
+    expect(hitTestDrawing(reversed, 300, 260)).toEqual(grab('stop'))
+  })
+
+  it('grabs the nearest grip where two overlap, so a narrow box can be widened', () => {
+    // One bar wide at this zoom: the end grip sits inside the entry grip's
+    // reach, and the entry, listed first, always won.
+    const narrow: ProjectedDrawing = {
+      id: 'trade',
+      kind: 'long',
+      x1: 100,
+      x2: 105,
+      yEntry: 200,
+      yStop: 260,
+      yTarget: 80,
+    }
+    expect(hitTestDrawing(narrow, 105, 200)).toEqual(grab('end'))
+    expect(hitTestDrawing(narrow, 100, 200)).toEqual(grab('entry'))
+  })
+
+  it('lets a picked trade keep its grips under a later drawing', () => {
+    const picked: ProjectedDrawing = {
+      id: 'trade',
+      kind: 'long',
+      x1: 100,
+      x2: 300,
+      yEntry: 200,
+      yStop: 260,
+      yTarget: 80,
+    }
+    const levelOnTop: ProjectedDrawing = { id: 'level', kind: 'horizontal', y: 260 }
+
+    expect(hitTestDrawings([picked, levelOnTop], 100, 260, 'trade')).toEqual(grab('stop'))
+    // Unpicked, the later drawing is on top, as before.
+    expect(hitTestDrawings([picked, levelOnTop], 100, 260, null)?.id).toBe('level')
+  })
+
+  it('grabs a ray along the extension it is painted with', () => {
+    const ray: Drawing = {
+      id: 'ray',
+      kind: 'ray',
+      symbol: 'NQ',
+      color: '#818cf8',
+      width: 2,
+      createdAt: 0,
+      from: { time: 100, price: 100 },
+      to: { time: 200, price: 100 },
+    }
+    const identity = (value: number) => value
+    const projected = projectDrawing(ray, identity, identity, { width: 640, height: 320 })!
+
+    // Well past the second point, where only the extension is drawn.
+    expect(hitTestDrawing(projected, 600, 100)).toEqual({ id: 'ray', part: 'body' })
+    // Behind the first point the ray does not run, so nothing is there.
+    expect(hitTestDrawing(projected, 40, 100)).toBeNull()
+  })
+
+  it('extends a ray in the direction it was drawn', () => {
+    const ray: Drawing = {
+      id: 'ray',
+      kind: 'ray',
+      symbol: 'NQ',
+      color: '#818cf8',
+      width: 2,
+      createdAt: 0,
+      from: { time: 400, price: 100 },
+      to: { time: 300, price: 100 },
+    }
+    const identity = (value: number) => value
+    const projected = projectDrawing(ray, identity, identity, { width: 640, height: 320 })!
+
+    expect(hitTestDrawing(projected, 20, 100)).toEqual({ id: 'ray', part: 'body' })
+    expect(hitTestDrawing(projected, 600, 100)).toBeNull()
+  })
+})
+
+describe('positionDraft', () => {
+  it('places a trade dragged to the left ten bars ahead of its entry, as previewed', () => {
+    const draft = positionDraft('long', { time: 5_000, price: 100 }, { time: 1_000, price: 90 }, 60)
+    expect(draft).toEqual({
+      entry: { time: 5_000, price: 100 },
+      endTime: 5_600,
+      stop: 90,
+      target: 120,
+    })
+  })
+
+  it('lets a drag to the right set how long the trade lasts', () => {
+    const draft = positionDraft('short', { time: 1_000, price: 100 }, { time: 4_000, price: 110 }, 60)
+    expect(draft).toMatchObject({ endTime: 4_000, stop: 110, target: 80 })
+  })
+
+  it('has nothing to place until the drag sets some risk', () => {
+    expect(positionDraft('long', { time: 1_000, price: 100 }, { time: 4_000, price: 100 }, 60)).toBeNull()
   })
 })

@@ -35,6 +35,7 @@ from app.providers.base import (
     MarketDataProvider,
     ProviderAuthError,
     ProviderDataError,
+    ProviderNoDataError,
     ProviderNotConfiguredError,
     ProviderRateLimitError,
     ProviderThrottledError,
@@ -207,8 +208,9 @@ class MassiveProvider(MarketDataProvider):
             # and treating it as a failure is what used to demote a working
             # provider every Saturday and relabel real prices as demo data.
             # Empty over a window holding a single bar's worth of trading is
-            # the right answer too -- see the predicate.
-            raise ProviderDataError(
+            # the right answer too -- see the predicate. Named apart from other
+            # bad payloads so the chain can excuse history Massive never held.
+            raise ProviderNoDataError(
                 f"Massive returned no bars for {product} {interval}",
                 provider=self.name,
             )

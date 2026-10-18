@@ -72,6 +72,16 @@ class ProviderDataError(ProviderError):
     """The provider responded but the payload was unusable or empty."""
 
 
+class ProviderNoDataError(ProviderDataError):
+    """The provider answered with no bars for a window the market was open in.
+
+    Usually a failure worth falling back over. Not when the window lies wholly
+    before the earliest bar the provider has ever served for the series: that
+    is history it does not hold, and the fallback chain can only tell the two
+    apart if this case is named rather than folded into every bad payload.
+    """
+
+
 class MarketDataProvider(abc.ABC):
     """Interface every data source implements."""
 

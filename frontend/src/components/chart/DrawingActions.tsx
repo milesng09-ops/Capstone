@@ -12,7 +12,7 @@
  * so it stays where the shape is instead of where the shape used to be.
  */
 
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { SeparatorHorizontal, Trash2 } from 'lucide-react'
 
 import type { ChartHandle } from '@/components/chart/useChartInstance'
@@ -30,6 +30,13 @@ import { cn } from '@/utils/cn'
 /** Roughly the bar's own size, used to keep it inside the pane. */
 const BAR_WIDTH_PX = 340
 const BAR_HEIGHT_PX = 26
+
+/**
+ * How recently a note must have been placed for its text box to take the
+ * keyboard. Long enough to cover the toolbar appearing; short enough that a
+ * note picked again later, or brought back by undo, leaves the keys alone.
+ */
+const FRESH_NOTE_MS = 2000
 
 interface Props {
   symbol: string
@@ -53,6 +60,29 @@ export function DrawingActions({ handle, drawings }: Props) {
   const [pane, setPane] = useState<HTMLElement | null>(null)
   const [bar, setBar] = useState<HTMLElement | null>(null)
   const [size, setSize] = useState({ width: BAR_WIDTH_PX, height: BAR_HEIGHT_PX })
+
+  /*
+   * A note just dropped takes the keyboard, with its placeholder text picked
+   * so the first keystroke replaces it.
+   *
+   * The tool's hint says "press to drop a note, then type into it", but the
+   * caret stayed on the page: typing went to the chart's shortcuts instead --
+   * an F turned focus mode on, an R reset every chart -- and the Backspace
+   * meant for a typo deleted the note. Only a note placed moments ago, and
+   * only once: picking an existing note leaves Delete deleting it.
+   */
+  const focusedNoteRef = useRef<string | null>(null)
+  const noteInputRef = useCallback(
+    (input: HTMLInputElement | null) => {
+      if (!input || !drawing || drawing.kind !== 'text') return
+      if (focusedNoteRef.current === drawing.id) return
+      if (Date.now() - drawing.createdAt > FRESH_NOTE_MS) return
+      focusedNoteRef.current = drawing.id
+      input.focus()
+      input.select()
+    },
+    [drawing],
+  )
 
   useLayoutEffect(() => {
     if (!bar) return
@@ -83,7 +113,7 @@ export function DrawingActions({ handle, drawings }: Props) {
 
       const width = pane.clientWidth
       const height = pane.clientHeight
-      setAnchor({
+      const next = {
         x: clamp(point.x - size.width / 2, 4, Math.max(4, width - size.width - 4)),
         // Above the shape by default; below it when the shape is near the top
         // of the pane and there is no room above.
@@ -91,7 +121,12 @@ export function DrawingActions({ handle, drawings }: Props) {
           point.y - size.height - 8 < 4
             ? clamp(point.y + 10, 4, Math.max(4, height - size.height - 4))
             : clamp(point.y - size.height - 8, 4, Math.max(4, height - size.height - 4)),
-      })
+      }
+      // The chart notifies on every repaint of its scales, most of which
+      // leave the shape where it was: only a move is worth a render.
+      setAnchor((current) =>
+        current && current.x === next.x && current.y === next.y ? current : next,
+      )
     }
 
     place()
@@ -146,10 +181,19 @@ export function DrawingActions({ handle, drawings }: Props) {
                 * another surface to change four of them is the slower path.
                 */}
               <input
+                ref={noteInputRef}
                 value={drawing.text}
                 onChange={(event) =>
                   updateDrawing(drawing.id, { text: event.target.value })
                 }
+                // Done typing: hand the keyboard back to the chart, so its
+                // shortcuts work again without a click somewhere else first.
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === 'Escape') {
+                    event.preventDefault()
+                    event.currentTarget.blur()
+                  }
+                }}
                 aria-label="Note text"
                 placeholder="Note"
                 className="h-5 w-28 rounded border border-input bg-[hsl(var(--panel-raised))] px-1 text-2xs outline-none focus:border-primary/60"

@@ -77,7 +77,8 @@ export interface RectangleDrawing extends DrawingBase {
 }
 
 /**
- * A line from one point through another, continuing to the right edge.
+ * A line from one point through another, continuing past the second to the
+ * edge of the pane -- in whichever direction it was drawn.
  *
  * The difference from a trend line is the whole point of having both: a trend
  * line answers "what happened between these two bars", a ray answers "where
@@ -250,7 +251,7 @@ export const TOOL_HINTS: Record<ToolMode, string> = {
     'Esc cancels.',
   horizontal: 'Press to preview a level, release to place it. Esc cancels.',
   rectangle: 'Drag to mark a zone. Esc cancels.',
-  ray: 'Two points, then it carries on to the right edge. Esc cancels.',
+  ray: 'Two points, then it carries on past the second to the edge. Esc cancels.',
   vertical: 'Press to preview a moment, release to place it. Esc cancels.',
   arrow: 'Drag from one point to another. Esc cancels.',
   horizontal_ray:
@@ -274,8 +275,13 @@ export const TOOL_HINTS: Record<ToolMode, string> = {
  * A note is drawn in a monospace face, so its box can be computed from the
  * character count without measuring. Both sides using the same two numbers is
  * what stops a note being clickable somewhere it is not drawn.
+ *
+ * The advance is the widest of the faces `ui-monospace, monospace` lands on:
+ * about 6.6px at 11px for SF Mono or Menlo on macOS and DejaVu Sans Mono on
+ * Linux, against 6.05 for Consolas on Windows. Sized for Consolas alone, a note's
+ * text ran past its plate everywhere else, and the overhang was not clickable.
  */
-export const TEXT_CHAR_PX = 6.1
+export const TEXT_CHAR_PX = 6.75
 export const TEXT_LINE_PX = 15
 export const DEFAULT_NOTE = 'Note'
 
@@ -344,6 +350,33 @@ export function positionFromDrag(
   return direction === 'long'
     ? { stop: entry - risk, target: entry + risk * reward }
     : { stop: entry + risk, target: entry - risk * reward }
+}
+
+/** Bars a position lasts when the drag that drew it gave it no duration. */
+export const DEFAULT_POSITION_BARS = 10
+
+/**
+ * The trade a position gesture describes, or `null` while it sets no risk.
+ *
+ * One function for the preview and the commit. They used to be worked out
+ * separately -- the preview from the pointer's pixels, the commit from market
+ * prices -- and disagreed: a drag to the left previewed a box behind the
+ * entry, then placed one ten bars ahead of it. A drag that runs forward sets
+ * how long the trade lasts; one that does not gets a nominal duration, ten
+ * bars being TradingView's own default and reading as "a trade" rather than
+ * as a line.
+ */
+export function positionDraft(
+  direction: 'long' | 'short',
+  start: DrawingPoint,
+  current: DrawingPoint,
+  barMs: number,
+): Pick<PositionDrawing, 'entry' | 'endTime' | 'stop' | 'target'> | null {
+  if (start.price === current.price) return null
+  const { stop, target } = positionFromDrag(direction, start.price, current.price)
+  const endTime =
+    current.time > start.time ? current.time : start.time + barMs * DEFAULT_POSITION_BARS
+  return { entry: start, endTime, stop, target }
 }
 
 /** Palette offered when drawing. Kept small so charts stay readable. */

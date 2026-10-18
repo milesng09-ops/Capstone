@@ -207,6 +207,43 @@ describe('trade selection', () => {
   })
 })
 
+describe('a drawing selected on a market that leaves the screen', () => {
+  // Delete acts on whatever is selected, and a line on a market no longer
+  // charted is one nobody can see -- the next Delete removed it silently.
+  beforeEach(() => {
+    useWorkspace.setState({
+      primarySymbol: 'NQ',
+      compareSymbols: ['ES'],
+      drawings: [level('nq-line', 100, 'NQ'), level('es-line', 100, 'ES')],
+      past: [],
+      future: [],
+      selectedDrawingId: null,
+    })
+  })
+
+  it('is let go when its market stops being the primary', () => {
+    useWorkspace.getState().selectDrawing('nq-line')
+    useWorkspace.getState().setPrimarySymbol('YM')
+    expect(useWorkspace.getState().selectedDrawingId).toBeNull()
+  })
+
+  it('is let go when its comparison pane is closed', () => {
+    useWorkspace.getState().selectDrawing('es-line')
+    useWorkspace.getState().toggleCompareSymbol('ES')
+    expect(useWorkspace.getState().selectedDrawingId).toBeNull()
+  })
+
+  it('stays selected while its market is still charted', () => {
+    useWorkspace.getState().selectDrawing('es-line')
+    // ES becomes the primary: still on screen, so still the selection.
+    useWorkspace.getState().setPrimarySymbol('ES')
+    expect(useWorkspace.getState().selectedDrawingId).toBe('es-line')
+
+    useWorkspace.getState().toggleCompareSymbol('YM')
+    expect(useWorkspace.getState().selectedDrawingId).toBe('es-line')
+  })
+})
+
 describe('overlay defaults', () => {
   it('paints no detections until asked, but still runs them', () => {
     // The clean chart Miles asked for: found either way, drawn only on

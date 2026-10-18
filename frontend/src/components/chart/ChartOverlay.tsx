@@ -69,6 +69,7 @@ import {
   isProjectedPosition,
   rangeChip,
   CHIP_HEIGHT_PX,
+  type PaneExtent,
   type RangeChip,
   projectDrawing,
   resizeDrawing,
@@ -93,14 +94,13 @@ import type { Candle, Interval, SelectionRange, TimeWindow } from '@/types/marke
 import {
   BRUSH_MIN_STEP_PX,
   DEFAULT_NOTE,
-  DEFAULT_POSITION_R,
   fibLevels,
   hasTwoPoints,
   isDragTool,
   isPathTool,
   isPointTool,
   isRangeTool,
-  positionFromDrag,
+  positionDraft,
   TEXT_CHAR_PX,
   TEXT_LINE_PX,
   type FibDrawing,
@@ -169,6 +169,11 @@ function isVisiblySized(
 /** Narrowest a position box may be drawn, so a one-bar trade is still visible. */
 const MIN_POSITION_WIDTH_PX = 5
 
+/** One bar, in milliseconds: measured from the candles, else the interval's. */
+function barSpacing(candles: Candle[], interval: Interval): number {
+  return medianBarSpacingMs(candles) ?? INTERVAL_MS[interval]
+}
+
 /** Smallest a user-drawn shape is ever painted, so none is invisible. */
 const MIN_SHAPE_PX = 2
 
@@ -199,6 +204,15 @@ interface Props {
   magnet: boolean
   /** Only the primary chart defines the backtest selection. */
   allowSelection: boolean
+  /**
+   * False while the candles on screen are the previous interval's, kept up
+   * while the new ones load. A range drawn then was stamped with the new
+   * interval but made of the old bars, so the setup tested was not the one
+   * marked; the range tools wait for the bars they describe.
+   */
+  rangesReady?: boolean
+  /** Decimals the instrument is quoted to, for the prices painted on shapes. */
+  precision?: number
   /**
    * How far down the pane the range tabs start. The legend sits in the same
    * top-left corner, and the tabs were painted under it -- "setup" across the
@@ -240,6 +254,14 @@ interface PendingGesture {
    * half the screen. Supporting both costs one flag and takes nothing away.
    */
   armed: boolean
+  /**
+   * The second click of an armed shape has been pressed on the candles.
+   *
+   * Only a release that follows one finishes the shape. The press is refused
+   * over an axis, but the release still arrived, and it placed the shape at
+   * the plot's edge -- a click on the price scale finished the line.
+   */
+  confirmed?: boolean
   /**
    * The pointer's path, for the tools that are the path rather than its ends.
    *
@@ -290,6 +312,8 @@ export function ChartOverlay({
   snapToSwings,
   magnet,
   allowSelection,
+  rangesReady = true,
+  precision = 2,
   chipTop = 6,
   onCreateDrawing,
   onUpdateDrawing,
@@ -303,6 +327,8 @@ export function ChartOverlay({
   // Read by the window-level drag listener, which is registered once.
   const candlesRef = useRef(candles)
   candlesRef.current = candles
+  const intervalRef = useRef(interval)
+  intervalRef.current = interval
 
   // Each gesture is mirrored into a ref so that the imperative redraw -- which
   // the chart triggers on every pan and zoom -- never paints a stale frame,
@@ -504,6 +530,29 @@ export function ChartOverlay({
     ctx.rect(0, 0, plotWidth, plotHeight)
     ctx.clip()
 
+    /*
+     * And so is the canvas itself, to the same rectangle, so the axes stay
+     * the chart's while a tool is held.
+     *
+     * A held tool hands the canvas the pointer, and the canvas covers the
+     * whole pane -- its size is CSS's business, and the pane is the box CSS
+     * can name. So a press on the price axis landed on the canvas, was
+     * refused there as no point on the chart, and never reached the chart
+     * either: the scales could not be dragged until the tool was put down.
+     * A clip-path takes the axes out of where the canvas can be hit without
+     * touching its size, and hides nothing, since nothing is painted there.
+     * Set from the paint because the paint is what knows the plot: until a
+     * first frame the canvas simply takes the whole pane, as it always did.
+     */
+    const clip =
+      plotWidth < width || plotHeight < height
+        ? `inset(0px ${width - plotWidth}px ${height - plotHeight}px 0px)`
+        : ''
+    if (canvas.dataset.clip !== clip) {
+      canvas.dataset.clip = clip
+      canvas.style.clipPath = clip
+    }
+
     const palette = handle.palette()
     const yOf = handle.priceToY
 
@@ -665,14 +714,16 @@ export function ChartOverlay({
     // is written once on release rather than on every frame.
     const preview = dragRef.current?.preview ?? null
     const hoveredId = hoverRef.current?.id ?? null
+    const extent: PaneExtent = { width, height }
     let offData = 0
     for (const drawing of drawings) {
       const shown = preview && preview.id === drawing.id ? preview : drawing
-      const painted = paintDrawing(ctx, shown, xOfDrawing, yOf, width, height, {
+      const painted = paintDrawing(ctx, shown, xOfDrawing, yOf, extent, {
         selected: shown.id === selectedDrawingId,
         hovered: shown.id === hoveredId,
         background: palette.background,
         palette,
+        precision,
       })
       if (!painted) offData += 1
     }
@@ -701,16 +752,51 @@ export function ChartOverlay({
       const path = gesture.path
         .map((point) => place(point, Number.NaN, Number.NaN))
         .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
-      paintPending(
-        ctx,
-        { ...gesture, startX: start.x, startY: start.y, currentX: current.x, currentY: current.y },
-        path,
-        tool,
-        width,
-        height,
-        drawingColor,
-        palette.accent,
-      )
+
+      // A position previews as the trade the release will place, painted by
+      // the same code that paints it once placed.
+      const draft =
+        tool === 'long' || tool === 'short'
+          ? positionDraft(tool, gesture.start, gesture.current, barSpacing(candles, interval))
+          : null
+      const painted =
+        draft != null &&
+        (tool === 'long' || tool === 'short') &&
+        paintDrawing(
+          ctx,
+          {
+            id: 'pending',
+            kind: tool,
+            symbol,
+            color: drawingColor,
+            width: drawingWidth,
+            createdAt: 0,
+            ...draft,
+          },
+          xOfDrawing,
+          yOf,
+          extent,
+          {
+            selected: false,
+            hovered: false,
+            background: palette.background,
+            palette,
+            precision,
+          },
+        )
+      if (!painted) {
+        paintPending(
+          ctx,
+          { ...gesture, startX: start.x, startY: start.y, currentX: current.x, currentY: current.y },
+          path,
+          tool,
+          width,
+          height,
+          drawingColor,
+          palette.accent,
+          precision,
+        )
+      }
     }
     ctx.restore()
   }, [
@@ -718,8 +804,13 @@ export function ChartOverlay({
     trades,
     strategyLabel,
     gxtEvidence,
+    candles,
     drawingColor,
+    drawingWidth,
     drawings,
+    interval,
+    precision,
+    symbol,
     evidence,
     handle,
     ict,
@@ -746,13 +837,39 @@ export function ChartOverlay({
     scheduleDraw()
   }, [draw, hover, scheduleDraw])
 
+  /*
+   * The wheel still zooms and scrolls the chart while a tool is held.
+   *
+   * Over the candles the canvas has to keep the pointer, since that is where
+   * shapes are drawn, so the wheel landed on it and went nowhere: zooming in
+   * to place a point precisely meant putting the tool down, zooming, and
+   * picking it up again. The canvas does nothing with a wheel itself, so it
+   * passes each one to the chart, and cancels it only if the chart did.
+   */
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !drawingActive || !handle.forwardWheel) return
+    const forward = (event: WheelEvent) => {
+      if (handle.forwardWheel?.(event)) event.preventDefault()
+    }
+    canvas.addEventListener('wheel', forward, { passive: false })
+    return () => canvas.removeEventListener('wheel', forward)
+  }, [drawingActive, handle])
+
   // ---- hit-testing -----------------------------------------------------
   const hitTestAt = useCallback(
     (x: number, y: number): DrawingHit | null => {
       if (drawings.length === 0) return null
+      // The pane's size, as the painter used it, so a ray is grabbable along
+      // the whole of the extension it is drawn with.
+      const parent = canvasRef.current?.parentElement
+      const extent: PaneExtent | undefined =
+        parent && parent.clientWidth > 0 && parent.clientHeight > 0
+          ? { width: parent.clientWidth, height: parent.clientHeight }
+          : undefined
       const projected: ProjectedDrawing[] = []
       for (const drawing of drawings) {
-        const item = projectDrawing(drawing, xOfDrawing, handle.priceToY)
+        const item = projectDrawing(drawing, xOfDrawing, handle.priceToY, extent)
         if (item) projected.push(item)
       }
       return hitTestDrawings(projected, x, y, selectedDrawingId)
@@ -1035,7 +1152,12 @@ export function ChartOverlay({
               shiftByBars(candlesRef.current, active.origin.time, resolved.raw.time),
               resolved.raw.price - active.origin.price,
             )
-          : resizeDrawing(active.original, active.hit, resolved.point)
+          : resizeDrawing(
+              active.original,
+              active.hit,
+              resolved.point,
+              barSpacing(candlesRef.current, intervalRef.current),
+            )
 
       updateDrag({
         ...active,
@@ -1085,6 +1207,23 @@ export function ChartOverlay({
     }
   }, [onUpdateDrawing, pointAt, snapToSwings, updateDrag])
 
+  /*
+   * A drag holds a copy of the drawing as it was when grabbed, and writes the
+   * whole of it back on release. If the stored drawing changes in between --
+   * Ctrl+Z pressed with the button still down, a Delete -- that copy is
+   * stale, and writing it back undid the undo: the colour it had just taken
+   * away came back, and the redo step was thrown out with it. The store is
+   * the truth, so a drag whose drawing has moved on under it is dropped.
+   */
+  useEffect(() => {
+    const active = dragRef.current
+    if (!active) return
+    const stored = drawings.find((drawing) => drawing.id === active.original.id)
+    if (stored === active.original) return
+    suppressRef.current = false
+    updateDrag(null)
+  }, [drawings, updateDrag])
+
   /**
    * Cursor feedback lives on the parent rather than the canvas: the canvas is
    * transparent to the pointer here, and an element that cannot be hit cannot
@@ -1110,6 +1249,9 @@ export function ChartOverlay({
       }
     }
 
+    // Not yet: the bars on screen are still the last interval's.
+    if (isRangeTool(tool) && !rangesReady) return
+
     // A range is made of bars, not of shapes, so it never snaps to a swing
     // point -- that would move the window off the candles it names.
     const resolved = pointAt(event.clientX, event.clientY, !isRangeTool(tool) && snapToSwings)
@@ -1117,8 +1259,13 @@ export function ChartOverlay({
 
     // Already armed: this press is the *second* click of a two-click
     // placement, so the gesture already holds the first point and must be
-    // left alone for the release to commit it.
-    if (pendingRef.current?.armed) return
+    // left alone for the release to commit it -- marked as pressed here, on
+    // the candles, which is what entitles that release to.
+    const armed = pendingRef.current
+    if (armed?.armed) {
+      updatePending({ ...armed, confirmed: true })
+      return
+    }
 
     event.currentTarget.setPointerCapture(event.pointerId)
     updatePending({
@@ -1185,6 +1332,9 @@ export function ChartOverlay({
 
     const gesture = pendingRef.current
     if (!gesture) return
+    // An armed shape is finished by a click on the candles, not by any
+    // release: one that follows a press refused over an axis stays armed.
+    if (gesture.armed && !gesture.confirmed) return
 
     // A click without a drag on a two-point shape arms it rather than
     // discarding it: the first point is placed and the next click finishes
@@ -1287,32 +1437,24 @@ export function ChartOverlay({
       // The drag is entry to stop, because risk is the number a trader
       // decides; the target follows from it as a multiple. A drag with no
       // height sets no risk, which would make the reward-to-risk undefined.
-      if (gesture.start.price === gesture.current.price) {
+      // Worked out by the same function the preview was painted from, so
+      // what is placed is what was shown.
+      const draft = positionDraft(
+        tool,
+        gesture.start,
+        gesture.current,
+        barSpacing(candles, interval),
+      )
+      if (!draft) {
         onGestureComplete(false)
         return
       }
-      const { stop, target } = positionFromDrag(
-        tool,
-        gesture.start.price,
-        gesture.current.price,
-      )
-      // A trade drawn with no width still has to be visible and grabbable, so
-      // a box that spans no time is given a nominal duration. Ten bars is
-      // TradingView's own default and reads as "a trade", not as a line.
-      const spacing = medianBarSpacingMs(candles) ?? INTERVAL_MS[interval]
-      const endTime =
-        gesture.current.time > gesture.start.time
-          ? gesture.current.time
-          : gesture.start.time + spacing * 10
       onCreateDrawing({
         kind: tool,
         symbol,
         color: drawingColor,
         width: drawingWidth,
-        entry: gesture.start,
-        endTime,
-        stop,
-        target,
+        ...draft,
       })
       onGestureComplete(true)
       return
@@ -1852,6 +1994,7 @@ function paintFib(
   projected: ProjectedSegment,
   drawing: FibDrawing,
   width: number,
+  precision: number,
 ) {
   const left = Math.min(projected.x1, projected.x2)
   const levels = fibLevels(drawing.from, drawing.to)
@@ -1883,7 +2026,11 @@ function paintFib(
     ctx.stroke()
 
     ctx.globalAlpha = 0.85
-    ctx.fillText(`${ratio.toFixed(3)}  ${levels[index].price.toFixed(2)}`, left + 4, y - 2)
+    ctx.fillText(
+      `${ratio.toFixed(3)}  ${levels[index].price.toFixed(precision)}`,
+      left + 4,
+      y - 2,
+    )
   }
   ctx.restore()
 }
@@ -1936,13 +2083,21 @@ function paintPlannedTrade(
    * rather than left to be measured off the axis. Guarded, because a stop
    * dragged onto the entry makes the risk zero and the ratio meaningless; the
    * honest answer there is to say nothing rather than to print a division.
+   *
+   * Signed in the trade's direction. Taken as distances, a long whose target
+   * had been pulled below its entry still read as a positive multiple. The
+   * handles no longer allow that, but a box saved before they stopped it
+   * says what it is.
    */
-  const risk = Math.abs(drawing.entry.price - drawing.stop)
-  const reward = Math.abs(drawing.target - drawing.entry.price)
+  const long = drawing.kind === 'long'
+  const risk = long ? drawing.entry.price - drawing.stop : drawing.stop - drawing.entry.price
+  const reward = long
+    ? drawing.target - drawing.entry.price
+    : drawing.entry.price - drawing.target
   const label =
     risk > 0
-      ? `${drawing.kind === 'long' ? 'Long' : 'Short'}  ${(reward / risk).toFixed(2)}R`
-      : `${drawing.kind === 'long' ? 'Long' : 'Short'}  no risk set`
+      ? `${long ? 'Long' : 'Short'}  ${(reward / risk).toFixed(2)}R`
+      : `${long ? 'Long' : 'Short'}  no risk set`
 
   ctx.globalAlpha = 0.9
   ctx.fillStyle = palette.text
@@ -1960,6 +2115,8 @@ interface DrawingStyle {
   background: string
   /** The pane's own palette, for shapes that mean up and down. */
   palette: ChartPalette
+  /** Decimals for the prices printed on the shape: YM is quoted in points. */
+  precision: number
 }
 
 function paintDrawing(
@@ -1967,16 +2124,16 @@ function paintDrawing(
   drawing: Drawing,
   xOf: XConverter,
   yOf: YConverter,
-  width: number,
-  height: number,
-  { selected, hovered, background, palette }: DrawingStyle,
+  extent: PaneExtent,
+  { selected, hovered, background, palette, precision }: DrawingStyle,
 ): boolean {
+  const { width, height } = extent
   // Painted from the same projection the pointer is tested against, so a grip
   // is never drawn somewhere it cannot actually be grabbed.
-  const projected = projectDrawing(drawing, xOf, yOf)
+  const projected = projectDrawing(drawing, xOf, yOf, extent)
   if (!projected) return false
 
-  const priceLabel = drawing.kind === 'horizontal' ? drawing.price.toFixed(2) : null
+  const priceLabel = drawing.kind === 'horizontal' ? drawing.price.toFixed(precision) : null
 
   ctx.save()
   ctx.strokeStyle = drawing.color
@@ -2030,7 +2187,7 @@ function paintDrawing(
     ctx.font = '9px ui-monospace, monospace'
     ctx.textBaseline = 'bottom'
     ctx.fillText(
-      drawing.kind === 'horizontal_ray' ? drawing.from.price.toFixed(2) : '',
+      drawing.kind === 'horizontal_ray' ? drawing.from.price.toFixed(precision) : '',
       projected.x + 4,
       projected.y - 2,
     )
@@ -2057,7 +2214,7 @@ function paintDrawing(
   } else if (isProjectedPosition(projected)) {
     paintPlannedTrade(ctx, projected, drawing as PositionDrawing, palette)
   } else if (projected.kind === 'fib') {
-    paintFib(ctx, projected, drawing as FibDrawing, width)
+    paintFib(ctx, projected, drawing as FibDrawing, width, precision)
   } else if (projected.kind === 'rectangle') {
     const left = Math.min(projected.x1, projected.x2)
     const top = Math.min(projected.y1, projected.y2)
@@ -2087,25 +2244,15 @@ function paintDrawing(
   } else {
     // Trend line, ray and arrow: one segment, differing only in what happens
     // at the ends.
-    let { x2, y2 } = projected
-    const { x1, y1 } = projected
-
-    if (projected.kind === 'ray') {
-      // Continue past the second point to the right edge, keeping the slope.
-      const runX = x2 - x1
-      const runY = y2 - y1
-      if (runX > 0) {
-        const scale = (width - x1) / runX
-        if (scale > 1) {
-          x2 = x1 + runX * scale
-          y2 = y1 + runY * scale
-        }
-      }
-    }
+    const { x1, y1, x2, y2 } = projected
+    // A ray carries on past its second point, in the direction it was
+    // drawn, to the far point the projection worked out for this pane.
+    const endX = projected.kind === 'ray' ? (projected.farX ?? x2) : x2
+    const endY = projected.kind === 'ray' ? (projected.farY ?? y2) : y2
 
     ctx.beginPath()
     ctx.moveTo(x1, y1)
-    ctx.lineTo(x2, y2)
+    ctx.lineTo(endX, endY)
     ctx.stroke()
 
     if (projected.kind === 'arrow') {
@@ -2142,6 +2289,7 @@ function paintPending(
   height: number,
   colour: string,
   accent: string,
+  precision: number,
 ) {
   ctx.save()
   ctx.setLineDash([4, 3])
@@ -2218,43 +2366,14 @@ function paintPending(
       ctx.stroke()
     }
   } else if (tool === 'long' || tool === 'short') {
-    /*
-     * Risk below the entry and reward above it, in the proportions the trade
-     * will actually have.
-     *
-     * Drawn from the *screen* distance rather than by re-deriving prices: the
-     * commit does the arithmetic in market coordinates, and doing it twice in
-     * two places is how a preview comes to disagree with what it previews.
-     * One number links them -- the default reward multiple -- and the stop is
-     * placed on the side the direction demands, so a long dragged upwards
-     * still previews as a long.
-     */
-    const risk = Math.abs(gesture.currentY - gesture.startY)
-    const down = tool === 'long'
-    const stopY = down ? gesture.startY + risk : gesture.startY - risk
-    const targetY = down
-      ? gesture.startY - risk * DEFAULT_POSITION_R
-      : gesture.startY + risk * DEFAULT_POSITION_R
-    const left = Math.min(gesture.startX, gesture.currentX)
-    const span = Math.max(MIN_POSITION_WIDTH_PX, Math.abs(gesture.currentX - gesture.startX))
-
-    ctx.setLineDash([])
-    ctx.globalAlpha = 0.14
-    ctx.fillStyle = accent
-    ctx.fillRect(left, Math.min(gesture.startY, targetY), span, Math.abs(targetY - gesture.startY))
-    ctx.globalAlpha = 0.14
-    ctx.fillStyle = colour
-    ctx.fillRect(left, Math.min(gesture.startY, stopY), span, Math.abs(stopY - gesture.startY))
-
-    ctx.globalAlpha = 0.9
+    // Only reached before the drag has set any risk: once it has, the trade
+    // itself is previewed, by the painter that will paint it once placed.
+    // Until then there is an entry and nothing else.
     ctx.strokeStyle = colour
-    ctx.setLineDash([4, 3])
-    for (const y of [gesture.startY, stopY, targetY]) {
-      ctx.beginPath()
-      ctx.moveTo(left, y + 0.5)
-      ctx.lineTo(left + span, y + 0.5)
-      ctx.stroke()
-    }
+    ctx.beginPath()
+    ctx.moveTo(gesture.startX, gesture.startY + 0.5)
+    ctx.lineTo(gesture.startX + MIN_POSITION_WIDTH_PX * 4, gesture.startY + 0.5)
+    ctx.stroke()
   } else if (tool === 'horizontal') {
     // Previewed under the cursor before it exists: a level is committed on
     // release, so this is the last look at it before it is real.
@@ -2269,7 +2388,7 @@ function paintPending(
     ctx.globalAlpha = 0.85
     ctx.font = '9px ui-monospace, monospace'
     ctx.textBaseline = 'bottom'
-    ctx.fillText(gesture.current.price.toFixed(2), 4, gesture.currentY - 2)
+    ctx.fillText(gesture.current.price.toFixed(precision), 4, gesture.currentY - 2)
   } else if (tool === 'rectangle') {
     const left = Math.min(gesture.startX, gesture.currentX)
     const top = Math.min(gesture.startY, gesture.currentY)

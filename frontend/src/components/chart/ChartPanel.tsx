@@ -335,6 +335,11 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           selectedDrawingId={selectedDrawingId}
           snapToSwings={snapToSwings}
           allowSelection={isPrimary}
+          // While a new interval loads, the previous interval's bars stay on
+          // screen; a setup marked across them is not made of the bars it
+          // would be tested on.
+          rangesReady={(barsQuery.data?.interval ?? interval) === interval}
+          precision={precision}
           chipTop={legendBottom + 6}
           onCreateDrawing={handleCreate}
           onUpdateDrawing={updateDrawing}

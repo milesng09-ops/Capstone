@@ -400,10 +400,22 @@ export function medianBarSpacingMs(candles: Candle[]): number | null {
  * *logical* scale has no such limit -- index 0 is the first bar, and -3.5 or
  * `count + 12` are perfectly valid positions off either end. Converting
  * through logical coordinates is what unlocks drawing anywhere on the pane.
+ *
+ * `fallbackSpacingMs` is one bar of the interval, for when the candles cannot
+ * say how far apart bars are: a monthly chart over a 30-day history holds one
+ * candle, and without it every point collapsed onto that bar -- no zone could
+ * be given width, and a position's end could never be placed on screen.
  */
-export function logicalFromTime(candles: Candle[], ms: number): number | null {
+export function logicalFromTime(
+  candles: Candle[],
+  ms: number,
+  fallbackSpacingMs?: number,
+): number | null {
   if (candles.length === 0) return null
-  if (candles.length === 1) return ms === candles[0].time ? 0 : null
+  if (candles.length === 1) {
+    if (ms === candles[0].time) return 0
+    return fallbackSpacingMs ? (ms - candles[0].time) / fallbackSpacingMs : null
+  }
 
   const lastIndex = candles.length - 1
   const first = candles[0].time
@@ -423,7 +435,7 @@ export function logicalFromTime(candles: Candle[], ms: number): number | null {
     return span > 0 ? low + (ms - candles[low].time) / span : low
   }
 
-  const spacing = medianBarSpacingMs(candles)
+  const spacing = medianBarSpacingMs(candles) ?? fallbackSpacingMs ?? null
   if (spacing == null || spacing <= 0) return null
 
   return ms < first
@@ -432,9 +444,17 @@ export function logicalFromTime(candles: Candle[], ms: number): number | null {
 }
 
 /** Inverse of {@link logicalFromTime}. */
-export function timeFromLogical(candles: Candle[], logical: number): number | null {
+export function timeFromLogical(
+  candles: Candle[],
+  logical: number,
+  fallbackSpacingMs?: number,
+): number | null {
   if (candles.length === 0) return null
-  if (candles.length === 1) return candles[0].time
+  if (candles.length === 1) {
+    return fallbackSpacingMs
+      ? Math.round(candles[0].time + logical * fallbackSpacingMs)
+      : candles[0].time
+  }
 
   const lastIndex = candles.length - 1
 
@@ -447,7 +467,7 @@ export function timeFromLogical(candles: Candle[], logical: number): number | nu
     )
   }
 
-  const spacing = medianBarSpacingMs(candles)
+  const spacing = medianBarSpacingMs(candles) ?? fallbackSpacingMs ?? null
   if (spacing == null || spacing <= 0) return null
 
   return logical <= 0

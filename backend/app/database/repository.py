@@ -422,6 +422,26 @@ def repair_mixed_series(session: Session) -> dict[tuple[str, str], int]:
     return removed
 
 
+def earliest_bar(
+    session: Session, symbol: str, interval: str, provider: str | None = None
+) -> tuple[int, str] | None:
+    """``(timestamp, provider)`` of the oldest bar stored for a series.
+
+    With ``provider``, the oldest bar that provider has served. This is the
+    one durable record of how far back a vendor's history reaches for a
+    series, and being read from the bars themselves it survives a restart and
+    goes wherever the bars go -- an eviction, a cleared cache.
+    """
+
+    query = select(CandleRow.timestamp, CandleRow.provider).where(
+        CandleRow.symbol == symbol, CandleRow.interval == interval
+    )
+    if provider is not None:
+        query = query.where(CandleRow.provider == provider)
+    row = session.execute(query.order_by(CandleRow.timestamp.asc()).limit(1)).first()
+    return (int(row[0]), str(row[1])) if row is not None else None
+
+
 def candle_bounds(session: Session, symbol: str, interval: str) -> tuple[int | None, int | None]:
     row = session.execute(
         select(func.min(CandleRow.timestamp), func.max(CandleRow.timestamp)).where(

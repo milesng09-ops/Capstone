@@ -20,7 +20,15 @@
 
 import { expect, test, type Page } from '@playwright/test'
 
-import { OVERLAY, PANE, drawingCount, drawingKinds, openWorkspace } from './fixtures'
+import {
+  OVERLAY,
+  PANE,
+  drawingCount,
+  drawingKinds,
+  levelRow,
+  markerColumn,
+  openWorkspace,
+} from './fixtures'
 
 /** The dead zone of the original bug. Gestures must begin beyond it. */
 const OLD_OVERLAY = { width: 300, height: 150 }
@@ -153,5 +161,91 @@ test.describe('the reference pane', () => {
       .first()
       .innerText()
     expect(symbols.at(-1)).not.toBe(primary.split('\n')[0].trim())
+  })
+})
+
+test.describe("the chart's own controls while a tool is held", () => {
+  /*
+   * A held tool gives the overlay the pointer, and the overlay covers the
+   * whole pane. It used to take the axes and the wheel with it: neither
+   * scale could be dragged, and the wheel zoomed nothing, until the tool was
+   * put down. Each of these holds the trend line tool and checks the chart
+   * still answered -- by a shape drawn earlier moving on screen -- and that
+   * nothing was drawn and the tool is still in hand.
+   */
+  async function placeThenHoldTrendLine(page: Page, tool: string, at: { x: number; y: number }) {
+    const pane = await page.locator(PANE).first().boundingBox()
+    if (!pane) throw new Error('the pane has no box')
+    await page.getByRole('button', { name: tool, exact: true }).click()
+    await page.mouse.click(pane.x + at.x, pane.y + at.y)
+    await page.getByRole('button', { name: 'Trend line', exact: true }).click()
+    return pane
+  }
+
+  async function stillHolding(page: Page, count: number) {
+    expect(await drawingCount(page)).toBe(count)
+    await expect(page.getByRole('button', { name: 'Trend line', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  }
+
+  async function dragFrom(
+    page: Page,
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+  ) {
+    await page.mouse.move(from.x, from.y)
+    await page.mouse.down()
+    for (let step = 1; step <= 10; step += 1) {
+      await page.mouse.move(
+        from.x + ((to.x - from.x) * step) / 10,
+        from.y + ((to.y - from.y) * step) / 10,
+      )
+    }
+    await page.mouse.up()
+  }
+
+  test('lets the price axis be dragged', async ({ page }) => {
+    const pane = await placeThenHoldTrendLine(page, 'Level', { x: 480, y: 50 })
+    await expect.poll(() => levelRow(page, 600)).not.toBeNull()
+    const before = await levelRow(page, 600)
+    const count = await drawingCount(page)
+
+    const axisX = pane.x + pane.width - 25
+    await dragFrom(page, { x: axisX, y: pane.y + 60 }, { x: axisX, y: pane.y + 160 })
+
+    await expect.poll(() => levelRow(page, 600)).not.toBe(before)
+    await stillHolding(page, count)
+  })
+
+  test('lets the time axis be dragged', async ({ page }) => {
+    const pane = await placeThenHoldTrendLine(page, 'Time marker', { x: 560, y: 120 })
+    await expect.poll(() => markerColumn(page, 120)).not.toBeNull()
+    const before = await markerColumn(page, 120)
+    const count = await drawingCount(page)
+
+    const axisY = pane.y + pane.height - 12
+    await dragFrom(page, { x: pane.x + 500, y: axisY }, { x: pane.x + 300, y: axisY })
+
+    await expect.poll(() => markerColumn(page, 120)).not.toBe(before)
+    await stillHolding(page, count)
+  })
+
+  test('zooms with the wheel over the candles, and the tool still draws', async ({ page }) => {
+    const pane = await placeThenHoldTrendLine(page, 'Time marker', { x: 560, y: 120 })
+    await expect.poll(() => markerColumn(page, 120)).not.toBeNull()
+    const before = await markerColumn(page, 120)
+    const count = await drawingCount(page)
+
+    await page.mouse.move(pane.x + 300, pane.y + 150)
+    await page.mouse.wheel(0, -300)
+
+    await expect.poll(() => markerColumn(page, 120)).not.toBe(before)
+    await stillHolding(page, count)
+
+    // The candle area is still the tool's.
+    await drag(page, 0, { x: 440, y: 160 }, { x: 740, y: 100 })
+    await expect.poll(() => drawingCount(page)).toBe(count + 1)
   })
 })

@@ -26,6 +26,7 @@ from app.database.repository import (
     drop_unreal_candles,
     has_real_candles,
     load_coverage,
+    missing_ranges,
     providers_in_range,
     record_coverage,
     repair_mixed_series,
@@ -296,11 +297,11 @@ class TestWhatTheServiceStores:
         # which was never fetched -- as permanently present.
         assert max(entry.end for entry in covered) == T0 + 2 * HOUR
 
-    def test_coverage_starts_where_the_bars_start(self, session):
+    def test_history_older_than_the_first_bar_ever_served_is_answered_once(self, session):
         # Yahoo trims a long intraday request at the *old* end and says
-        # nothing. Taking the requested start on trust would record the years
-        # it never sent as covered -- the same permanent hole by the other
-        # door.
+        # nothing; Massive's archive simply starts later than a two-year
+        # window. Either way the provider was asked for the whole span and
+        # holds nothing before its first bar.
         span = TimeRange(T0 - 50 * HOUR, T0 + 100 * HOUR)
 
         # Real bars, kept -- but the series is shorter than the window asked
@@ -310,8 +311,29 @@ class TestWhatTheServiceStores:
             _PersistOutcome.STORED_SHORT
         )
 
+        # The older stretch used to be left uncovered so it would be asked for
+        # again -- on every view and every change of interval, answered with
+        # nothing each time, and from Massive with a two-minute demotion. Now
+        # it is recorded as answered; reading the window reports it as
+        # partial from the stored bars instead.
         covered = load_coverage(session, "ES", "1h")
-        assert min(entry.start for entry in covered) == T0
+        assert missing_ranges(covered, TimeRange(span.start, T0 - 1)) == []
+
+    def test_a_short_answer_inside_history_already_held_stays_owed(self, session):
+        # The provider served this series back to T0 - 100h before. An answer
+        # that now starts later than the gap is a hole in history it does
+        # hold, not the edge of its archive, and covering it would hide it.
+        save_candles(session, "1h", candles("ES", 2, start=T0 - 100 * HOUR), "yahoo")
+        span = TimeRange(T0 - 50 * HOUR, T0 + 100 * HOUR)
+
+        assert self._persist("ES", candles("ES", 3), "yahoo", span) is (
+            _PersistOutcome.STORED_SHORT
+        )
+
+        covered = load_coverage(session, "ES", "1h")
+        assert missing_ranges(covered, TimeRange(span.start, T0 - 1)) == [
+            TimeRange(span.start, T0 - 1)
+        ]
 
 
 # --------------------------------------------------------------------------

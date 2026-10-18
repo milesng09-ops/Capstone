@@ -25,6 +25,7 @@ provider's own ``Retry-After`` rather than a generic outage.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 
 from app.config import get_settings
@@ -32,6 +33,7 @@ from app.models.domain import Candle, Instrument, ProviderFetchResult
 from app.providers.base import (
     MarketDataProvider,
     ProviderError,
+    ProviderNoDataError,
     ProviderNotConfiguredError,
     ProviderRateLimitError,
     ProviderThrottledError,
@@ -41,7 +43,7 @@ from app.providers.health import ProviderHealthRegistry, get_health_registry
 from app.providers.massive_provider import MassiveProvider
 from app.providers.yahoo_provider import YahooProvider
 from app.utils.intervals import resolve_fetch_interval
-from app.utils.timeutils import now_ms
+from app.utils.timeutils import now_ms, to_ms
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,10 @@ class FallbackFetchResult(ProviderFetchResult):
 
     rate_limited: bool = False
     retry_after_seconds: float | None = None
+    #: The provider answered with nothing for a window wholly older than any
+    #: bar it has served for the series: history it does not hold, not an
+    #: outage. ``bars`` is empty and the provider was not marked unhealthy.
+    not_held: bool = False
 
 #: Demo data is deliberately absent from every automatic chain.  It is real
 #: prices or nothing: a rate limit that quietly swapped in synthetic candles
@@ -165,11 +171,23 @@ class AutomaticFallbackProvider(MarketDataProvider):
         interval: str,
         start_time: datetime,
         end_time: datetime,
+        *,
+        held_from: Mapping[str, int] | None = None,
     ) -> ProviderFetchResult:
         """Fetch bars and report which provider actually served them.
 
         ``interval`` is the *requested* interval; each provider is asked for
         the closest interval it serves natively, and the caller aggregates.
+
+        ``held_from`` maps a provider to the earliest bar it has ever served
+        for this series, as far as the caller's cache knows. An empty answer
+        from that provider for a window ending before it is history the
+        provider does not hold -- its archive starts later -- so it is
+        returned as an empty, ``not_held`` result instead of being treated as
+        an outage: no cool-off, and no fallback asked to fill a stretch whose
+        prices would belong to a different series. An empty answer anywhere
+        else is still a failure; that is the guard against excusing a real
+        hole inside history the provider does hold.
         """
 
         chain = self.chain()
@@ -212,6 +230,7 @@ class AutomaticFallbackProvider(MarketDataProvider):
                 reason = reason or f"{provider.display_name} {message}"
                 continue
 
+            not_held = False
             try:
                 if not await provider.is_configured():
                     raise ProviderNotConfiguredError(
@@ -219,36 +238,58 @@ class AutomaticFallbackProvider(MarketDataProvider):
                     )
                 bars = await provider.get_bars(symbol, fetch_interval, start_time, end_time)
             except ProviderError as exc:
-                last_error = exc
-                is_rate_limit = isinstance(exc, ProviderRateLimitError)
-                if is_rate_limit:
-                    rate_limit_error = rate_limit_error or exc
-                if isinstance(exc, ProviderThrottledError):
-                    # Our own pacing, not the provider's verdict. Blacklisting
-                    # it for two minutes would turn a few seconds of waiting
-                    # into exactly the outage the pacing is meant to prevent,
-                    # so the next request is free to try again immediately.
-                    self._registry.note_throttled(
-                        name, exc.retry_after_seconds or 0.0
+                floor = (
+                    (held_from or {}).get(name)
+                    if isinstance(exc, ProviderNoDataError)
+                    else None
+                )
+                if floor is not None and to_ms(end_time) < floor:
+                    # Older than anything it has served for this series, and
+                    # answered with nothing: its archive starts later.
+                    # Demoting it for that knocked the preferred provider out
+                    # of every chart for two minutes on each view of a window
+                    # reaching back further than the vendor's history.
+                    logger.info(
+                        "%s holds no %s %s history before %s; not an outage",
+                        provider.display_name,
+                        symbol,
+                        fetch_interval,
+                        floor,
                     )
+                    bars = []
+                    not_held = True
                 else:
-                    self._registry.mark_failure(
-                        name,
-                        str(exc),
-                        permanent=exc.permanent,
-                        rate_limited=is_rate_limit,
-                        retry_after_seconds=(
-                            exc.retry_after_seconds if is_rate_limit else None
-                        ),
-                    )
-                if position + 1 < len(chain):
-                    next_provider = self._providers[chain[position + 1]]
-                    self._registry.record_fallback(name, chain[position + 1], str(exc))
-                    reason = reason or (
-                        f"{provider.display_name} unavailable: {exc}. "
-                        f"Switching to {next_provider.display_name}."
-                    )
-                continue
+                    last_error = exc
+                    is_rate_limit = isinstance(exc, ProviderRateLimitError)
+                    if is_rate_limit:
+                        rate_limit_error = rate_limit_error or exc
+                    if isinstance(exc, ProviderThrottledError):
+                        # Our own pacing, not the provider's verdict.
+                        # Blacklisting it for two minutes would turn a few
+                        # seconds of waiting into exactly the outage the
+                        # pacing is meant to prevent, so the next request is
+                        # free to try again immediately.
+                        self._registry.note_throttled(
+                            name, exc.retry_after_seconds or 0.0
+                        )
+                    else:
+                        self._registry.mark_failure(
+                            name,
+                            str(exc),
+                            permanent=exc.permanent,
+                            rate_limited=is_rate_limit,
+                            retry_after_seconds=(
+                                exc.retry_after_seconds if is_rate_limit else None
+                            ),
+                        )
+                    if position + 1 < len(chain):
+                        next_provider = self._providers[chain[position + 1]]
+                        self._registry.record_fallback(name, chain[position + 1], str(exc))
+                        reason = reason or (
+                            f"{provider.display_name} unavailable: {exc}. "
+                            f"Switching to {next_provider.display_name}."
+                        )
+                    continue
             except Exception as exc:  # noqa: BLE001 - never let a vendor bug 500 us
                 last_error = exc
                 logger.exception("Unexpected error from provider '%s'", name)
@@ -269,6 +310,7 @@ class AutomaticFallbackProvider(MarketDataProvider):
                 retry_after_seconds=(
                     rate_limit_error.retry_after_seconds if rate_limit_error else None
                 ),
+                not_held=not_held,
             )
 
         # Nothing in the chain worked. There is no synthetic floor to land on

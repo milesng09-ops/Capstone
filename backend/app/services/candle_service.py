@@ -31,6 +31,7 @@ from app.database.repository import (
     candle_provider,
     drop_provider_candles,
     drop_unreal_candles,
+    earliest_bar,
     provider_rank,
     series_owner,
     has_real_candles,
@@ -116,6 +117,10 @@ class _PersistOutcome(str, Enum):
     DECLINED_FOREIGN = "declined_foreign"
     #: The market was open and nothing came back.
     NOT_SERVED = "not_served"
+    #: Nothing came back for a stretch wholly older than any bar the provider
+    #: has served for this series: its history starts later. Recorded as
+    #: answered, so it is not asked for again, and reported as partial.
+    NOT_HELD = "not_held"
 
 
 _DECLINED_REASONS.update(
@@ -414,6 +419,24 @@ class CandleService:
                 "This range mixes real prices with generated bars left by an earlier "
                 "provider outage. Clear the cache for this symbol to refetch it."
             )
+        if not outcome.incomplete:
+            # A window reaching back past the provider's history is answered
+            # once and then served from the cache -- and a cache hit must not
+            # read as a complete window. The stored bars say where the history
+            # starts, so this survives a restart along with them.
+            depth = await anyio.to_thread.run_sync(
+                self._history_shortfall, instrument.symbol, store_interval, requested.start
+            )
+            if depth is not None:
+                floor, owner = depth
+                if quality != "demo":
+                    quality = "partial"
+                fallback_reason = fallback_reason or (
+                    f"{self._provider_label(owner)}'s history for {instrument.symbol} "
+                    f"starts at {from_ms(floor):%Y-%m-%d %H:%M} UTC, so the chart starts "
+                    "later than the range you asked for. The earlier part of this "
+                    "window is not available from it."
+                )
 
         return BarsResult(
             symbol=instrument.symbol,
@@ -569,6 +592,9 @@ class CandleService:
         if tail:
             self._tail_fetched[key] = (time.monotonic(), min(gap.start for gap in tail))
         tail_failure: _TailFailure | None = None
+        # Only the real chain decides what an empty answer means; a stand-in
+        # provider is asked exactly as before.
+        knows_history = isinstance(self._provider, AutomaticFallbackProvider)
 
         for requested in gaps:
             in_tail = requested.end > horizon
@@ -580,13 +606,30 @@ class CandleService:
                 align_down(requested.start, store_interval),
                 align_down(requested.end, store_interval) + interval_ms(store_interval) - 1,
             )
+            # Read per gap, since storing one can move it: how far back the
+            # series owner's history is known to reach, so the chain can tell
+            # "it does not hold this" from "it failed to send this".
+            held_from = (
+                await anyio.to_thread.run_sync(self._series_floor, symbol, store_interval)
+                if knows_history
+                else None
+            )
             try:
-                result = await self._provider.fetch(
-                    symbol,
-                    store_interval,
-                    from_ms(gap.start),
-                    from_ms(gap.end),
-                )
+                if held_from:
+                    result = await self._provider.fetch(
+                        symbol,
+                        store_interval,
+                        from_ms(gap.start),
+                        from_ms(gap.end),
+                        held_from=held_from,
+                    )
+                else:
+                    result = await self._provider.fetch(
+                        symbol,
+                        store_interval,
+                        from_ms(gap.start),
+                        from_ms(gap.end),
+                    )
             except ProviderRateLimitError as exc:
                 logger.warning(
                     "Rate limited fetching %s %s %s-%s: %s",
@@ -655,6 +698,16 @@ class CandleService:
                 state.fetched_any = True
                 continue
 
+            if outcome is _PersistOutcome.NOT_HELD:
+                # Asked once and recorded as answered: older than the
+                # provider's history, which is a shorter series rather than a
+                # failure -- partial, and named after the provider that holds
+                # the rest of it.
+                state.fail(_SHORT_REASON)
+                state.provider = result.provider
+                state.quality = result.quality
+                continue
+
             # The range stays unfilled either way, which the response reports
             # as incomplete -- a gap in the chart is honest. But the reasons
             # want different responses from the user, so they are not given
@@ -720,11 +773,25 @@ class CandleService:
         one takes over a series the other filled, evicting it, which is the
         rule the startup repair already applies to a series holding both.
 
+        A stretch the provider was asked for and answered with nothing, lying
+        wholly before the oldest bar it has ever served for the series, is
+        history it does not hold. It is recorded as answered -- otherwise
+        every view and every change of interval asks for it again -- and the
+        window is still reported as partial, from the stored bars, when it is
+        read. A stretch it answered with nothing *inside* the history it holds
+        stays owed: that is a hole, and covering it would hide it.
+
         Returns which of the outcomes applied.
         """
 
         rebased = False
+        short = False
         with session_scope() as session:
+            # Read before anything is stored or evicted: how far back this
+            # provider's history was already known to reach for the series.
+            known = earliest_bar(session, symbol, store_interval, provider)
+            prior_floor = known[0] if known is not None else None
+
             if provider == DEMO_PROVIDER:
                 if has_real_candles(session, symbol, store_interval):
                     logger.warning(
@@ -794,6 +861,16 @@ class CandleService:
             # is a chart which disagrees with the exchange and cannot say why.
             served = CandleService._served_span(symbol, store_interval, bars, gap)
             if served is None:
+                if prior_floor is not None and gap.end < prior_floor:
+                    # Older than anything this provider has served for the
+                    # series, and answered with nothing: not held. Recorded so
+                    # it is asked for once rather than on every request.
+                    covered_to = cacheable_end(gap.end, store_interval)
+                    if covered_to >= gap.start:
+                        record_coverage(
+                            session, symbol, store_interval, gap.start, covered_to, provider
+                        )
+                    return _PersistOutcome.NOT_HELD
                 # The market was open and the provider gave us nothing. Leave
                 # the range uncovered so the next request asks again.
                 return _PersistOutcome.NOT_SERVED
@@ -807,21 +884,32 @@ class CandleService:
                     session, symbol, store_interval, served_start, coverage_end, provider
                 )
 
-        # A window answered only in part is not a clean fetch. Without this a
-        # two-year daily chart served the provider's last 720 days came back
-        # labelled "live", with nothing on screen to say the earlier years
-        # were missing rather than empty -- which is the same lie as demo data
-        # wearing a real provider's name, told about the length of the series
-        # instead of its contents. The tail is exempt: it is trimmed on
-        # purpose, because the forming bar is refetched every time.
+            # A window answered only in part is not a clean fetch. Without this
+            # a two-year daily chart served the provider's last 720 days came
+            # back labelled "live", with nothing on screen to say the earlier
+            # years were missing rather than empty -- which is the same lie as
+            # demo data wearing a real provider's name, told about the length
+            # of the series instead of its contents. The tail is exempt: it is
+            # trimmed on purpose, because the forming bar is refetched every
+            # time.
+            instrument = get_instrument(symbol)
+            short = bool(bars) and has_trading_session(
+                gap.start, served_start, tz_name=instrument.timezone
+            )
+            if short and (prior_floor is None or prior_floor >= served_start):
+                # The answer starts later than the gap, and nothing older than
+                # it was ever served: the provider's history begins here. The
+                # stretch before it is answered, so it is not asked for again
+                # on every view; reading the window reports it as partial.
+                record_coverage(
+                    session, symbol, store_interval, gap.start, served_start - 1, provider
+                )
+
         if rebased:
             # Whether the new owner holds the whole window is decided by the
             # refetch of the rest of it, which follows immediately.
             return _PersistOutcome.STORED_REBASED
-        instrument = get_instrument(symbol)
-        if bars and has_trading_session(
-            gap.start, served_start, tz_name=instrument.timezone
-        ):
+        if short:
             return _PersistOutcome.STORED_SHORT
         return _PersistOutcome.STORED
 
@@ -912,6 +1000,47 @@ class CandleService:
     def _cached_provider(symbol: str, store_interval: str) -> str | None:
         with session_scope() as session:
             return candle_provider(session, symbol, store_interval)
+
+    @staticmethod
+    def _series_floor(symbol: str, store_interval: str) -> dict[str, int] | None:
+        """The series owner, mapped to the oldest bar it has served for it."""
+
+        with session_scope() as session:
+            owner = series_owner(session, symbol, store_interval)
+            if owner is None:
+                return None
+            oldest = earliest_bar(session, symbol, store_interval, owner)
+        return {owner: oldest[0]} if oldest is not None else None
+
+    @staticmethod
+    def _history_shortfall(
+        symbol: str, store_interval: str, start: int
+    ) -> tuple[int, str] | None:
+        """Where the stored history begins, if a window starting at ``start``
+        reaches more than a bar of open market further back than that.
+
+        Answered from the bars themselves, so a window recorded as "not held"
+        before a restart still reads as partial after it.
+        """
+
+        with session_scope() as session:
+            oldest = earliest_bar(session, symbol, store_interval)
+        if oldest is None or start >= oldest[0]:
+            return None
+        instrument = get_instrument(symbol)
+        # Open market, more than one bar of it, between the window's start and
+        # the first bar: the same test that decides when an empty answer is a
+        # real absence rather than a closed market or a single missing bar.
+        if not empty_response_indicts_provider(
+            start, oldest[0], store_interval, tz_name=instrument.timezone
+        ):
+            return None
+        return oldest
+
+    def _provider_label(self, name: str) -> str:
+        providers = getattr(self._provider, "providers", None)
+        provider = providers.get(name) if isinstance(providers, dict) else None
+        return getattr(provider, "display_name", None) or name.title()
 
     def _preferred_provider(self) -> str:
         chain = self._provider.chain()

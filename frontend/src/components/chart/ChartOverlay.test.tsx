@@ -1086,3 +1086,278 @@ describe('a held tool and the axes', () => {
     expect(drawn.to.price).toBe(300)
   })
 })
+
+/**
+ * A canvas that records what was painted, and frames that run on demand.
+ * The paint calls are the evidence for the cases about what is *shown*,
+ * which no callback can reveal.
+ */
+function recording() {
+  const calls = {
+    fillRect: [] as number[][],
+    lineTo: [] as number[][],
+    fillText: [] as string[],
+  }
+  const recorder: any = new Proxy(function () {}, {
+    get: (_target, key) => {
+      if (key === 'fillRect') return (...args: number[]) => calls.fillRect.push(args)
+      if (key === 'lineTo') return (...args: number[]) => calls.lineTo.push(args)
+      if (key === 'fillText') return (text: string) => calls.fillText.push(text)
+      if (key === 'measureText') return () => ({ width: 10 })
+      return recorder
+    },
+    apply: () => recorder,
+    set: () => true,
+  })
+  const frames: FrameRequestCallback[] = []
+  const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback)
+    return frames.length
+  })
+  const context = vi
+    .spyOn(HTMLCanvasElement.prototype, 'getContext')
+    .mockReturnValue(recorder as CanvasRenderingContext2D)
+
+  return {
+    calls,
+    size(canvas: HTMLCanvasElement) {
+      Object.defineProperty(canvas.parentElement, 'clientWidth', { value: 640 })
+      Object.defineProperty(canvas.parentElement, 'clientHeight', { value: 320 })
+    },
+    paint() {
+      for (const key of Object.keys(calls) as (keyof typeof calls)[]) calls[key].length = 0
+      act(() => {
+        for (const frame of frames.splice(0)) frame(0)
+      })
+    },
+    restore() {
+      raf.mockRestore()
+      context.mockRestore()
+    },
+  }
+}
+
+describe('drawing audit, 18 Oct', () => {
+  it('previews a position dragged to the left where the release will place it', () => {
+    // The preview spanned the two pointer positions, behind the entry; the
+    // release then placed a box ten bars ahead of it.
+    const record = recording()
+    try {
+      const { canvas, onCreateDrawing } = setup({ tool: 'long' })
+      record.size(canvas)
+      fireEvent(canvas, pointer('pointerdown', 500, 200))
+      fireEvent(canvas, pointer('pointermove', 300, 260))
+      record.paint()
+
+      const boxes = record.calls.fillRect.filter(([, , width]) => width > 0)
+      expect(boxes.length).toBeGreaterThan(0)
+      // Every part of the trade starts at the entry; nothing behind it.
+      expect(boxes.every(([x]) => x === 500)).toBe(true)
+
+      fireEvent(canvas, pointer('pointerup', 300, 260))
+      const drawn = created(onCreateDrawing)
+      expect(drawn.entry.time).toBe(500)
+      expect(drawn.endTime).toBeGreaterThan(500)
+    } finally {
+      record.restore()
+    }
+  })
+
+  it('keeps an armed shape armed when the second click lands on an axis', () => {
+    const plotted: ChartHandle = { ...handle, plotSize: () => ({ width: 300, height: 300 }) }
+    const { canvas, onCreateDrawing } = setup({ handle: plotted, tool: 'trendline' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 290, 150))
+    // x=340 is over the price axis: refused as a press, so not a finish.
+    fireEvent(canvas, pointer('pointerdown', 340, 150))
+    fireEvent(canvas, pointer('pointerup', 340, 150))
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+
+    // Still armed: a click on the candles finishes it from the first point.
+    fireEvent(canvas, pointer('pointermove', 250, 150))
+    fireEvent(canvas, pointer('pointerdown', 250, 150))
+    fireEvent(canvas, pointer('pointerup', 250, 150))
+    expect(created(onCreateDrawing).from).toEqual({ time: 100, price: 100 })
+  })
+
+  it('drops a drag whose drawing changed under it, so an undo stays undone', () => {
+    // Ctrl+Z with the button down: the store went back, then the release
+    // wrote the drag's stale copy over it -- the undone colour came back.
+    const { container, rerender, canvas: _canvas, ...props } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    fireEvent(window, pointer('pointermove', 100, 200))
+    rerender(<ChartOverlay {...props} drawings={[{ ...level, color: '#22d3ee' }]} />)
+    fireEvent(window, pointer('pointermove', 100, 210))
+    fireEvent(window, pointer('pointerup', 100, 210))
+
+    expect(props.onUpdateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('keeps a drag going while the drawing is untouched', () => {
+    // Re-renders for any other reason -- the legend's hover readout -- hand
+    // over a new array holding the same drawing, and must not end the drag.
+    const { container, rerender, canvas: _canvas, ...props } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    fireEvent(window, pointer('pointermove', 100, 200))
+    rerender(<ChartOverlay {...props} drawings={[level]} />)
+    fireEvent(window, pointer('pointerup', 100, 200))
+
+    expect(props.onUpdateDrawing).toHaveBeenCalledWith(
+      'level-1',
+      expect.objectContaining({ price: 200 }),
+    )
+  })
+
+  it('waits for the bars of the new interval before marking a setup', () => {
+    const { canvas, onSelectionChange } = setup({ tool: 'select', rangesReady: false })
+
+    fireEvent(canvas, pointer('pointerdown', 900_000, 100))
+    fireEvent(canvas, pointer('pointermove', 903_600, 100))
+    fireEvent(canvas, pointer('pointerup', 903_600, 100))
+
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('prints prices at the instrument precision, so YM reads in whole points', () => {
+    const record = recording()
+    try {
+      const { canvas } = setup({
+        drawings: [{ ...level, price: 42150.375 }],
+        precision: 0,
+      })
+      record.size(canvas)
+      record.paint()
+
+      expect(record.calls.fillText).toContain('42150')
+      expect(record.calls.fillText).not.toContain('42150.38')
+    } finally {
+      record.restore()
+    }
+  })
+
+  it('runs a ray drawn right to left on past its second point', () => {
+    const ray: Drawing = {
+      id: 'ray',
+      kind: 'ray',
+      symbol: 'NQ',
+      color: '#818cf8',
+      width: 2,
+      createdAt: 0,
+      from: { time: 400, price: 100 },
+      to: { time: 200, price: 150 },
+    }
+    const record = recording()
+    try {
+      const { canvas } = setup({ drawings: [ray] })
+      record.size(canvas)
+      record.paint()
+
+      // Painted on to the left of x=200, keeping the slope.
+      const ends = record.calls.lineTo.filter(([x]) => x < 0)
+      expect(ends.length).toBe(1)
+      const [x, y] = ends[0]
+      expect((y - 100) / (x - 400)).toBeCloseTo(-0.25)
+    } finally {
+      record.restore()
+    }
+  })
+
+  it('labels a position by its signed reward, not its distance', () => {
+    // A long saved with its target under its entry: the old label measured
+    // distances and called it a 2R trade.
+    const inverted: Drawing = {
+      id: 'long',
+      kind: 'long',
+      symbol: 'NQ',
+      color: '#818cf8',
+      width: 2,
+      createdAt: 0,
+      entry: { time: 100, price: 200 },
+      endTime: 300,
+      stop: 190,
+      target: 180,
+    }
+    const record = recording()
+    try {
+      const { canvas } = setup({ drawings: [inverted] })
+      record.size(canvas)
+      record.paint()
+
+      expect(record.calls.fillText).toContain('Long  -2.00R')
+    } finally {
+      record.restore()
+    }
+  })
+})
+
+describe("the chart's own controls while a tool is held", () => {
+  const plotted: ChartHandle = { ...handle, plotSize: () => ({ width: 560, height: 290 }) }
+
+  it('clips itself to the candle area, so the axes are hit on the chart', () => {
+    // Covering the axes, the canvas took every press on them and refused it:
+    // the scales could not be dragged until the tool was put down.
+    const record = recording()
+    try {
+      const { canvas } = setup({ handle: plotted, tool: 'trendline' })
+      record.size(canvas)
+      record.paint()
+
+      // 640x320 pane, 560x290 of candles: 80 of price axis, 30 of time axis.
+      expect(canvas.style.clipPath).toBe('inset(0px 80px 30px 0px)')
+    } finally {
+      record.restore()
+    }
+  })
+
+  it('takes the whole pane when the chart does not say where the candles end', () => {
+    const record = recording()
+    try {
+      const { canvas } = setup({ tool: 'trendline' })
+      record.size(canvas)
+      record.paint()
+
+      expect(canvas.style.clipPath).toBe('')
+    } finally {
+      record.restore()
+    }
+  })
+
+  function wheel() {
+    return new WheelEvent('wheel', { deltaY: -120, clientX: 200, bubbles: true, cancelable: true })
+  }
+
+  it('hands the wheel to the chart, which zooms as if the tool were down', () => {
+    const forwardWheel = vi.fn(() => true)
+    const { canvas } = setup({ handle: { ...handle, forwardWheel }, tool: 'trendline' })
+
+    const event = wheel()
+    canvas.dispatchEvent(event)
+
+    expect(forwardWheel).toHaveBeenCalledWith(event)
+    // Cancelled because the chart used it, as the chart cancels its own.
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('leaves a wheel the chart did not use alone', () => {
+    const forwardWheel = vi.fn(() => false)
+    const { canvas } = setup({ handle: { ...handle, forwardWheel }, tool: 'trendline' })
+
+    const event = wheel()
+    canvas.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('stays out of the way with no tool held, when the wheel reaches the chart itself', () => {
+    const forwardWheel = vi.fn(() => true)
+    const { canvas } = setup({ handle: { ...handle, forwardWheel } })
+
+    canvas.dispatchEvent(wheel())
+
+    expect(forwardWheel).not.toHaveBeenCalled()
+  })
+})

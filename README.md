@@ -203,6 +203,19 @@ identical across panels so that line means the same moment on every chart.
 
 ---
 
+## GXT research backtesting
+
+The strategy panel now offers **Backtest model → GXT research (experimental)**.
+It scans complete 4H sweep/reclaim profiles, checks synchronized comparison
+markets, and waits for lower-timeframe displacement-gap confirmation. Signals
+use the existing execution simulator and appear as labelled chart positions
+with saved entry evidence. No example selection is required.
+
+This is a documented research hypothesis, **not a trained neural network or a
+verified implementation of Garrett's complete GXT Model**. PSP, Strength Switch
+and the full Universal Sequence still need precise rules and reviewed examples.
+See [the executable rules and training prerequisites](backend/GXT_RESEARCH.md).
+
 ## Not built yet
 
 - **Machine learning.** Deliberately deferred. The plan is to wire the pipeline

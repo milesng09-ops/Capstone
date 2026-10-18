@@ -12,10 +12,43 @@ import type {
   LearningSettings,
   SearchConfig,
   TradeRules,
+  GxtSettings,
 } from '@/types/backtest'
 import type { Interval, SelectionRange, TimeWindow } from '@/types/market'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+
+export function buildGxtRequest(params: {
+  primarySymbol: string
+  symbols: string[]
+  interval: Interval
+  rules: TradeRules
+  search: SearchConfig
+  gxt: GxtSettings
+  rangeEnd: number
+  testWindow?: TimeWindow | null
+}): BacktestRequest {
+  const start = params.testWindow
+    ? Math.min(params.testWindow.start_time, params.testWindow.end_time)
+    : params.rangeEnd - params.search.lookbackDays * DAY_MS
+  const end = params.testWindow
+    ? Math.max(params.testWindow.start_time, params.testWindow.end_time)
+    : params.rangeEnd
+  const symbols = Array.from(new Set([params.primarySymbol, ...params.symbols]))
+  return {
+    strategy: 'gxt_research', gxt: params.gxt, symbols,
+    primary_symbol: params.primarySymbol, interval: params.interval,
+    // Stored for compatibility/history grouping. GXT has no example selection.
+    selection: { start_time: start, end_time: end },
+    trade: { ...params.rules, entry_type: 'next_open' },
+    search: {
+      lookback_start: start, lookback_end: end, maximum_matches: params.search.maximumMatches,
+      minimum_similarity: 0, pattern_length: null, minimum_separation_bars: null,
+      search_symbols: [params.primarySymbol],
+    },
+    detectors: { ...DEFAULT_DETECTOR_FILTERS }, learning: { ...DEFAULT_LEARNING_SETTINGS },
+  }
+}
 
 /**
  * Turn workspace state into the request the backend expects.

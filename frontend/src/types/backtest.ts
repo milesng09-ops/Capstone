@@ -232,7 +232,54 @@ export interface LearnedWeightsSummary {
   train_end: number
 }
 
+export type StrategyKind = 'pattern' | 'gxt_research'
+
+export interface GxtSettings {
+  direction: 'both' | 'long' | 'short'
+  require_cross_asset: boolean
+  confirmation_bars: number
+  minimum_body_fraction: number
+  stop_buffer_ticks: number
+  minimum_reward_risk: number
+  ny_morning_only: boolean
+}
+
+export const DEFAULT_GXT_SETTINGS: GxtSettings = {
+  direction: 'both', require_cross_asset: true, confirmation_bars: 12,
+  minimum_body_fraction: 0.5, stop_buffer_ticks: 1, minimum_reward_risk: 1.5,
+  ny_morning_only: false,
+}
+
+export interface GxtEvidence {
+  direction: 'long' | 'short'
+  profile: string
+  context_start: number
+  context_end: number
+  confirmed_at: number
+  signal_bar_time: number
+  swept_level: number
+  stop_price: number
+  target_price: number
+  gap_bottom: number
+  gap_top: number
+  reference_symbols: string[]
+  opposed_close_symbols: string[]
+  entry_session_ny: string
+  steps: string[]
+}
+
+export interface GxtRunDetails {
+  version: string
+  status: string
+  trained: boolean
+  evidence: Record<string, GxtEvidence>
+  diagnostics: Record<string, number>
+  skipped: Record<string, string>
+}
+
 export interface BacktestRequest {
+  strategy?: StrategyKind
+  gxt?: GxtSettings
   symbols: string[]
   primary_symbol: string
   interval: Interval
@@ -310,6 +357,7 @@ export interface BaselineSummary {
 }
 
 export interface BacktestSummary {
+  gxt?: GxtRunDetails | null
   total_matches: number
   trades_executed: number
   skipped_matches: number

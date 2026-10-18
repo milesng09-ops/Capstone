@@ -18,6 +18,7 @@ import { useMemo } from 'react'
 import { BoxSelect, CalendarRange, Play, RotateCcw, X } from 'lucide-react'
 
 import { PositionSizing } from '@/components/panels/PositionSizing'
+import { GxtStrategyPanel } from '@/components/panels/GxtStrategyPanel'
 import { NumberField, SelectField, ToggleField } from '@/components/ui/fields'
 import { Badge, Button, Disclosure, Spinner } from '@/components/ui/primitives'
 import { StrategyStart } from '@/components/panels/StrategyStart'
@@ -79,6 +80,23 @@ const TARGETS: { value: TakeProfitType; label: string }[] = [
 ]
 
 export function StrategyPanel() {
+  const strategy = useWorkspace((state) => state.strategy)
+  const setStrategy = useWorkspace((state) => state.setStrategy)
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-border px-3 pt-3 pb-2">
+        <SelectField label="Backtest model" value={strategy}
+          options={[{ value: 'pattern', label: 'Pattern similarity' }, { value: 'gxt_research', label: 'GXT research (experimental)' }]}
+          onChange={setStrategy} />
+      </div>
+      <div className="min-h-0 flex-1">
+        {strategy === 'gxt_research' ? <GxtStrategyPanel /> : <PatternStrategyPanel />}
+      </div>
+    </div>
+  )
+}
+
+function PatternStrategyPanel() {
   // Timestamps below are drawn in the zone chosen in the status bar;
   // reading it here is what re-renders them when that changes.
   useTimeZone()

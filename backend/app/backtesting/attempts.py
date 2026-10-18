@@ -55,6 +55,8 @@ def configuration_key(request: BacktestRequest) -> str:
 
     search = request.search
     payload: dict[str, Any] = {
+        "strategy": request.strategy,
+        "gxt": request.gxt.model_dump() if request.strategy == "gxt_research" else None,
         "primary": request.primary_symbol,
         "symbols": sorted(request.symbols),
         "interval": request.interval,
@@ -110,6 +112,8 @@ def describe_configuration(payload: dict) -> str:
     failing to parse one is not a reason to show nothing for it.
     """
 
+    if payload.get("strategy") == "gxt_research":
+        return "GXT research v1 · experimental · " + str((payload.get("gxt") or {}).get("direction", "both"))
     trade = payload.get("trade") or {}
     parts: list[str] = []
 

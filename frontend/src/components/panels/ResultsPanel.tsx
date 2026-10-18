@@ -13,6 +13,7 @@ import { Info, TriangleAlert } from 'lucide-react'
 
 import { EquityCurve } from '@/components/panels/EquityCurve'
 import { TradeEvidence } from '@/components/panels/TradeEvidence'
+import { GxtTradeEvidence } from '@/components/panels/GxtTradeEvidence'
 import { TradesTable } from '@/components/panels/TradesTable'
 import { Badge, EmptyState, Metric, Spinner } from '@/components/ui/primitives'
 import { SegmentedControl } from '@/components/ui/fields'
@@ -101,6 +102,7 @@ export function ResultsPanel() {
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border py-1.5 pl-3 pr-9">
         <span className="label-caps">Results</span>
+        {summary.gxt && <Badge tone="warn">GXT research · experimental</Badge>}
         <Badge tone="accent">{result.primary_symbol}</Badge>
         <Badge>{result.interval}</Badge>
         <span className="numeric text-2xs text-muted-foreground">
@@ -142,15 +144,17 @@ export function ResultsPanel() {
              */}
             {selectedTrade && (
               <div className="max-h-[45%] shrink-0 overflow-y-auto">
-                <TradeEvidence
+                {summary.gxt ? <GxtTradeEvidence trade={selectedTrade}
+                  evidence={summary.gxt.evidence[selectedTrade.pattern_match_id]} /> : <TradeEvidence
                   trade={selectedTrade}
                   match={findMatch(result.matches, selectedTrade)}
                   rules={result.configuration.trade}
-                />
+                />}
               </div>
             )}
             <div className="min-h-0 flex-1">
               <TradesTable
+                ruleBased={Boolean(summary.gxt)}
                 trades={result.trades}
                 selectedId={selectedTradeId}
                 onSelect={selectTrade}
@@ -435,7 +439,7 @@ function MatchesList({ result }: { result: BacktestResult }) {
   if (result.matches.length === 0) {
     return (
       <div className="grid h-full place-items-center text-2xs text-muted-foreground">
-        No historical windows matched the selected setup closely enough.
+        {result.summary?.gxt ? 'No experimental GXT signals confirmed. See diagnostics in Notes.' : 'No historical windows matched the selected setup closely enough.'}
       </div>
     )
   }
@@ -455,9 +459,9 @@ function MatchesList({ result }: { result: BacktestResult }) {
             </span>
             <span
               className="numeric ml-auto"
-              title="Cosine similarity to the selected pattern"
+              title={result.summary?.gxt ? 'Rule-based signal, not a similarity score' : 'Cosine similarity to the selected pattern'}
             >
-              {match.similarity_score.toFixed(4)}
+              {result.summary?.gxt ? 'GXT rule' : match.similarity_score.toFixed(4)}
             </span>
             <span
               className={cn(
@@ -467,6 +471,7 @@ function MatchesList({ result }: { result: BacktestResult }) {
             >
               {match.net_return == null ? 'not traded' : formatPercent(match.net_return)}
             </span>
+            {result.summary?.gxt?.skipped[match.id] && <span className="text-muted-foreground">{result.summary.gxt.skipped[match.id]}</span>}
           </li>
         ))}
       </ul>
@@ -479,6 +484,8 @@ function Notes({ summary }: { summary: NonNullable<BacktestResult['summary']> })
     <div className="h-full space-y-3 overflow-auto pr-1">
       <Section title="How the trades were modelled" items={summary.assumptions} />
       <Section title="Data" items={summary.data_quality} />
+      {summary.gxt && <Section title="GXT research diagnostics"
+        items={Object.entries(summary.gxt.diagnostics).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`)} />}
 
       {summary.same_bar_ambiguity_count > 0 && (
         <p className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-2xs leading-relaxed text-amber-300">

@@ -21,6 +21,9 @@ import {
 import { DEFAULT_ICT_SETTINGS, type IctSettings } from '@/types/ict'
 import {
   DEFAULT_DETECTOR_FILTERS,
+  DEFAULT_GXT_SETTINGS,
+  type GxtSettings,
+  type StrategyKind,
   DEFAULT_LEARNING_SETTINGS,
   DEFAULT_SEARCH_CONFIG,
   DEFAULT_SIZING,
@@ -225,6 +228,8 @@ interface WorkspaceState {
   search: SearchConfig
   detectors: DetectorFilters
   learning: LearningSettings
+  strategy: StrategyKind
+  gxt: GxtSettings
   /** Client-side only: the engine answers in percentages and sizes nothing. */
   sizing: SizingConfig
 
@@ -277,6 +282,8 @@ interface WorkspaceState {
   updateSearch: (patch: Partial<SearchConfig>) => void
   updateDetectors: (patch: Partial<DetectorFilters>) => void
   updateLearning: (patch: Partial<LearningSettings>) => void
+  setStrategy: (strategy: StrategyKind) => void
+  updateGxt: (patch: Partial<GxtSettings>) => void
   updateSizing: (patch: Partial<SizingConfig>) => void
   resetStrategy: () => void
   setActiveBacktestId: (id: string | null) => void
@@ -440,6 +447,8 @@ export const useWorkspace = create<WorkspaceState>()(
       search: DEFAULT_SEARCH_CONFIG,
       detectors: DEFAULT_DETECTOR_FILTERS,
       learning: DEFAULT_LEARNING_SETTINGS,
+      strategy: 'pattern',
+      gxt: DEFAULT_GXT_SETTINGS,
       sizing: DEFAULT_SIZING,
       activeBacktestId: null,
       showTrades: true,
@@ -674,6 +683,8 @@ export const useWorkspace = create<WorkspaceState>()(
         set((state) => ({ detectors: { ...state.detectors, ...patch } })),
       updateLearning: (patch) =>
         set((state) => ({ learning: { ...state.learning, ...patch } })),
+      setStrategy: (strategy) => set({ strategy, activeBacktestId: null, selectedTradeId: null }),
+      updateGxt: (patch) => set((state) => ({ gxt: { ...state.gxt, ...patch } })),
       updateSizing: (patch) => set((state) => ({ sizing: { ...state.sizing, ...patch } })),
 
       resetStrategy: () =>
@@ -682,6 +693,8 @@ export const useWorkspace = create<WorkspaceState>()(
           search: DEFAULT_SEARCH_CONFIG,
           detectors: DEFAULT_DETECTOR_FILTERS,
           learning: DEFAULT_LEARNING_SETTINGS,
+          strategy: 'pattern',
+          gxt: DEFAULT_GXT_SETTINGS,
         }),
 
       setActiveBacktestId: (activeBacktestId) =>
@@ -754,6 +767,8 @@ export const useWorkspace = create<WorkspaceState>()(
         search: state.search,
         detectors: state.detectors,
         learning: state.learning,
+        strategy: state.strategy,
+        gxt: state.gxt,
         sizing: state.sizing,
         showTrades: state.showTrades,
       }),

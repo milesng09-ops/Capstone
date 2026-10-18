@@ -86,7 +86,7 @@ import {
   type TradeEvidence,
 } from '@/lib/trades'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
-import type { Trade } from '@/types/backtest'
+import type { Trade, GxtEvidence } from '@/types/backtest'
 import { INTERVAL_MS } from '@/types/market'
 import type { Candle, Interval, SelectionRange, TimeWindow } from '@/types/market'
 import {
@@ -177,6 +177,8 @@ interface Props {
   testWindow: TimeWindow | null
   /** Simulated trades taken on *this* instrument. */
   trades: Trade[]
+  strategyLabel?: string
+  gxtEvidence?: GxtEvidence
   selectedTradeId: string | null
   /** Detections behind the selected trade, or null when none is selected. */
   evidence: TradeEvidence | null
@@ -261,6 +263,8 @@ export function ChartOverlay({
   selection,
   testWindow,
   trades,
+  strategyLabel,
+  gxtEvidence,
   selectedTradeId,
   evidence,
   tool,
@@ -568,8 +572,39 @@ export function ChartOverlay({
     // with: entry in the middle, risk one side, reward the other, running the
     // length of the hold.
     const projected: ProjectedPosition[] = []
+    if (gxtEvidence) {
+      // The gap becomes actionable only at confirmation. Never draw it as
+      // available throughout the earlier 4H context.
+      const left = xOfDrawing(gxtEvidence.confirmed_at)
+      const right = xOfDrawing(trades.find(t => t.id === selectedTradeId)?.exit_time ?? gxtEvidence.confirmed_at)
+      const contextX = xOfDrawing(gxtEvidence.context_end)
+      const top = yOf(gxtEvidence.gap_top)
+      const bottom = yOf(gxtEvidence.gap_bottom)
+      const level = yOf(gxtEvidence.swept_level)
+      if (left != null && right != null && top != null && bottom != null) {
+        ctx.save()
+        ctx.fillStyle = palette.bull
+        ctx.globalAlpha = 0.15
+        ctx.fillRect(left, Math.min(top, bottom), Math.max(2, right - left), Math.abs(bottom - top))
+        ctx.globalAlpha = 0.9
+        ctx.fillStyle = palette.text
+        ctx.font = '10px ui-monospace, monospace'
+        ctx.fillText('GXT research confirmation gap', left, Math.min(top, bottom) - 4)
+        if (level != null) {
+          ctx.strokeStyle = palette.text
+          ctx.setLineDash([4, 3])
+          ctx.beginPath()
+          ctx.moveTo(contextX ?? left, level)
+          ctx.lineTo(left, level)
+          ctx.stroke()
+          ctx.fillText('4H swept level', left, level - 4)
+        }
+        ctx.restore()
+      }
+    }
     for (const box of boxes) {
       const item = paintPosition(ctx, box, xOfDrawing, yOf, palette, {
+        label: strategyLabel,
         selected: box.id === selectedTradeId,
         // With one trade picked, the rest step back rather than disappear:
         // where this trade sits among the others is part of reading it.
@@ -610,6 +645,9 @@ export function ChartOverlay({
     }
   }, [
     boxes,
+    trades,
+    strategyLabel,
+    gxtEvidence,
     drawingColor,
     drawings,
     evidence,
@@ -1447,6 +1485,7 @@ function paintEvidenceWindow(
 }
 
 interface PositionStyle {
+  label?: string
   selected: boolean
   dimmed: boolean
 }
@@ -1465,7 +1504,7 @@ function paintPosition(
   xOf: XConverter,
   yOf: YConverter,
   palette: ChartPalette,
-  { selected, dimmed }: PositionStyle,
+  { selected, dimmed, label: strategyLabel }: PositionStyle,
 ): ProjectedPosition | null {
   const x1 = xOf(box.from)
   const x2 = xOf(box.to)
@@ -1523,7 +1562,7 @@ function paintPosition(
 
   if (!dimmed) {
     const sign = box.netReturn >= 0 ? '+' : ''
-    const label = `#${box.tradeNumber} ${box.isLong ? 'Long' : 'Short'} ${sign}${box.netReturn.toFixed(2)}%`
+    const label = `${strategyLabel ? strategyLabel + ' ' : ''}#${box.tradeNumber} ${box.isLong ? 'Long' : 'Short'} ${sign}${box.netReturn.toFixed(2)}%`
     ctx.globalAlpha = 0.95
     ctx.font = selected
       ? '600 10px ui-monospace, monospace'

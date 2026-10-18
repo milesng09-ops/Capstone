@@ -110,6 +110,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
    */
   const evidence = useMemo(() => {
     if (!ictSettings.showTradeEvidence || !backtestQuery.data) return null
+    if (backtestQuery.data.summary?.gxt) return null
     const trade = findTrade(symbolTrades, selectedTradeId)
     if (!trade) return null
     const match = findMatch(backtestQuery.data.matches, trade)
@@ -291,6 +292,11 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           selection={selection?.symbol === symbol ? selection : null}
           testWindow={isPrimary ? testWindow : null}
           trades={trades}
+          strategyLabel={backtestQuery.data?.summary?.gxt ? 'GXT research' : undefined}
+          gxtEvidence={ictSettings.showTradeEvidence
+            ? backtestQuery.data?.summary?.gxt?.evidence[
+              findTrade(symbolTrades, selectedTradeId)?.pattern_match_id ?? ''
+            ] : undefined}
           selectedTradeId={selectedTradeId}
           evidence={evidence}
           tool={tool}

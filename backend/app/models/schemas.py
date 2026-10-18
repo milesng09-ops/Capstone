@@ -419,7 +419,48 @@ class SearchSettings(BaseModel):
         return self
 
 
+class GxtSettings(BaseModel):
+    """Explicit research hypothesis, pending validation against Garrett's lessons."""
+
+    direction: Literal["both", "long", "short"] = "both"
+    require_cross_asset: bool = True
+    confirmation_bars: int = Field(12, ge=3, le=240)
+    minimum_body_fraction: float = Field(0.5, ge=0.0, le=1.0)
+    stop_buffer_ticks: int = Field(1, ge=1, le=100)
+    minimum_reward_risk: float = Field(1.5, gt=0, le=20)
+    ny_morning_only: bool = False
+
+
+class GxtEvidence(BaseModel):
+    direction: Literal["long", "short"]
+    profile: str
+    context_start: int
+    context_end: int
+    confirmed_at: int
+    signal_bar_time: int
+    swept_level: float
+    stop_price: float
+    target_price: float
+    gap_bottom: float
+    gap_top: float
+    reference_symbols: list[str]
+    opposed_close_symbols: list[str]
+    entry_session_ny: str
+    steps: list[str]
+
+
+class GxtRunDetails(BaseModel):
+    version: str = "gxt-research-v1"
+    status: str = "experimental_unverified"
+    trained: bool = False
+    evidence: dict[str, GxtEvidence] = Field(default_factory=dict)
+    diagnostics: dict[str, int] = Field(default_factory=dict)
+    skipped: dict[str, str] = Field(default_factory=dict)
+
+
 class BacktestRequest(BaseModel):
+    strategy: Literal["pattern", "gxt_research"] = "pattern"
+    gxt: GxtSettings = Field(default_factory=GxtSettings)
     symbols: list[str] = Field(default_factory=lambda: ["ES", "NQ", "YM"])
     primary_symbol: str = "ES"
     interval: str = "1h"
@@ -539,6 +580,7 @@ class BaselineSummary(BaseModel):
 
 
 class BacktestSummary(BaseModel):
+    gxt: GxtRunDetails | None = None
     total_matches: int
     trades_executed: int
     skipped_matches: int

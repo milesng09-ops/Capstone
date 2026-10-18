@@ -18,12 +18,13 @@ import { cn } from '@/utils/cn'
 import { directionClass, formatDateTime, formatPercent, formatPrice } from '@/utils/format'
 
 interface Props {
+  ruleBased?: boolean
   trades: Trade[]
   selectedId: string | null
   onSelect: (id: string | null) => void
 }
 
-export function TradesTable({ trades, selectedId, onSelect }: Props) {
+export function TradesTable({ trades, selectedId, onSelect, ruleBased = false }: Props) {
   // Timestamps below are drawn in the zone chosen in the status bar;
   // reading it here is what re-renders them when that changes.
   useTimeZone()
@@ -31,8 +32,7 @@ export function TradesTable({ trades, selectedId, onSelect }: Props) {
   if (trades.length === 0) {
     return (
       <div className="grid h-full place-items-center p-4 text-center text-2xs text-muted-foreground">
-        No trades were executed. Every match was skipped, or none passed the similarity
-        threshold.
+        {ruleBased ? 'No GXT research trades passed the sequence and execution rules. See Notes for diagnostics.' : 'No trades were executed. Every match was skipped, or none passed the similarity threshold.'}
       </div>
     )
   }
@@ -126,7 +126,7 @@ export function TradesTable({ trades, selectedId, onSelect }: Props) {
                   {trade.holding_bars}
                 </Td>
                 <Td className="numeric text-right text-muted-foreground">
-                  {trade.similarity_score.toFixed(3)}
+                  {ruleBased ? 'GXT rule' : trade.similarity_score.toFixed(3)}
                 </Td>
               </tr>
             )

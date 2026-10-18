@@ -169,6 +169,10 @@ class BacktestService:
 
     # ------------------------------------------------------------------
     async def _run(self, request: BacktestRequest) -> BacktestResponse:
+        if request.strategy == "gxt_research":
+            from app.services.gxt_service import run_gxt_backtest
+
+            return await run_gxt_backtest(request, self._candles)
         settings = get_settings()
         self._validate(request, settings)
 

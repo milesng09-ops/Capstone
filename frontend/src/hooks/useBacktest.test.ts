@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildBacktestRequest,
+  buildGxtRequest,
   RUN_BACKTEST_MUTATION_KEY,
   searchedSymbols,
   useRunBacktest,
@@ -14,6 +15,7 @@ import { ApiError, api } from '@/services/api'
 import { useWorkspace } from '@/store/workspace'
 import {
   DEFAULT_DETECTOR_FILTERS,
+  DEFAULT_GXT_SETTINGS,
   DEFAULT_SEARCH_CONFIG,
   DEFAULT_TRADE_RULES,
   type BacktestRequest,
@@ -60,6 +62,24 @@ describe('buildBacktestRequest', () => {
 
     const hourly = build()
     expect(hourly.search.lookback_start).toBe(
+      1_790_000_000_000 - DEFAULT_SEARCH_CONFIG.lookbackDays * DAY_MS,
+    )
+  })
+
+  it('holds a GXT run to the same lookback, which trades 1m too', () => {
+    const gxt = (interval: '1m' | '1h') =>
+      buildGxtRequest({
+        primarySymbol: 'NQ',
+        symbols: ['NQ', 'ES'],
+        interval,
+        rules: DEFAULT_TRADE_RULES,
+        search: DEFAULT_SEARCH_CONFIG,
+        gxt: DEFAULT_GXT_SETTINGS,
+        rangeEnd: 1_790_000_000_000,
+      })
+
+    expect(gxt('1m').search.lookback_start).toBe(1_790_000_000_000 - 7 * DAY_MS)
+    expect(gxt('1h').search.lookback_start).toBe(
       1_790_000_000_000 - DEFAULT_SEARCH_CONFIG.lookbackDays * DAY_MS,
     )
   })

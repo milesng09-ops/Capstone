@@ -212,19 +212,35 @@ def trading_hours_between(
     whole_weeks, remainder = divmod(end - start, _WEEK)
     hours = float(whole_weeks * TRADING_HOURS_PER_WEEK)
 
-    # The remainder is under a week, so this scan is bounded at 168 steps
-    # however long the original window was.
+    # The remainder is under a week, walked from one quarter-hour mark on the
+    # clock to the next. Every open, close and halt falls on a quarter hour --
+    # 16:00, 17:00, a 12:15 early close, Good Friday 2026's 08:15 -- so the
+    # market's state cannot change inside one of those segments, and crediting
+    # each whole segment by its start counts the open time exactly. Hour-long
+    # steps from the window's own start did not: from 12:15 on Christmas Eve to
+    # 17:30 the next day they credited 15 of the 30 minutes after the reopen,
+    # and an empty answer missing two 15-minute bars passed as no outage. The
+    # walk is bounded at 672 segments however long the original window was.
     cursor = end - remainder
-    step = timedelta(hours=1)
     while cursor < end:
-        # Credit only the portion inside the request. Rounding a ten-minute
-        # window up to an hour can refuse an analysis slice under a small cap.
-        # A step crossing the daily halt is still a conservative estimate.
+        segment_end = min(_next_quarter_hour(cursor), end)
         if is_trading_minute(cursor.astimezone(tz)):
-            hours += min(step, end - cursor).total_seconds() / 3600
-        cursor += step
+            hours += (segment_end - cursor).total_seconds() / 3600
+        cursor = segment_end
 
     return hours
+
+
+def _next_quarter_hour(moment: datetime) -> datetime:
+    """The first quarter-hour mark after ``moment``.
+
+    Taken on UTC, which serves Chicago too: its offset from UTC is a whole
+    number of hours in either season, so the marks are the same instants.
+    """
+
+    quarter = 15 * 60
+    seconds = moment.timestamp()
+    return datetime.fromtimestamp((seconds // quarter + 1) * quarter, tz=timezone.utc)
 
 
 def empty_response_indicts_provider(

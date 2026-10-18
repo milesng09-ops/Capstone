@@ -91,6 +91,16 @@ class TestWhatTheHolidaysChange:
         # A Monday holds 23 open hours; the holiday leaves 19.
         assert trading_hours_between(ms(local(2026, 5, 25, 0)), ms(local(2026, 5, 26, 0))) == 19
 
+    def test_the_open_time_after_a_reopen_is_counted_whole(self):
+        # Hour-long samples from 12:15 credited 15 of the 30 minutes after the
+        # 17:00 reopen, so an empty answer missing two 15-minute bars passed.
+        start, end = ms(local(2025, 12, 24, 12, 15)), ms(local(2025, 12, 25, 17, 30))
+        assert trading_hours_between(start, end) == 0.5
+        assert empty_response_indicts_provider(start, end, "15m") is True
+        # The ordinary daily halt had the same blind spot.
+        halt = ms(local(2026, 9, 2, 16, 15)), ms(local(2026, 9, 2, 17, 30))
+        assert trading_hours_between(*halt) == 0.5
+
     def test_a_holiday_outside_the_published_span_reads_as_an_ordinary_day(self):
         # Before 19 October 2025 CME's service holds nothing, and a holiday
         # read as open is the safe mistake: it never excuses a real outage.

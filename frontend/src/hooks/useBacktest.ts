@@ -29,9 +29,12 @@ export function buildGxtRequest(params: {
   rangeEnd: number
   testWindow?: TimeWindow | null
 }): BacktestRequest {
+  // Held to what the interval's chart can load, as the pattern run is: GXT
+  // trades 1m to 1h, and on 1m the 180-day default read half a year of minute
+  // bars for trades a chart of seven days could never show.
   const start = params.testWindow
     ? Math.min(params.testWindow.start_time, params.testWindow.end_time)
-    : params.rangeEnd - params.search.lookbackDays * DAY_MS
+    : params.rangeEnd - effectiveLookbackDays(params.search.lookbackDays, params.interval) * DAY_MS
   const end = params.testWindow
     ? Math.max(params.testWindow.start_time, params.testWindow.end_time)
     : params.rangeEnd

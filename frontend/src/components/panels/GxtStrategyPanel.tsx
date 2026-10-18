@@ -2,7 +2,7 @@ import { CalendarRange, Play } from 'lucide-react'
 
 import { NumberField, SelectField, ToggleField } from '@/components/ui/fields'
 import { Button, Disclosure, Spinner } from '@/components/ui/primitives'
-import { buildGxtRequest, useRunBacktest } from '@/hooks/useBacktest'
+import { buildGxtRequest, effectiveLookbackDays, useRunBacktest } from '@/hooks/useBacktest'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
 import { formatDateTime } from '@/utils/format'
@@ -16,7 +16,9 @@ export function GxtStrategyPanel() {
   const { gxt, rules, search, testWindow } = state
   const supported = ['1m', '2m', '3m', '5m', '15m', '30m', '1h'].includes(state.interval)
   const missingReference = gxt.require_cross_asset && symbols.length < 2
-  const start = testWindow?.start_time ?? range.to - search.lookbackDays * 86_400_000
+  const start =
+    testWindow?.start_time ??
+    range.to - effectiveLookbackDays(search.lookbackDays, state.interval) * 86_400_000
   const end = testWindow?.end_time ?? range.to
 
   const submit = () => {

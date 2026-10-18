@@ -455,3 +455,61 @@ export function drawingTime(drawing: Drawing): number {
       return drawing.from.time
   }
 }
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value)
+
+const isPoint = (value: unknown): value is DrawingPoint =>
+  typeof value === 'object' &&
+  value !== null &&
+  isFiniteNumber((value as DrawingPoint).time) &&
+  isFiniteNumber((value as DrawingPoint).price)
+
+/**
+ * Whether a value read back from storage is a drawing this build can paint.
+ *
+ * Storage is outside the app's control: another tab may be running an older
+ * or newer build, and a saved workspace outlives the code that wrote it. A
+ * drawing missing the coordinates its kind needs -- a note without `at` --
+ * made the overlay throw on every paint and every pointer move, which takes
+ * every chart's drawings down with it. The line width is not checked here;
+ * a bad one is repaired rather than refused.
+ */
+export function isDrawing(value: unknown): value is Drawing {
+  if (typeof value !== 'object' || value === null) return false
+  const drawing = value as Record<string, unknown>
+  if (typeof drawing.id !== 'string' || typeof drawing.symbol !== 'string') return false
+  if (typeof drawing.color !== 'string') return false
+  switch (drawing.kind) {
+    case 'horizontal':
+      return isFiniteNumber(drawing.price)
+    case 'vertical':
+      return isFiniteNumber(drawing.time)
+    case 'text':
+      return isPoint(drawing.at) && typeof drawing.text === 'string'
+    case 'horizontal_ray':
+      return isPoint(drawing.from)
+    case 'brush':
+      return (
+        Array.isArray(drawing.points) &&
+        drawing.points.length > 0 &&
+        drawing.points.every(isPoint)
+      )
+    case 'long':
+    case 'short':
+      return (
+        isPoint(drawing.entry) &&
+        isFiniteNumber(drawing.endTime) &&
+        isFiniteNumber(drawing.stop) &&
+        isFiniteNumber(drawing.target)
+      )
+    case 'trendline':
+    case 'rectangle':
+    case 'ray':
+    case 'arrow':
+    case 'fib':
+      return isPoint(drawing.from) && isPoint(drawing.to)
+    default:
+      return false
+  }
+}

@@ -5,7 +5,7 @@
  * about the sequence of edits, and a render adds nothing to that.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderHook } from '@testing-library/react'
 
@@ -240,13 +240,19 @@ describe('drawings saved by another tab', () => {
     })
   })
 
-  function saveFromAnotherTab(drawings: Drawing[], extra: object = {}) {
-    window.dispatchEvent(
-      new StorageEvent('storage', {
-        key: 'mrl.workspace',
-        newValue: JSON.stringify({ state: { drawings, primarySymbol: 'YM', ...extra }, version: 5 }),
-      }),
-    )
+  /** The other tab's save as it is written: stored, then announced here. */
+  function saved(drawings: unknown[]) {
+    return JSON.stringify({ state: { drawings, primarySymbol: 'YM' }, version: 5 })
+  }
+
+  function announce(value: string) {
+    window.dispatchEvent(new StorageEvent('storage', { key: 'mrl.workspace', newValue: value }))
+  }
+
+  function saveFromAnotherTab(drawings: unknown[]) {
+    const value = saved(drawings)
+    window.localStorage.setItem('mrl.workspace', value)
+    announce(value)
   }
 
   it("takes up the other tab's drawings, and nothing else of its workspace", () => {
@@ -275,9 +281,65 @@ describe('drawings saved by another tab', () => {
   it("ignores another key's save, and one it cannot read", () => {
     const before = useWorkspace.getState()
     window.dispatchEvent(new StorageEvent('storage', { key: 'other', newValue: '{}' }))
-    window.dispatchEvent(new StorageEvent('storage', { key: 'mrl.workspace', newValue: '{not json' }))
+    window.localStorage.setItem('mrl.workspace', '{not json')
+    announce('{not json')
 
     expect(useWorkspace.getState()).toBe(before)
+  })
+
+  it('does not write back what it took up', () => {
+    // Echoed, the save became one for the other tab to take up in turn, and
+    // with two edits in flight the tabs traded the older and newer for ever.
+    const value = saved([level('a', 100), level('b', 200)])
+    window.localStorage.setItem('mrl.workspace', value)
+    const write = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      announce(value)
+      expect(ids()).toEqual(['a', 'b'])
+      expect(write).not.toHaveBeenCalled()
+    } finally {
+      write.mockRestore()
+    }
+  })
+
+  it('skips a save that a later one has already replaced', () => {
+    const older = saved([level('a', 100), level('old', 1)])
+    const newer = saved([level('a', 100), level('new', 2)])
+    window.localStorage.setItem('mrl.workspace', newer)
+
+    announce(older)
+    expect(ids()).toEqual(['a'])
+
+    announce(newer)
+    expect(ids()).toEqual(['a', 'new'])
+  })
+
+  it('refuses a save holding a drawing it cannot paint', () => {
+    // A note without its anchor made the overlay throw on every paint.
+    saveFromAnotherTab([level('b', 200), { id: 'n', kind: 'text', symbol: 'NQ', color: '#fff', width: 2, createdAt: 0, text: 'Bias' }])
+    expect(ids()).toEqual(['a'])
+
+    saveFromAnotherTab([level('b', 200), null])
+    expect(ids()).toEqual(['a'])
+  })
+})
+
+describe('drawings read back on load', () => {
+  it('keeps the ones it can paint and drops the rest', () => {
+    const current = useWorkspace.getState()
+    const merged = mergeWorkspace(
+      {
+        drawings: [
+          level('kept', 100),
+          { id: 'note', kind: 'text', symbol: 'NQ', color: '#fff', width: 2, createdAt: 0, text: 'x' },
+          null,
+          { id: 'future', kind: 'pitchfork', symbol: 'NQ', color: '#fff', width: 2, createdAt: 0 },
+        ],
+      },
+      current,
+    )
+
+    expect(merged.drawings.map((drawing) => drawing.id)).toEqual(['kept'])
   })
 })
 

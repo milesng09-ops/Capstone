@@ -1,6 +1,6 @@
 # Bug hunt — 18 October 2026
 
-97 defects confirmed (2 critical, 10 high, 59 medium, 26 low) by a browser pass
+102 defects confirmed (2 critical, 11 high, 63 medium, 26 low) by a browser pass
 over the running app, a Codex review of the backend trading logic, three Claude
 reviewers (data layer, frontend state, components) and a Codex review of the
 finished diff, which caught four problems in the fixes themselves. A second
@@ -8,7 +8,8 @@ pass over the drawing tools -- every tool created, edited, undone and reloaded
 by hand, and a Codex review of the drawing code -- found fifteen more, and
 the one limitation the first pass had left open was fixed on request. A
 third pass made the price live and hardened what was left (nine more), and
-a fourth put CME's holidays in the trading calendar. All are
+a fourth put CME's holidays in the trading calendar; a Codex review of those
+two passes found five more in them, all fixed. All are
 fixed with a regression test that fails on the old code, except where noted.
 The full report and the tracker live outside the repo, in
 `qa-evidence/Miles-2026-10-18/` (`report.md`, `bugs.xlsx`).
@@ -118,6 +119,18 @@ The full report and the tracker live outside the repo, in
   (Good Friday 2026 is an abbreviated session to 08:15 CT, not a closure).
   Holidays before 19 October 2025, which the service does not hold, still read
   as trading days. A test keeps the two copies of the list identical.
+
+## Codex review of the last two passes
+
+- A tab taking up another tab's drawings no longer writes them back -- the
+  echo let two tabs trade saves for ever -- and skips a save a later one has
+  replaced; a stored drawing this build cannot paint is refused or dropped
+  instead of breaking the overlay.
+- Detections refresh at most once in five minutes, which keeps unlinked
+  fine-interval charts inside the provider quota.
+- Open time is counted exactly, quarter hour by quarter hour, so the half hour
+  after a reopen is no longer half missed.
+- The GXT run uses the same lookback cap as the pattern run.
 
 ## Worth knowing
 

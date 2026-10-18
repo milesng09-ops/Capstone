@@ -12,6 +12,7 @@ import { createElement, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  DETECTIONS_REFRESH_MS,
   LIVE_POLL_MS,
   useBars,
   useDetectionsFollowBars,
@@ -138,7 +139,12 @@ describe('detections following the bars', () => {
     )
   }
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('works the detections out again when a new bar opens', () => {
+    vi.useFakeTimers({ now: 1_000_000 })
     const client = new QueryClient()
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     const { rerender } = follow(client)
@@ -147,8 +153,28 @@ describe('detections following the bars', () => {
     rerender({ symbol: 'NQ', time: 100 })
     expect(invalidate).not.toHaveBeenCalled()
 
+    vi.setSystemTime(1_000_000 + DETECTIONS_REFRESH_MS)
     rerender({ symbol: 'NQ', time: 200 })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ict', 'NQ', '1h', 0, 10] })
+  })
+
+  it('refreshes at most once in five minutes, as the quota needs', () => {
+    // Every bar of a 1-minute chart fetched the compared markets again too:
+    // three unlinked charts asked for more calls than the quota has.
+    vi.useFakeTimers({ now: 1_000_000 })
+    const client = new QueryClient()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    const { rerender } = follow(client)
+
+    for (let minute = 1; minute < 5; minute += 1) {
+      vi.setSystemTime(1_000_000 + minute * 60_000)
+      rerender({ symbol: 'NQ', time: 100 + minute })
+    }
+    expect(invalidate).not.toHaveBeenCalled()
+
+    vi.setSystemTime(1_000_000 + 5 * 60_000)
+    rerender({ symbol: 'NQ', time: 105 })
+    expect(invalidate).toHaveBeenCalledTimes(1)
   })
 
   it('leaves a change of market to the new query it makes anyway', () => {

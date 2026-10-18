@@ -10,9 +10,10 @@
  */
 
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
 
 import {
+  isDrawing,
   DEFAULT_DRAWING_COLOR,
   DEFAULT_DRAWING_WIDTH,
   type Drawing,
@@ -525,8 +526,25 @@ function repairDrawings(drawings: Drawing[]): Drawing[] {
     // A canvas handed `NaN` for a line width ignores it and strokes with
     // whatever the previous shape left behind.
     width: Number.isFinite(drawing.width) ? drawing.width : DEFAULT_DRAWING_WIDTH,
+    createdAt: Number.isFinite(drawing.createdAt) ? drawing.createdAt : 0,
   }))
 }
+
+/**
+ * Set while this tab takes up another tab's save, so that taking it up does
+ * not write it straight back. See the storage listener at the foot of this
+ * module.
+ */
+let takingUpAnotherTab = false
+
+/** localStorage, with this tab's writes held back while that is happening. */
+const workspaceStorage = createJSONStorage(() => ({
+  getItem: (name: string) => window.localStorage.getItem(name),
+  setItem: (name: string, value: string) => {
+    if (!takingUpAnotherTab) window.localStorage.setItem(name, value)
+  },
+  removeItem: (name: string) => window.localStorage.removeItem(name),
+}))
 
 /**
  * Lay a stored workspace over the defaults, on every load.
@@ -574,7 +592,11 @@ export function mergeWorkspace(
     sizing: { ...DEFAULT_SIZING, ...saved.sizing },
     chartSettings: { ...DEFAULT_CHART_SETTINGS, ...saved.chartSettings },
     chartSync: { ...DEFAULT_CHART_SYNC, ...saved.chartSync },
-    drawings: Array.isArray(saved.drawings) ? repairDrawings(saved.drawings) : current.drawings,
+    // Only drawings this build can paint: one with its coordinates missing
+    // made the overlay throw on every paint, every chart's drawings with it.
+    drawings: Array.isArray(saved.drawings)
+      ? repairDrawings(saved.drawings.filter(isDrawing))
+      : current.drawings,
   }
 
   const primary = primaryIntervalOf(merged)
@@ -930,6 +952,7 @@ export const useWorkspace = create<WorkspaceState>()(
     }),
     {
       name: WORKSPACE_STORAGE_KEY,
+      storage: workspaceStorage,
       version: 5,
       /**
        * Version 2 turns the ICT overlays off.
@@ -1025,30 +1048,44 @@ setFormattingTimeZone(
  * other's next edit -- a level drawn on the left monitor gone the moment a
  * line was moved on the right. Another tab's save is taken up here, drawings
  * only: which market and interval each tab shows is that tab's own business.
- * Drawings equal to these are left alone, so two tabs answering each other's
- * saves settle after one round instead of trading writes for ever. The undo
- * history goes with them: it described drawings this tab no longer has.
+ * The undo history goes with them: it described drawings this tab no longer
+ * has.
+ *
+ * Taken up without being written back. Echoing it gave the other tab a save
+ * of its own to take up, and with two of its edits in flight the tabs handed
+ * the older and the newer back and forth for ever, each round reverting a
+ * drawing and wiping the history. For the same reason a save that a later one
+ * has already replaced is skipped: the later one's own event is on its way,
+ * and taking up the older first would put a stale drawing back. A save that
+ * holds anything this build cannot paint is refused whole, keeping the
+ * drawings this tab has.
  */
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
     if (event.key !== WORKSPACE_STORAGE_KEY || !event.newValue) return
+    if (window.localStorage.getItem(WORKSPACE_STORAGE_KEY) !== event.newValue) return
     let saved: unknown
     try {
       saved = JSON.parse(event.newValue)?.state?.drawings
     } catch {
       return
     }
-    if (!Array.isArray(saved)) return
+    if (!Array.isArray(saved) || !saved.every(isDrawing)) return
     const current = useWorkspace.getState()
     if (JSON.stringify(saved) === JSON.stringify(current.drawings)) return
-    const drawings = repairDrawings(saved as Drawing[])
-    useWorkspace.setState({
-      drawings,
-      selectedDrawingId: keepSelection(drawings, current.selectedDrawingId),
-      past: [],
-      future: [],
-      historyGroup: null,
-    })
+    const drawings = repairDrawings(saved)
+    takingUpAnotherTab = true
+    try {
+      useWorkspace.setState({
+        drawings,
+        selectedDrawingId: keepSelection(drawings, current.selectedDrawingId),
+        past: [],
+        future: [],
+        historyGroup: null,
+      })
+    } finally {
+      takingUpAnotherTab = false
+    }
   })
 }
 

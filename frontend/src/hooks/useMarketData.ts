@@ -125,13 +125,26 @@ export function useIct(
 }
 
 /**
+ * The least time between two refreshes of one chart's detections.
+ *
+ * The analysis fetches the compared markets too, at this chart's interval --
+ * series the other charts' polling does not keep fresh when the interval link
+ * is off. Refreshed on every bar of a 1-minute chart, three unlinked charts on
+ * 1m, 5m and 15m asked for about five and a half calls a minute against a
+ * quota of five; held to one refresh in five minutes they need under four.
+ */
+export const DETECTIONS_REFRESH_MS = 5 * 60_000
+
+/**
  * Work a chart's detections out again when a new bar opens.
  *
  * The bars are live; the analysis was not, so a gap or a swing completed by
  * the bar that just closed waited for the hour to turn before it appeared.
  * Only on a new bar, not on every refresh of the one forming: detections are
- * read from closed bars, and the analysis is the heavier request. A change of
- * market, interval or window is a new query of its own and is left to it.
+ * read from closed bars, and the analysis is the heavier request. And not more
+ * often than `DETECTIONS_REFRESH_MS`, counting the load that first fetched
+ * them. A change of market, interval or window is a new query of its own and
+ * is left to it.
  */
 export function useDetectionsFollowBars(
   symbol: string,
@@ -141,15 +154,25 @@ export function useDetectionsFollowBars(
   lastBarTime: number | null,
 ): void {
   const queryClient = useQueryClient()
-  const seen = useRef<{ key: string; time: number } | null>(null)
+  const seen = useRef<{ key: string; time: number; refreshedAt: number } | null>(null)
   useEffect(() => {
     if (lastBarTime == null) return
     const key = `${symbol}|${interval}|${from}|${to}`
+    const now = Date.now()
     const before = seen.current
-    seen.current = { key, time: lastBarTime }
-    if (before && before.key === key && lastBarTime > before.time) {
-      void queryClient.invalidateQueries({ queryKey: ['ict', symbol, interval, from, to] })
+    if (!before || before.key !== key) {
+      seen.current = { key, time: lastBarTime, refreshedAt: now }
+      return
     }
+    if (lastBarTime <= before.time) return
+    if (now - before.refreshedAt < DETECTIONS_REFRESH_MS) {
+      // A new bar, but too soon: remembered, so the next one past the wait
+      // is the one that refreshes.
+      seen.current = { ...before, time: lastBarTime }
+      return
+    }
+    seen.current = { key, time: lastBarTime, refreshedAt: now }
+    void queryClient.invalidateQueries({ queryKey: ['ict', symbol, interval, from, to] })
   }, [lastBarTime, symbol, interval, from, to, queryClient])
 }
 

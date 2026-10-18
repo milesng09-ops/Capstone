@@ -38,6 +38,7 @@ export function buildGxtRequest(params: {
   return {
     strategy: 'gxt_research', gxt: params.gxt, symbols,
     primary_symbol: params.primarySymbol, interval: params.interval,
+    higher_timeframe: null, // GXT builds its own complete 4H context.
     // Stored for compatibility/history grouping. GXT has no example selection.
     selection: { start_time: start, end_time: end },
     trade: { ...params.rules, entry_type: 'next_open' },

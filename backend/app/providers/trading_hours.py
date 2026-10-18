@@ -9,16 +9,20 @@ Without that distinction an empty response is indistinguishable from a broken
 one, so the fallback chain read every weekend as three providers failing in a
 row, demoted them all, and stamped a chart of real prices as demo data.
 
-The rule is deliberately conservative. It reports "closed" only for the two
-closures that are certain -- the weekend and the daily halt -- and "open" for
-everything else, exchange holidays included. Being wrong in that direction
-costs nothing new: an unexpected empty response on a holiday is treated the
-way every empty response used to be. Being wrong the other way would swallow a
-genuine provider failure, which is exactly what must not happen.
+The rule is deliberately conservative. It reports "closed" for the closures
+that are certain -- the weekend, the daily halt, and the exchange holidays CME
+has published, listed in :data:`HOLIDAY_CLOSURES` -- and "open" for everything
+else, including any holiday outside that list's span. Being wrong in that
+direction costs nothing new: an unexpected empty response on an unlisted
+holiday is treated the way every empty response used to be. Being wrong the
+other way would swallow a genuine provider failure, which is exactly what must
+not happen -- so the list holds only what CME itself published, never a date
+worked out from the holiday's name.
 """
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -38,29 +42,92 @@ SESSION_OPEN_HOUR = 17
 #: steps cannot step over a session.
 _SCAN_STEP = timedelta(minutes=15)
 
-#: Longest the market is ever shut: Friday 16:00 to Sunday 17:00, plus an hour
-#: of slack for the daylight-saving weekends when that stretch is 50 hours
-#: rather than 49. A window longer than this must contain trading, which lets
-#: the scan below skip the overwhelming majority of calls.
-_LONGEST_CLOSURE = timedelta(hours=51)
+#: Longest the market is ever shut. An ordinary weekend is Friday 16:00 to
+#: Sunday 17:00, 49 hours; a Friday holiday stretches it from the Thursday --
+#: Christmas 2026 runs from Thursday 12:15 to Sunday 17:00, 76 hours and 45
+#: minutes. An hour of slack covers the daylight-saving weekends. A window
+#: longer than this must contain trading, which lets the scan below skip the
+#: overwhelming majority of calls. Pinned against the holiday list by a test.
+_LONGEST_CLOSURE = timedelta(hours=78)
+
+#: Where CME closes the equity index futures beyond the weekly schedule --
+#: holiday halts, early closes and whole-day closures -- as exchange-local
+#: wall-clock times, from inclusive, until exclusive, with what each one is.
+#:
+#: Source: CME Group's Globex holiday schedule, read from the trading-hours
+#: service behind https://www.cmegroup.com/trading-hours.html
+#: (``/services/trading-hours-by-product``, products 133 ES, 146 NQ and 318 YM,
+#: which carry one schedule) on 18 October 2026, and kept where it departs
+#: from the weekly rule. CME finalises each holiday's hours about two weeks
+#: ahead, so the later entries are its published plan rather than history.
+#:
+#: The service holds nothing before 19 October 2025, so earlier holidays are
+#: not listed and read as ordinary days, as every holiday did before this list
+#: existed. Two of its records are left out on purpose: the reopen after the
+#: Globex outage of 28 November 2025 (an outage, not a holiday), and the
+#: administrative "open" it records on the Saturday after a Friday holiday,
+#: when no equity future trades. Keep in step with ``CME_HOLIDAY_CLOSURES`` in
+#: ``frontend/src/lib/marketHours.ts``; a test reads one against the other.
+HOLIDAY_CLOSURES: tuple[tuple[str, str, str], ...] = (
+    ("2025-11-27 12:00", "2025-11-27 17:00", "Thanksgiving"),
+    ("2025-11-28 12:15", "2025-11-28 17:00", "Day after Thanksgiving, early close"),
+    ("2025-12-24 12:15", "2025-12-25 17:00", "Christmas"),
+    ("2025-12-31 17:00", "2026-01-01 17:00", "New Year's Day"),
+    ("2026-01-19 12:00", "2026-01-19 17:00", "Martin Luther King Jr. Day"),
+    ("2026-02-16 12:00", "2026-02-16 17:00", "Presidents' Day"),
+    ("2026-04-03 08:15", "2026-04-03 17:00", "Good Friday, abbreviated session"),
+    ("2026-05-25 12:00", "2026-05-25 17:00", "Memorial Day"),
+    ("2026-06-19 12:00", "2026-06-19 17:00", "Juneteenth"),
+    ("2026-07-03 12:00", "2026-07-03 17:00", "Independence Day, observed"),
+    ("2026-09-07 12:00", "2026-09-07 17:00", "Labor Day"),
+    ("2026-11-26 12:00", "2026-11-26 17:00", "Thanksgiving"),
+    ("2026-11-27 12:15", "2026-11-27 17:00", "Day after Thanksgiving, early close"),
+    ("2026-12-24 12:15", "2026-12-25 17:00", "Christmas"),
+    ("2026-12-31 17:00", "2027-01-01 17:00", "New Year's Day"),
+    ("2027-01-18 12:00", "2027-01-18 17:00", "Martin Luther King Jr. Day"),
+    ("2027-02-15 12:00", "2027-02-15 17:00", "Presidents' Day"),
+    ("2027-03-25 17:00", "2027-03-26 17:00", "Good Friday"),
+    ("2027-05-31 12:00", "2027-05-31 17:00", "Memorial Day"),
+    ("2027-06-18 12:00", "2027-06-18 17:00", "Juneteenth, observed"),
+    ("2027-07-05 12:00", "2027-07-05 17:00", "Independence Day, observed"),
+    ("2027-09-06 12:00", "2027-09-06 17:00", "Labor Day"),
+    ("2027-11-25 12:00", "2027-11-25 17:00", "Thanksgiving"),
+    ("2027-11-26 12:15", "2027-11-26 17:00", "Day after Thanksgiving, early close"),
+    ("2027-12-23 17:00", "2027-12-24 17:00", "Christmas, observed"),
+)
+
+_CLOSURES = tuple(
+    (datetime.fromisoformat(start), datetime.fromisoformat(until))
+    for start, until, _ in HOLIDAY_CLOSURES
+)
+_CLOSURE_STARTS = [start for start, _ in _CLOSURES]
+
+
+def _in_holiday_closure(local: datetime) -> bool:
+    """Whether ``local`` falls in one of CME's published holiday closures."""
+
+    wall = local.replace(tzinfo=None)
+    index = bisect_right(_CLOSURE_STARTS, wall) - 1
+    return index >= 0 and wall < _CLOSURES[index][1]
 
 
 def is_trading_minute(local: datetime) -> bool:
     """Whether the market is open at ``local``, an *exchange-local* time.
 
-    CME equity-index session: Sun 17:00 CT to Fri 16:00 CT, 16:00-17:00 halt.
+    CME equity-index session: Sun 17:00 CT to Fri 16:00 CT, 16:00-17:00 halt,
+    less the holiday closures CME has published.
     """
 
     weekday = local.weekday()  # Monday = 0
     if weekday == 5:  # Saturday
         return False
     if weekday == 6:  # Sunday, only the evening reopen
-        return local.hour >= 17
+        return local.hour >= 17 and not _in_holiday_closure(local)
     if weekday == 4 and local.hour >= 16:  # Friday close
         return False
     if local.hour == 16:  # daily maintenance window
         return False
-    return True
+    return not _in_holiday_closure(local)
 
 
 def has_trading_session(
@@ -103,6 +170,8 @@ def has_trading_session(
 #: maintenance hour removed (92), and Friday's 00:00-16:00 close (16).
 #: Derived from :func:`is_trading_minute`, and pinned against it by a test --
 #: it is a shortcut through the scan below, never a second copy of the rule.
+#: A week with a holiday in it holds fewer; the shortcut does not subtract
+#: them, so a long window is sized a few hours generous, never short.
 TRADING_HOURS_PER_WEEK = 7 + 4 * 23 + 16
 
 _WEEK = timedelta(days=7)

@@ -70,6 +70,36 @@ const BASE_PRICE: Record<string, number> = { ES: 5600, NQ: 20000, YM: 42000 }
 export const BAR_COUNT = 400
 
 /**
+ * The stubbed answer to `/api/bars`. `lastClose`, when given, moves the
+ * newest bar's close -- the bar still forming -- for the tests about a live
+ * price, which need a second answer that differs from the first.
+ */
+export function barsResponse(symbol: string, interval: string, lastClose?: number) {
+  const bars = walk(symbol, BAR_COUNT, BASE_PRICE[symbol] ?? 1000, symbol.length * 7919)
+  if (lastClose != null) {
+    const last = bars[bars.length - 1]
+    bars[bars.length - 1] = {
+      ...last,
+      close: lastClose,
+      high: Math.max(last.high, lastClose),
+      low: Math.min(last.low, lastClose),
+    }
+  }
+  return {
+    symbol,
+    interval,
+    provider: 'stub',
+    cached: true,
+    fallback_active: false,
+    fallback_reason: null,
+    quality: 'cached',
+    rate_limited: false,
+    retry_after_seconds: null,
+    bars,
+  }
+}
+
+/**
  * Answer every API call from memory.
  *
  * Registered with a single `**` pattern so a route this does not know about
@@ -123,20 +153,12 @@ export async function stubApi(page: Page): Promise<void> {
     }
 
     if (path === '/api/bars') {
-      const symbol = url.searchParams.get('symbol') ?? 'ES'
-      const interval = url.searchParams.get('interval') ?? '1h'
-      return json({
-        symbol,
-        interval,
-        provider: 'stub',
-        cached: true,
-        fallback_active: false,
-        fallback_reason: null,
-        quality: 'cached',
-        rate_limited: false,
-        retry_after_seconds: null,
-        bars: walk(symbol, BAR_COUNT, BASE_PRICE[symbol] ?? 1000, symbol.length * 7919),
-      })
+      return json(
+        barsResponse(
+          url.searchParams.get('symbol') ?? 'ES',
+          url.searchParams.get('interval') ?? '1h',
+        ),
+      )
     }
 
     if (path === '/api/ict') {

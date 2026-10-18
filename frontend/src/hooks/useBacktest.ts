@@ -14,6 +14,7 @@ import type {
   TradeRules,
   GxtSettings,
 } from '@/types/backtest'
+import { MAX_RANGE_DAYS } from '@/types/market'
 import type { Interval, SelectionRange, TimeWindow } from '@/types/market'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -116,6 +117,19 @@ export function searchedSymbols(params: {
  * Run click handler, which builds the request before the mutation exists to
  * report one -- a button that does nothing.
  */
+/**
+ * How far back a run searches on `interval` when no window is drawn: the
+ * days asked for, held to what a chart of that interval can load.
+ *
+ * The 180-day default went out unchanged on a 1-minute chart that holds
+ * seven: the run read half a year of minute bars, slice by slice against a
+ * quota of five calls a minute, and every trade it found outside the week on
+ * screen was a trade the chart could not show.
+ */
+export function effectiveLookbackDays(lookbackDays: number, interval: Interval): number {
+  return Math.min(lookbackDays, MAX_RANGE_DAYS[interval] ?? lookbackDays)
+}
+
 export function buildBacktestRequest(params: {
   selection: SelectionRange
   primarySymbol: string
@@ -155,7 +169,7 @@ export function buildBacktestRequest(params: {
 
   const lookbackStart = testWindow
     ? Math.min(testWindow.start_time, testWindow.end_time)
-    : rangeEnd - search.lookbackDays * DAY_MS
+    : rangeEnd - effectiveLookbackDays(search.lookbackDays, interval) * DAY_MS
   const lookbackEnd = testWindow
     ? Math.max(testWindow.start_time, testWindow.end_time)
     : rangeEnd

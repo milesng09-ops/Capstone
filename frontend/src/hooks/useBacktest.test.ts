@@ -52,6 +52,18 @@ describe('buildBacktestRequest', () => {
     })
   })
 
+  it('holds the lookback to what a chart of the interval can load', () => {
+    // 180 days of 1-minute bars was read slice by slice against the quota,
+    // for a chart that holds seven -- trades it could never show.
+    const minute = build({ selection: { ...selection, source_interval: '1m' } })
+    expect(minute.search.lookback_start).toBe(1_790_000_000_000 - 7 * DAY_MS)
+
+    const hourly = build()
+    expect(hourly.search.lookback_start).toBe(
+      1_790_000_000_000 - DEFAULT_SEARCH_CONFIG.lookbackDays * DAY_MS,
+    )
+  })
+
   it('derives the lookback window from the loaded range', () => {
     const request = build()
     expect(request.search.lookback_end).toBe(1_790_000_000_000)

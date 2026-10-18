@@ -44,7 +44,7 @@ import type { LucideIcon } from 'lucide-react'
 
 import { Floating } from '@/components/ui/Floating'
 import { Button } from '@/components/ui/primitives'
-import { useWorkspace } from '@/store/workspace'
+import { useChartedSymbols, useWorkspace } from '@/store/workspace'
 import {
   DRAWING_COLORS,
   TOOL_HINTS,
@@ -115,7 +115,13 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
   const toggleFocusMode = useWorkspace((state) => state.toggleFocusMode)
   const toggleMagnet = useWorkspace((state) => state.toggleMagnet)
   const showSwings = useWorkspace((state) => state.ict.showSwings)
-  const drawingCount = useWorkspace((state) => state.drawings.length)
+  // The drawings on the charts on screen -- the only ones this button can
+  // honestly offer to remove. It used to clear every market's, so a click
+  // meant for NQ's lines also took the ES and YM drawings nobody could see.
+  const charted: string[] = useChartedSymbols()
+  const drawingCount = useWorkspace(
+    (state) => state.drawings.filter((drawing) => charted.includes(drawing.symbol)).length,
+  )
 
   const setTool = useWorkspace((state) => state.setTool)
   const setDrawingColor = useWorkspace((state) => state.setDrawingColor)
@@ -221,9 +227,9 @@ export function ToolRail({ footer }: { footer?: ReactNode }) {
       <Button
         size="icon"
         variant="toolbar"
-        onClick={() => clearDrawings()}
+        onClick={() => clearDrawings(charted)}
         disabled={drawingCount === 0}
-        title="Remove every drawing"
+        title="Remove every drawing on the charts on screen (undo brings them back)"
         aria-label="Clear drawings"
       >
         <Trash2 size={15} />

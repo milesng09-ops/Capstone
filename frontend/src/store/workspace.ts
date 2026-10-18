@@ -131,6 +131,9 @@ export type ChartLayout = (typeof CHART_LAYOUTS)[number]
  */
 const HISTORY_LIMIT = 50
 
+/** Where the workspace is saved, in localStorage. */
+const WORKSPACE_STORAGE_KEY = 'mrl.workspace'
+
 interface WorkspaceState {
   // ---- what is charted ------------------------------------------------
   primarySymbol: SymbolKey
@@ -291,7 +294,8 @@ interface WorkspaceState {
   addDrawing: (drawing: Drawing) => void
   updateDrawing: (id: string, patch: Partial<Drawing>) => void
   removeDrawing: (id: string) => void
-  clearDrawings: (symbol?: string) => void
+  /** Remove the drawings on these markets, or on every market when none are named. */
+  clearDrawings: (symbols?: string[]) => void
   selectDrawing: (id: string | null) => void
   setSnapToSwings: (snap: boolean) => void
   undoDrawings: () => void
@@ -514,6 +518,16 @@ export function migrateWorkspace(persisted: unknown, version: number) {
   }
 }
 
+/** Drawings read back from storage, with what an older build left out filled in. */
+function repairDrawings(drawings: Drawing[]): Drawing[] {
+  return drawings.map((drawing) => ({
+    ...drawing,
+    // A canvas handed `NaN` for a line width ignores it and strokes with
+    // whatever the previous shape left behind.
+    width: Number.isFinite(drawing.width) ? drawing.width : DEFAULT_DRAWING_WIDTH,
+  }))
+}
+
 /**
  * Lay a stored workspace over the defaults, on every load.
  *
@@ -560,14 +574,7 @@ export function mergeWorkspace(
     sizing: { ...DEFAULT_SIZING, ...saved.sizing },
     chartSettings: { ...DEFAULT_CHART_SETTINGS, ...saved.chartSettings },
     chartSync: { ...DEFAULT_CHART_SYNC, ...saved.chartSync },
-    drawings: Array.isArray(saved.drawings)
-      ? saved.drawings.map((drawing) => ({
-          ...drawing,
-          // A canvas handed `NaN` for a line width ignores it and strokes
-          // with whatever the previous shape left behind.
-          width: Number.isFinite(drawing.width) ? drawing.width : DEFAULT_DRAWING_WIDTH,
-        }))
-      : current.drawings,
+    drawings: Array.isArray(saved.drawings) ? repairDrawings(saved.drawings) : current.drawings,
   }
 
   const primary = primaryIntervalOf(merged)
@@ -833,11 +840,13 @@ export const useWorkspace = create<WorkspaceState>()(
             state.selectedDrawingId === id ? null : state.selectedDrawingId,
         })),
 
-      clearDrawings: (symbol) =>
+      clearDrawings: (symbols) =>
         set((state) => ({
           ...commitDrawings(
             state,
-            symbol ? state.drawings.filter((drawing) => drawing.symbol !== symbol) : [],
+            symbols
+              ? state.drawings.filter((drawing) => !symbols.includes(drawing.symbol))
+              : [],
           ),
           selectedDrawingId: null,
         })),
@@ -920,7 +929,7 @@ export const useWorkspace = create<WorkspaceState>()(
       selectTrade: (selectedTradeId) => set({ selectedTradeId }),
     }),
     {
-      name: 'mrl.workspace',
+      name: WORKSPACE_STORAGE_KEY,
       version: 5,
       /**
        * Version 2 turns the ICT overlays off.
@@ -1007,6 +1016,41 @@ if (!isKnownTimeZone(useWorkspace.getState().timeZone)) {
 setFormattingTimeZone(
   resolveTimeZone(useWorkspace.getState().timeZone, useWorkspace.getState().exchangeZone),
 )
+
+/*
+ * Drawings saved by another tab of the app.
+ *
+ * Each tab holds the workspace in memory and writes the whole of it on every
+ * change, so with two tabs open one tab's drawings were overwritten by the
+ * other's next edit -- a level drawn on the left monitor gone the moment a
+ * line was moved on the right. Another tab's save is taken up here, drawings
+ * only: which market and interval each tab shows is that tab's own business.
+ * Drawings equal to these are left alone, so two tabs answering each other's
+ * saves settle after one round instead of trading writes for ever. The undo
+ * history goes with them: it described drawings this tab no longer has.
+ */
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== WORKSPACE_STORAGE_KEY || !event.newValue) return
+    let saved: unknown
+    try {
+      saved = JSON.parse(event.newValue)?.state?.drawings
+    } catch {
+      return
+    }
+    if (!Array.isArray(saved)) return
+    const current = useWorkspace.getState()
+    if (JSON.stringify(saved) === JSON.stringify(current.drawings)) return
+    const drawings = repairDrawings(saved as Drawing[])
+    useWorkspace.setState({
+      drawings,
+      selectedDrawingId: keepSelection(drawings, current.selectedDrawingId),
+      past: [],
+      future: [],
+      historyGroup: null,
+    })
+  })
+}
 
 // Same argument for the sync links: they are read from a module variable on a
 // path that runs on every mouse move, so a restored setting has to reach it

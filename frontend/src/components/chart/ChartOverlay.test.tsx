@@ -1361,3 +1361,39 @@ describe("the chart's own controls while a tool is held", () => {
     expect(forwardWheel).not.toHaveBeenCalled()
   })
 })
+
+describe('while the price is live', () => {
+  // The candles are fetched again every minute while the market trades. A
+  // refresh landing in the middle of a gesture must not cost the gesture.
+  const refreshed: Candle[] = [
+    ...candles,
+    { symbol: 'NQ', time: 907_200, open: 1.5, high: 2.5, low: 1, close: 2, volume: 1 },
+  ]
+
+  it('keeps moving a drawing across a refresh of the candles', () => {
+    const { container, rerender, canvas: _canvas, ...props } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    fireEvent(window, pointer('pointermove', 100, 180))
+    rerender(<ChartOverlay {...props} candles={refreshed} />)
+    fireEvent(window, pointer('pointermove', 100, 200))
+    fireEvent(window, pointer('pointerup', 100, 200))
+
+    expect(props.onUpdateDrawing).toHaveBeenCalledWith(
+      'level-1',
+      expect.objectContaining({ price: 200 }),
+    )
+  })
+
+  it('keeps a shape being drawn across a refresh of the candles', () => {
+    const { canvas, rerender, container: _container, ...props } = setup({ tool: 'trendline' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 200, 150))
+    rerender(<ChartOverlay {...props} candles={refreshed} />)
+    fireEvent(canvas, pointer('pointermove', 300, 200))
+    fireEvent(canvas, pointer('pointerup', 300, 200))
+
+    expect(created(props.onCreateDrawing).from).toEqual({ time: 100, price: 100 })
+  })
+})

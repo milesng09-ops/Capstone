@@ -292,7 +292,12 @@ export function Metric({
 }) {
   return (
     <div className={cn('rounded-md border border-border bg-[hsl(var(--panel-raised))] p-2.5', className)}>
-      <p className="label-caps truncate" title={hint ?? label}>
+      {/*
+        Wrapped onto a second line rather than cut off: eight tiles across a
+        1440px screen left "MAX DRAWDO..." over the one number a reader looks
+        for first, and the full name only in a tooltip.
+      */}
+      <p className="label-caps line-clamp-2 break-words leading-tight" title={hint ?? label}>
         {label}
       </p>
       <p className={cn('numeric mt-1 text-base font-semibold leading-none', tone)}>{value}</p>

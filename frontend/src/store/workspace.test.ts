@@ -207,6 +207,80 @@ describe('trade selection', () => {
   })
 })
 
+describe('clearing the drawings', () => {
+  beforeEach(() => {
+    useWorkspace.setState({
+      drawings: [level('nq', 100, 'NQ'), level('es', 100, 'ES'), level('ym', 100, 'YM')],
+      past: [],
+      future: [],
+      selectedDrawingId: null,
+    })
+  })
+
+  it('takes only the markets named, keeping the ones not on screen', () => {
+    // The rail's button cleared every market's, YM's unseen lines included.
+    useWorkspace.getState().clearDrawings(['NQ', 'ES'])
+    expect(ids()).toEqual(['ym'])
+
+    useWorkspace.getState().undoDrawings()
+    expect(ids()).toEqual(['nq', 'es', 'ym'])
+  })
+})
+
+describe('drawings saved by another tab', () => {
+  // Each tab wrote its whole workspace on every change, so one tab's next
+  // edit overwrote the drawings made in the other.
+  beforeEach(() => {
+    useWorkspace.setState({
+      primarySymbol: 'NQ',
+      drawings: [level('a', 100)],
+      past: [[]],
+      future: [],
+      selectedDrawingId: 'a',
+    })
+  })
+
+  function saveFromAnotherTab(drawings: Drawing[], extra: object = {}) {
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'mrl.workspace',
+        newValue: JSON.stringify({ state: { drawings, primarySymbol: 'YM', ...extra }, version: 5 }),
+      }),
+    )
+  }
+
+  it("takes up the other tab's drawings, and nothing else of its workspace", () => {
+    saveFromAnotherTab([level('a', 100), level('b', 200)])
+
+    expect(ids()).toEqual(['a', 'b'])
+    // Which market a tab shows stays that tab's own.
+    expect(useWorkspace.getState().primarySymbol).toBe('NQ')
+    // The history described drawings this tab no longer has.
+    expect(useWorkspace.getState().past).toEqual([])
+    expect(useWorkspace.getState().selectedDrawingId).toBe('a')
+  })
+
+  it('lets go of a selection the other tab deleted', () => {
+    saveFromAnotherTab([level('b', 200)])
+    expect(useWorkspace.getState().selectedDrawingId).toBeNull()
+  })
+
+  it('leaves equal drawings alone, so two tabs settle instead of trading writes', () => {
+    const before = useWorkspace.getState()
+    saveFromAnotherTab(JSON.parse(JSON.stringify(before.drawings)))
+
+    expect(useWorkspace.getState()).toBe(before)
+  })
+
+  it("ignores another key's save, and one it cannot read", () => {
+    const before = useWorkspace.getState()
+    window.dispatchEvent(new StorageEvent('storage', { key: 'other', newValue: '{}' }))
+    window.dispatchEvent(new StorageEvent('storage', { key: 'mrl.workspace', newValue: '{not json' }))
+
+    expect(useWorkspace.getState()).toBe(before)
+  })
+})
+
 describe('a drawing selected on a market that leaves the screen', () => {
   // Delete acts on whatever is selected, and a line on a market no longer
   // charted is one nobody can see -- the next Delete removed it silently.

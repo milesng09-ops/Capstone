@@ -78,4 +78,22 @@ describe('the saved runs', () => {
     expect(picker.className).toContain('max-w-[10rem]')
     expect(picker.className).toContain('xl:max-w-[18rem]')
   })
+
+  it('tells apart two runs of the same rules taken in the same minute', async () => {
+    // Labelled to the minute, they were two identical rows.
+    vi.spyOn(api, 'listBacktests').mockResolvedValue([
+      RUN,
+      { ...RUN, id: 'run-2', created_at: RUN.created_at + 10_000 },
+    ])
+    renderBar()
+    const picker = await screen.findByRole('combobox', { name: /run/i })
+    await screen.findAllByRole('option', { name: /default rules/ })
+
+    const runs = within(picker)
+      .getAllByRole('option')
+      .filter((option) => option.getAttribute('value'))
+      .map((option) => option.textContent)
+    expect(runs).toHaveLength(2)
+    expect(new Set(runs).size).toBe(2)
+  })
 })

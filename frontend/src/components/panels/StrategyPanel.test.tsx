@@ -496,3 +496,36 @@ describe('values the backend would refuse', () => {
     expect(screen.getByLabelText('From')).toHaveAttribute('aria-invalid', 'true')
   })
 })
+
+describe('what a run searches, as the panel says it', () => {
+  // It listed every charted market: wrong when a description named one, and
+  // silent about a market brought in only to read an SMT condition against.
+  it('names the markets searched and the one read for SMT only', () => {
+    useWorkspace.setState({
+      primarySymbol: 'NQ',
+      compareSymbols: ['ES'],
+      search: { ...DEFAULT_SEARCH_CONFIG, searchSymbols: ['NQ'] },
+      detectors: { ...DEFAULT_DETECTOR_FILTERS, require_smt_divergence: true },
+    })
+    renderPanel()
+    openDisclosure(/^Advanced/)
+
+    expect(screen.getByText(/^Searching NQ\./)).toBeInTheDocument()
+    expect(
+      screen.getByText(/ES is read for the SMT condition only, never searched or traded/),
+    ).toBeInTheDocument()
+  })
+
+  it('names every charted market when no description narrowed it', () => {
+    useWorkspace.setState({
+      primarySymbol: 'NQ',
+      compareSymbols: ['ES'],
+      search: { ...DEFAULT_SEARCH_CONFIG, searchSymbols: [] },
+      detectors: DEFAULT_DETECTOR_FILTERS,
+    })
+    renderPanel()
+    openDisclosure(/^Advanced/)
+
+    expect(screen.getByText(/^Searching NQ, ES\./)).toBeInTheDocument()
+  })
+})

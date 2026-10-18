@@ -27,7 +27,9 @@ import { useChartRange } from '@/hooks/useChartRange'
 import { useBars } from '@/hooks/useMarketData'
 import {
   buildBacktestRequest,
+  effectiveLookbackDays,
   RUN_BACKTEST_MUTATION_KEY,
+  searchedSymbols,
   useRunBacktest,
 } from '@/hooks/useBacktest'
 import {
@@ -48,7 +50,13 @@ import {
   type StopLossType,
   type TakeProfitType,
 } from '@/types/backtest'
-import { INTERVALS, INTERVAL_LABELS, validBiasInterval, type Interval } from '@/types/market'
+import {
+  INTERVALS,
+  INTERVAL_LABELS,
+  MAX_RANGE_DAYS,
+  validBiasInterval,
+  type Interval,
+} from '@/types/market'
 import { indexOfBar } from '@/lib/chart'
 import {
   formatCurrency,
@@ -352,8 +360,11 @@ function PatternStrategyPanel() {
           </div>
         ) : (
           <p className="text-2xs leading-relaxed text-muted-foreground">
-            Searching the last {search.lookbackDays} days of the loaded history. Drag a
-            window on the chart to test one stretch instead.
+            Searching the last {effectiveLookbackDays(search.lookbackDays, interval)} days of
+            the loaded history.
+            {effectiveLookbackDays(search.lookbackDays, interval) < search.lookbackDays &&
+              ` ${INTERVAL_LABELS[interval]} charts hold ${MAX_RANGE_DAYS[interval]} days, so that is as far back as a run looks.`}{' '}
+            Drag a window on the chart to test one stretch instead.
           </p>
         )}
 
@@ -853,9 +864,27 @@ function PatternStrategyPanel() {
           />
         </div>
 
+        {/*
+          What the run will actually search, worked out by the same rule the
+          request is built with. It listed every charted market, which was
+          wrong twice over: a description naming one market narrows the
+          search to it, and a market brought in for an SMT condition is
+          compared against, never searched or traded.
+        */}
         <p className="text-2xs leading-relaxed text-muted-foreground">
-          Searching {symbols.join(', ')}. The selected window itself is always excluded, so
-          a setup is never matched against itself.
+          {(() => {
+            const plan = searchedSymbols({ primarySymbol: primary, symbols, search, detectors })
+            const searched = plan.symbols.filter((item) => !plan.addedForSmt.includes(item))
+            return (
+              <>
+                Searching {searched.join(', ')}.
+                {plan.addedForSmt.length > 0 &&
+                  ` ${plan.addedForSmt.join(', ')} is read for the SMT condition only, never searched or traded.`}{' '}
+              </>
+            )
+          })()}
+          The selected window itself is always excluded, so a setup is never matched
+          against itself.
         </p>
       </Disclosure>
 

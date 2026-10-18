@@ -29,7 +29,7 @@ import {
 } from '@/store/workspace'
 import { PROVIDER_LABELS, SYMBOLS, type SymbolKey } from '@/types/market'
 import { IntervalPicker } from '@/components/layout/IntervalPicker'
-import { formatDateTime, formatNumber } from '@/utils/format'
+import { formatClock, formatDate, formatDateTime, formatNumber } from '@/utils/format'
 import type { BacktestListItem } from '@/types/backtest'
 
 export function TopBar() {
@@ -147,15 +147,9 @@ export function TopBar() {
               <option value="">Latest / none</option>
               {groupBySetup(historyQuery.data).map((group) => (
                 <optgroup key={group.key} label={group.title}>
-                  {group.runs.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.win_rate != null
-                        ? `${formatNumber(item.win_rate, 0)}%`
-                        : item.status}
-                      {' · '}
-                      {item.label || 'default rules'}
-                      {' · '}
-                      {formatDateTime(item.created_at)}
+                  {runLabels(group.runs).map((text, index) => (
+                    <option key={group.runs[index].id} value={group.runs[index].id}>
+                      {text}
                     </option>
                   ))}
                 </optgroup>
@@ -289,6 +283,27 @@ function LayoutPicker() {
  * Groups keep the order their newest run appeared in, so the most recent work
  * stays at the top rather than being reordered by setup date.
  */
+/**
+ * What each saved run is called in the picker.
+ *
+ * Its win rate, its rules and when it ran -- to the minute, which two runs of
+ * the same rules a few seconds apart share, so the picker offered two
+ * identical rows and no way to tell which was which. Where that happens the
+ * seconds are added, to those rows only.
+ */
+function runLabels(runs: BacktestListItem[]): string[] {
+  const head = (item: BacktestListItem) =>
+    `${item.win_rate != null ? `${formatNumber(item.win_rate, 0)}%` : item.status} · ${
+      item.label || 'default rules'
+    }`
+  const texts = runs.map((item) => `${head(item)} · ${formatDateTime(item.created_at)}`)
+  return runs.map((item, index) =>
+    texts.indexOf(texts[index]) === texts.lastIndexOf(texts[index])
+      ? texts[index]
+      : `${head(item)} · ${formatDate(item.created_at)}, ${formatClock(item.created_at)}`,
+  )
+}
+
 function groupBySetup(items: BacktestListItem[]) {
   const groups = new Map<string, { key: string; title: string; runs: BacktestListItem[] }>()
 

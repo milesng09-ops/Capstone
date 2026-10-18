@@ -14,7 +14,13 @@ import { Badge, Button, Spinner } from '@/components/ui/primitives'
 import { useBacktestResult } from '@/hooks/useBacktest'
 import { useChartRange } from '@/hooks/useChartRange'
 import { newId } from '@/lib/id'
-import { useBars, useIct } from '@/hooks/useMarketData'
+import { sessionChange } from '@/lib/marketHours'
+import {
+  useBars,
+  useDetectionsFollowBars,
+  useIct,
+  useMarketOpen,
+} from '@/hooks/useMarketData'
 import {
   collectEvidence,
   evidenceWindow,
@@ -33,7 +39,18 @@ import {
   type SymbolKey,
 } from '@/types/market'
 import { cn } from '@/utils/cn'
-import { directionClass, formatCompact, formatPercent, formatPrice } from '@/utils/format'
+import {
+  directionClass,
+  formatClock,
+  formatCompact,
+  formatPercent,
+  formatPrice,
+} from '@/utils/format'
+
+/** Fetching something not yet on screen -- not a refresh of what already is. */
+function loading(query: { isFetching: boolean; isPlaceholderData: boolean; data?: unknown }) {
+  return query.isFetching && (query.isPlaceholderData || query.data === undefined)
+}
 
 interface Props {
   symbol: SymbolKey
@@ -81,10 +98,14 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     [charted.join(','), symbol],
   )
 
-  const barsQuery = useBars(symbol, interval, range.from, range.to)
+  // Live while the market trades: the newest bar is asked for again every
+  // minute, so the price, the last candle and the axis label keep moving.
+  const marketOpen = useMarketOpen()
+  const barsQuery = useBars(symbol, interval, range.from, range.to, true, marketOpen)
   const ictQuery = useIct(symbol, interval, range.from, range.to, references, ictSettings)
 
   const candles = useMemo(() => barsQuery.data?.bars ?? [], [barsQuery.data])
+  useDetectionsFollowBars(symbol, interval, range.from, range.to, candles.at(-1)?.time ?? null)
   const drawings = useMemo(
     () => allDrawings.filter((drawing) => drawing.symbol === symbol),
     [allDrawings, symbol],
@@ -179,9 +200,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   }, [])
 
   const last = candles.at(-1)
-  const first = candles[0]
-  const changePercent =
-    last && first && first.open ? ((last.close - first.open) / first.open) * 100 : 0
+  const change = useMemo(() => sessionChange(candles, interval), [candles, interval])
 
   const readout = hovered ?? last
   // Before a response arrives we genuinely do not know where the bars came
@@ -225,9 +244,16 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           )}
 
           {last && (
-            <span className={cn('numeric', directionClass(changePercent))}>
+            <span
+              className={cn('numeric pointer-events-auto', directionClass(change?.percent ?? 0))}
+              title={
+                change
+                  ? `${formatPercent(change.percent)} ${change.since} (${formatPrice(change.reference, precision)})`
+                  : undefined
+              }
+            >
               {formatPrice(last.close, precision)}
-              <span className="ml-1">{formatPercent(changePercent)}</span>
+              {change && <span className="ml-1">{formatPercent(change.percent)}</span>}
             </span>
           )}
 
@@ -258,13 +284,24 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
                       }`.trim()
                     : barsQuery.data?.fallback_reason ??
                       'Part of this window could not be fetched. Bars may be missing.'
-                  : `Source: ${barsQuery.data?.provider ?? 'unknown'}`
+                  : `Source: ${barsQuery.data?.provider ?? 'unknown'}${
+                      barsQuery.dataUpdatedAt
+                        ? `, updated ${formatClock(barsQuery.dataUpdatedAt)}${
+                            marketOpen ? ', refreshed every minute' : ', market closed'
+                          }`
+                        : ''
+                    }`
             }
           >
             {QUALITY_LABELS[quality] ?? quality}
           </Badge>
 
-          {(barsQuery.isFetching || ictQuery.isFetching) && (
+          {/*
+            Loading, not refreshing: the live price is asked for again every
+            minute, and a spinner flashing up each time says "something is
+            wrong" about the one thing that is working.
+          */}
+          {(loading(barsQuery) || loading(ictQuery)) && (
             <Spinner className="text-muted-foreground" />
           )}
 

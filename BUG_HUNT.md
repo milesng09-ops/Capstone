@@ -1,12 +1,14 @@
 # Bug hunt — 18 October 2026
 
-87 defects confirmed (2 critical, 9 high, 54 medium, 22 low) by a browser pass
+97 defects confirmed (2 critical, 10 high, 59 medium, 26 low) by a browser pass
 over the running app, a Codex review of the backend trading logic, three Claude
 reviewers (data layer, frontend state, components) and a Codex review of the
 finished diff, which caught four problems in the fixes themselves. A second
 pass over the drawing tools -- every tool created, edited, undone and reloaded
 by hand, and a Codex review of the drawing code -- found fifteen more, and
-the one limitation the first pass had left open was fixed on request. All are
+the one limitation the first pass had left open was fixed on request. A
+third pass made the price live and hardened what was left (nine more), and
+a fourth put CME's holidays in the trading calendar. All are
 fixed with a regression test that fails on the old code, except where noted.
 The full report and the tracker live outside the repo, in
 `qa-evidence/Miles-2026-10-18/` (`report.md`, `bugs.xlsx`).
@@ -88,8 +90,41 @@ The full report and the tracker live outside the repo, in
 - "Describe it" honours negation, ratios like 1:3, leading-dot decimals and
   trade verbs over adjectives, and reads each phrase for one setting.
 
+## Live price and hardening (third pass)
+
+- The price is live: each chart asks for its bars again every minute while
+  CME futures trade (Sunday 17:00 to Friday 16:00 Chicago, less the daily
+  halt), and on refocus -- never over a weekend or in a background tab. It
+  had asked once an hour, so the price on screen could be most of an hour
+  old. About one Massive call per chart per minute, inside the quota of five.
+  Detections are worked out again when a new bar opens.
+- The legend's change is the day's -- since the previous session's close --
+  not the move over the whole loaded history.
+- Clear drawings takes only the drawings on the charts on screen, and a
+  second tab of the app no longer overwrites the first one's drawings.
+- A backtest on a minute chart searches what that chart can load (seven days
+  on 1m), not 180 days of minute bars; the panel says so, and says which
+  markets a run searches and which it only reads for SMT.
+- Saved runs from the same minute are told apart; result tile names wrap
+  instead of being cut off; selected menu rows read at about 8:1.
+
+## CME holidays (fourth pass)
+
+- Both calendars -- the backend's, which judges whether an empty provider
+  answer is an outage and which gaps to re-ask, and the frontend's, which
+  decides when the live chart polls -- now know CME's holiday closures for the
+  equity index futures: 25 of them, Thanksgiving 2025 to Christmas 2027, read
+  from CME's own trading-hours service, not worked out from holiday names
+  (Good Friday 2026 is an abbreviated session to 08:15 CT, not a closure).
+  Holidays before 19 October 2025, which the service does not hold, still read
+  as trading days. A test keeps the two copies of the list identical.
+
 ## Worth knowing
 
+- The holiday list in `backend/app/providers/trading_hours.py` (mirrored in
+  `frontend/src/lib/marketHours.ts`) ends with Christmas 2027. Refresh it once
+  a year from the same source; CME confirms each holiday's hours about two
+  weeks ahead.
 - History recorded as older than Massive's archive is not asked for again. If
   the archive grows -- a plan upgrade -- clear the cache for that market
   (`DELETE /api/cache?symbol=ES`) to pull the older bars in.

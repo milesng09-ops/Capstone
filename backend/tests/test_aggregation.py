@@ -183,8 +183,9 @@ class TestCountingTradingHours:
         """The constant is a shortcut through the scan, never a second copy of
         the rule, so it is checked against the rule itself."""
 
-        # A full Sunday-to-Saturday week, walked an hour at a time.
-        start = datetime(2026, 5, 24, 0, 0, tzinfo=CHICAGO)
+        # A full Sunday-to-Saturday week, walked an hour at a time. One with
+        # no holiday in it: the week after this one holds Memorial Day.
+        start = datetime(2026, 5, 17, 0, 0, tzinfo=CHICAGO)
         open_hours = sum(
             1 for step in range(24 * 7) if is_trading_minute(start + timedelta(hours=step))
         )

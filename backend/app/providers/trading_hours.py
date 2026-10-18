@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from app.providers.futures_calendar import EXCHANGE_TIMEZONE
 from app.utils.intervals import HOUR_MS, interval_ms
+from app.utils.timeutils import now_ms
 
 #: Hour, in exchange-local time, at which a new trading day opens.  The CME
 #: equity-index session runs Sun 17:00 CT to Fri 16:00 CT, so 17:00 is both the
@@ -185,7 +186,15 @@ def empty_response_indicts_provider(
     honest gap.  This is deliberately the smallest possible concession: one
     bar is the least an empty response can be wrong by, so a genuine outage --
     which is empty across every bar in the window -- still fails loudly.
+
+    Only time that has already happened is counted.  The calendar says the
+    market is "open" next Tuesday too, and no vendor has a bar for it yet, so
+    a window reaching into the future used to read as an outage: one request
+    for tomorrow marked Massive unhealthy for two minutes, for every chart.
     """
 
+    end_ms = min(end_ms, now_ms())
+    if end_ms <= start_ms:
+        return False
     open_hours = trading_hours_between(start_ms, end_ms, tz_name=tz_name)
     return open_hours * HOUR_MS > interval_ms(interval)

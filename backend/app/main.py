@@ -6,9 +6,13 @@
 from __future__ import annotations
 
 import logging
+import math
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -25,6 +29,24 @@ from app.providers.instruments import list_instruments
 from app.services.candle_service import shutdown_candle_service
 
 logger = logging.getLogger(__name__)
+
+
+def _json_safe(value: Any) -> Any:
+    """``value`` with every NaN and infinity spelled out as text.
+
+    A validation error echoes the input it rejected, and JSON has no NaN: a
+    body sending ``"stop_loss_value": NaN`` -- which Python's parser accepts --
+    was refused correctly and then failed to render the refusal, so the
+    client got a 500 instead of the 422 that names the field.
+    """
+
+    if isinstance(value, float) and not math.isfinite(value):
+        return repr(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def configure_logging() -> None:
@@ -133,6 +155,16 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # FastAPI's own handler, made safe for inputs JSON cannot carry.
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _json_safe(jsonable_encoder(exc.errors()))},
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:

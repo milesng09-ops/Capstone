@@ -33,6 +33,12 @@ export interface SyncedChart {
   jumpToTime: (time: number) => void
   /** Put the whole series back in view, on both axes. */
   resetView: () => void
+  /**
+   * The bar size this chart is drawn at, asked at broadcast time so it is
+   * never stale. Optional: a chart that does not say is linked exactly as
+   * before. See `broadcastLogicalRange` for what it is for.
+   */
+  interval?: () => string | undefined
 }
 
 /**
@@ -82,12 +88,31 @@ export function broadcastCrosshair(sourceId: string, time: number | null): void 
   }
 }
 
+/**
+ * Pass a scroll or a zoom on, as bar indices, to the charts it means anything on.
+ *
+ * Only to charts on the same bar size. An index is a count of bars, so with
+ * the interval link off it names unrelated stretches of time on each pane:
+ * scrolling a 5-minute NQ to its latest bars, around index 17,000, sent a
+ * daily ES -- a hundred-odd bars -- to an empty stretch far beyond its data,
+ * and scrolling ES dragged NQ back to its first morning. Matching by time
+ * instead would not rescue it: a zoom framing eight hours of 5-minute bars
+ * frames a third of one daily bar. Click-to-jump still reaches every pane,
+ * because it moves them by time rather than by index.
+ *
+ * A chart that has not said its interval is linked as it always was.
+ */
 export function broadcastLogicalRange(sourceId: string, range: LogicalRange): void {
   if (applying || !modes.time) return
+  const sourceInterval = charts.get(sourceId)?.interval?.()
   applying = true
   try {
     for (const [id, chart] of charts) {
       if (id === sourceId) continue
+      const interval = chart.interval?.()
+      if (sourceInterval != null && interval != null && interval !== sourceInterval) {
+        continue
+      }
       chart.applyLogicalRange(range)
     }
   } finally {

@@ -13,6 +13,7 @@ import { Floating } from '@/components/ui/Floating'
 import { Badge, Button, Spinner } from '@/components/ui/primitives'
 import { useBacktestResult } from '@/hooks/useBacktest'
 import { useChartRange } from '@/hooks/useChartRange'
+import { newId } from '@/lib/id'
 import { useBars, useIct } from '@/hooks/useMarketData'
 import {
   collectEvidence,
@@ -129,6 +130,10 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     id: `chart-${symbol}`,
     candles,
     interval,
+    // The span, not the bounds: the window's end moves on with every hour,
+    // and a refit each time it did would throw away the user's zoom.
+    view: String(range.to - range.from),
+    settled: !barsQuery.isPlaceholderData,
     precision,
     onHoverBar: setHovered,
     settings: chartSettings,
@@ -136,7 +141,9 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
 
   const handleCreate = useCallback(
     (drawing: DrawingDraft) => {
-      addDrawing({ ...drawing, id: crypto.randomUUID(), createdAt: Date.now() })
+      // Not crypto.randomUUID: it exists only on secure origins, so over plain
+      // http on a LAN address every drawing threw on release.
+      addDrawing({ ...drawing, id: newId(), createdAt: Date.now() })
     },
     [addDrawing],
   )
@@ -151,6 +158,25 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     },
     [setTool],
   )
+
+  /*
+   * Where the legend ends, so the range tabs can start below it. They used to
+   * be painted at a fixed spot in the same corner, under the symbol and the
+   * OHLC row -- and with the interval link off, under the pane's interval
+   * button, which took the click meant for the tab. Measured, because the
+   * legend wraps onto more lines in a narrow pane.
+   */
+  const legendRef = useRef<HTMLDivElement | null>(null)
+  const [legendBottom, setLegendBottom] = useState(0)
+  useEffect(() => {
+    const legend = legendRef.current
+    if (!legend) return
+    const measure = () => setLegendBottom(legend.offsetTop + legend.offsetHeight)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(legend)
+    return () => observer.disconnect()
+  }, [])
 
   const last = candles.at(-1)
   const first = candles[0]
@@ -183,7 +209,10 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
        * screen spent on labels -- and the top-left corner of a price pane is
        * reliably empty, which is why charting platforms all put it there.
        */}
-      <div className="chart-legend pointer-events-none absolute left-2 top-1.5 z-20 flex flex-col gap-0.5">
+      <div
+        ref={legendRef}
+        className="chart-legend pointer-events-none absolute left-2 top-1.5 z-20 flex flex-col gap-0.5"
+      >
         <div className="flex items-center gap-1.5">
           <span className="text-xs font-semibold tracking-tight">{symbol}</span>
           {intervalLinked ? (
@@ -306,6 +335,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           selectedDrawingId={selectedDrawingId}
           snapToSwings={snapToSwings}
           allowSelection={isPrimary}
+          chipTop={legendBottom + 6}
           onCreateDrawing={handleCreate}
           onUpdateDrawing={updateDrawing}
           onSelectDrawing={selectDrawing}
@@ -374,6 +404,14 @@ function ChartContextMenu() {
     if (!pane) return
 
     const open = (event: MouseEvent) => {
+      // A text field keeps its own menu -- paste, spelling -- which the
+      // chart's settings would otherwise take the place of.
+      if (
+        event.target instanceof Element &&
+        event.target.closest('input, textarea, select, [contenteditable="true"]')
+      ) {
+        return
+      }
       event.preventDefault()
       setAt({ x: event.clientX, y: event.clientY })
     }

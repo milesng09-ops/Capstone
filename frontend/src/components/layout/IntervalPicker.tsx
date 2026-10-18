@@ -88,8 +88,13 @@ function IntervalMenu({
           </div>
         </div>
       ))}
+      {/*
+        `text-muted-foreground`, never `text-muted`: that one is the muted
+        *background* token, about 1.1:1 against this menu, which is how the
+        footer, the reach of every interval and the pins came to be invisible.
+      */}
       {pinnable && (
-        <p className="border-t border-border px-1 pt-2 text-2xs text-muted">
+        <p className="border-t border-border px-1 pt-2 text-2xs text-muted-foreground">
           Pin the ones you use to keep them in the bar.
         </p>
       )}
@@ -265,7 +270,7 @@ function IntervalRow({
         onClick={onPick}
         aria-pressed={active}
         className={cn(
-          'flex flex-1 items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs transition-colors',
+          'group flex flex-1 items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs transition-colors',
           active ? 'font-semibold' : 'hover:bg-[hsl(var(--accent))]',
         )}
       >
@@ -275,8 +280,18 @@ function IntervalRow({
           these is bounded by how much the backend can store, and finding that
           out by choosing a timeframe and watching the range collapse is the
           kind of surprise that reads as a bug.
+
+          Muted on the menu, but full strength on the accent fill a selected
+          or hovered row takes, where the muted grey all but disappears.
         */}
-        <span className="text-2xs text-muted">{reachOf(interval)}</span>
+        <span
+          className={cn(
+            'text-2xs',
+            active ? 'text-foreground' : 'text-muted-foreground group-hover:text-foreground',
+          )}
+        >
+          {reachOf(interval)}
+        </span>
       </button>
       {pinnable && (
       <button
@@ -287,7 +302,11 @@ function IntervalRow({
         aria-label={pinned ? `Unpin ${INTERVAL_LABELS[interval]}` : `Pin ${INTERVAL_LABELS[interval]}`}
         className={cn(
           'rounded p-1 transition-colors',
-          pinned ? 'text-foreground' : 'text-muted opacity-40 hover:opacity-100',
+          // An unpinned pin is quieter than a pinned one, not absent: the icon
+          // differs as well, so it never has to fade to say so.
+          pinned || active
+            ? 'text-foreground'
+            : 'text-muted-foreground hover:text-foreground',
         )}
       >
         {pinned ? <Pin size={12} /> : <PinOff size={12} />}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  shiftByBars,
   CHIP_HEIGHT_PX,
   HANDLE_RADIUS_PX,
   HIT_TOLERANCE_PX,
@@ -502,5 +503,36 @@ describe('moving the new shapes', () => {
     )
 
     expect(resized).toMatchObject({ endTime: 5_000, stop: 90, target: 120 })
+  })
+})
+
+describe('shiftByBars', () => {
+  const HOUR = 3_600_000
+  // Friday's last bars, the weekend, Sunday's first bars.
+  const bars = [0, 1, 2, 50, 51, 52].map((hour) => ({
+    symbol: 'NQ',
+    time: hour * HOUR,
+    open: 1,
+    high: 1,
+    low: 1,
+    close: 1,
+    volume: 1,
+  }))
+
+  it('drags a shape across a gap by bars, so its anchors land on bars', () => {
+    // Two bars to the right. By wall clock that is two hours, which put both
+    // ends inside the weekend where there are no candles.
+    const moved = translateDrawing(
+      { ...line, from: { time: 1 * HOUR, price: 100 }, to: { time: 2 * HOUR, price: 200 } },
+      shiftByBars(bars, 0, 2 * HOUR),
+      0,
+    ) as TrendlineDrawing
+
+    expect(moved.from.time).toBe(50 * HOUR)
+    expect(moved.to.time).toBe(51 * HOUR)
+  })
+
+  it('still moves by the plain delta where the candles cannot place a time', () => {
+    expect(shiftByBars([], 0, 5_000)(1_000)).toBe(6_000)
   })
 })

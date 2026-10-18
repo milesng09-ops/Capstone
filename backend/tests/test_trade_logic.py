@@ -246,6 +246,32 @@ class TestFibRetrace:
 
         assert fib_zone_at(points, T0 + 10 * HOUR, "long") is None
 
+    def test_a_leg_a_newer_confirmed_low_has_answered_is_not_retraced(self):
+        """The docstring's "last two pivots the wrong way round".
+
+        100 -> 200 and then a confirmed low at 90: the up leg has been broken.
+        Searching back past the new low for an older pair that happens to be
+        the right way round measured a band nothing was retracing any more.
+        """
+
+        points = [*self.leg(), swing("low", T0 + 8 * HOUR, 90.0, confirmed=T0 + 9 * HOUR)]
+
+        assert fib_zone_at(points, T0 + 10 * HOUR, "long") is None
+
+    def test_a_newer_low_not_yet_confirmed_leaves_the_leg_standing(self):
+        points = [*self.leg(), swing("low", T0 + 8 * HOUR, 90.0, confirmed=T0 + 12 * HOUR)]
+
+        assert fib_zone_at(points, T0 + 10 * HOUR, "long") is not None
+
+    def test_a_short_leg_a_newer_confirmed_high_has_answered_is_not_retraced(self):
+        points = [
+            swing("high", T0, 200.0, confirmed=T0 + HOUR),
+            swing("low", T0 + 5 * HOUR, 100.0, confirmed=T0 + 6 * HOUR),
+            swing("high", T0 + 8 * HOUR, 210.0, confirmed=T0 + 9 * HOUR),
+        ]
+
+        assert fib_zone_at(points, T0 + 10 * HOUR, "short") is None
+
     def test_reports_how_deep_a_price_sits_in_the_leg(self):
         zone = fib_zone_at(self.leg(), T0 + 10 * HOUR, "long")
 

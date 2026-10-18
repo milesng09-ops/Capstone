@@ -21,9 +21,9 @@ import type {
   UTCTimestamp,
 } from 'lightweight-charts'
 
-import type { Candle } from '@/types/market'
-import { formatDateTime } from '@/utils/format'
-import { resolveTimeZone } from '@/utils/timezone'
+import { isDailyOrLonger, type Candle } from '@/types/market'
+import { formatDateTime, formatTradingDay } from '@/utils/format'
+import { DEFAULT_EXCHANGE_ZONE, resolveTimeZone, tradingDayInstant } from '@/utils/timezone'
 
 /** Milliseconds -> the seconds-based timestamp the chart library expects. */
 export function toChartTime(ms: number): UTCTimestamp {
@@ -169,11 +169,23 @@ export function readChartPalette(): ChartPalette {
  * against the browser's clock, so the axis could disagree with the status bar
  * and with every date printed in the panels. Formatting the ticks ourselves is
  * the whole fix -- the data stays in UTC seconds, only the labels move.
+ *
+ * **Daily and coarser bars are named by the day they trade**, which is not the
+ * date of their timestamp. The backend opens each of them at the session
+ * open, 17:00 Chicago the evening before, so labelled by the stamp a week of
+ * dailies read Sunday to Thursday and the October candle sat under "Sep".
+ * Pass the chart's `interval` to get trading-day labels; without it every
+ * tick is read as a moment, which is right for intraday and is what callers
+ * that predate the argument still get.
  */
-export function timeAxisOptions(zone: string): DeepPartial<ChartOptions> {
+export function timeAxisOptions(
+  zone: string,
+  interval?: string,
+  exchangeZone: string = DEFAULT_EXCHANGE_ZONE,
+): DeepPartial<ChartOptions> {
   const timeZone = resolveTimeZone(zone)
-  const shape = (options: Intl.DateTimeFormatOptions) =>
-    new Intl.DateTimeFormat('en-GB', { timeZone, ...options })
+  const shape = (options: Intl.DateTimeFormatOptions, inZone = timeZone) =>
+    new Intl.DateTimeFormat('en-GB', { timeZone: inZone, ...options })
 
   const year = shape({ year: 'numeric' })
   const month = shape({ month: 'short', year: '2-digit' })
@@ -186,10 +198,24 @@ export function timeAxisOptions(zone: string): DeepPartial<ChartOptions> {
     hour12: false,
   })
 
+  // A trading day belongs to the exchange, so its date is read on the
+  // exchange's clock whichever zone the rest of the axis is drawn in.
+  const tradingInterval = interval != null && isDailyOrLonger(interval) ? interval : null
+  const exchange = resolveTimeZone(exchangeZone)
+  const tradingYear = shape({ year: 'numeric' }, exchange)
+  const tradingMonth = shape({ month: 'short', year: '2-digit' }, exchange)
+  const tradingDate = shape({ day: '2-digit', month: 'short' }, exchange)
+
   return {
     timeScale: {
       // TickMarkType: 0 Year, 1 Month, 2 DayOfMonth, 3 Time, 4 TimeWithSeconds.
       tickMarkFormatter: (chartTime: UTCTimestamp, tickMarkType: TickMarkType) => {
+        if (tradingInterval != null && tickMarkType <= 2) {
+          const traded = new Date(tradingDayInstant(fromChartTime(chartTime)))
+          if (tickMarkType === 0) return tradingYear.format(traded)
+          if (tickMarkType === 1) return tradingMonth.format(traded)
+          return tradingDate.format(traded)
+        }
         const date = new Date(fromChartTime(chartTime))
         switch (tickMarkType) {
           case 0:
@@ -206,8 +232,12 @@ export function timeAxisOptions(zone: string): DeepPartial<ChartOptions> {
       },
     },
     localization: {
+      // The crosshair label: the trading day for a daily bar, since its
+      // open time -- 17:00 the evening before -- is not what the bar means.
       timeFormatter: (chartTime: UTCTimestamp) =>
-        formatDateTime(fromChartTime(chartTime), zone),
+        tradingInterval != null
+          ? formatTradingDay(fromChartTime(chartTime), tradingInterval, exchangeZone)
+          : formatDateTime(fromChartTime(chartTime), zone),
     },
   }
 }
@@ -219,15 +249,19 @@ export function timeAxisOptions(zone: string): DeepPartial<ChartOptions> {
  * describe `timeScale` and `localization`, and a top-level spread would drop
  * whichever half came first -- taking `timeVisible` with it, which is what
  * tells the library to label an intraday axis in hours rather than dates.
+ *
+ * `interval` and `exchangeZone` are handed straight to `timeAxisOptions`.
  */
 export function chartOptions(
   palette: ChartPalette,
   precision: number,
   zone: string,
   showGrid = true,
+  interval?: string,
+  exchangeZone?: string,
 ): DeepPartial<ChartOptions> {
   const base = baseChartOptions(palette, precision)
-  const axis = timeAxisOptions(zone)
+  const axis = timeAxisOptions(zone, interval, exchangeZone)
   return {
     ...base,
     ...axis,

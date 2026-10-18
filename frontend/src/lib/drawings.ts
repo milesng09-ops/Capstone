@@ -16,6 +16,7 @@
  * responds, which is when you actually want to drag it somewhere.
  */
 
+import { logicalFromTime, timeFromLogical } from '@/lib/chart'
 import {
   fibLevels,
   hasTwoPoints,
@@ -25,6 +26,7 @@ import {
   type Drawing,
   type DrawingPoint,
 } from '@/types/drawing'
+import type { Candle } from '@/types/market'
 
 /** Pixel slack around a line before the pointer counts as being on it. */
 export const HIT_TOLERANCE_PX = 6
@@ -470,20 +472,23 @@ export function hitKey(hit: DrawingHit | null): string {
  */
 export function translateDrawing(
   drawing: Drawing,
-  deltaTime: number,
+  /** Milliseconds to add to every time, or how to move each one. */
+  deltaTime: number | ((time: number) => number),
   deltaPrice: number,
 ): Drawing {
+  const shift =
+    typeof deltaTime === 'function' ? deltaTime : (time: number) => time + deltaTime
   if (drawing.kind === 'horizontal') {
     return { ...drawing, price: drawing.price + deltaPrice }
   }
   if (drawing.kind === 'vertical') {
-    return { ...drawing, time: drawing.time + deltaTime }
+    return { ...drawing, time: shift(drawing.time) }
   }
   if (drawing.kind === 'text') {
     return {
       ...drawing,
       at: {
-        time: drawing.at.time + deltaTime,
+        time: shift(drawing.at.time),
         price: drawing.at.price + deltaPrice,
       },
     }
@@ -492,7 +497,7 @@ export function translateDrawing(
     return {
       ...drawing,
       from: {
-        time: drawing.from.time + deltaTime,
+        time: shift(drawing.from.time),
         price: drawing.from.price + deltaPrice,
       },
     }
@@ -501,7 +506,7 @@ export function translateDrawing(
     return {
       ...drawing,
       points: drawing.points.map((point) => ({
-        time: point.time + deltaTime,
+        time: shift(point.time),
         price: point.price + deltaPrice,
       })),
     }
@@ -513,10 +518,10 @@ export function translateDrawing(
     return {
       ...drawing,
       entry: {
-        time: drawing.entry.time + deltaTime,
+        time: shift(drawing.entry.time),
         price: drawing.entry.price + deltaPrice,
       },
-      endTime: drawing.endTime + deltaTime,
+      endTime: shift(drawing.endTime),
       stop: drawing.stop + deltaPrice,
       target: drawing.target + deltaPrice,
     }
@@ -524,13 +529,42 @@ export function translateDrawing(
   return {
     ...drawing,
     from: {
-      time: drawing.from.time + deltaTime,
+      time: shift(drawing.from.time),
       price: drawing.from.price + deltaPrice,
     },
     to: {
-      time: drawing.to.time + deltaTime,
+      time: shift(drawing.to.time),
       price: drawing.to.price + deltaPrice,
     },
+  }
+}
+
+/**
+ * Move a time by the number of *bars* the pointer travelled, not the time.
+ *
+ * Bars are not evenly spread in time -- there is a weekend, and on intraday
+ * charts a daily halt, between some neighbours -- so adding the pointer's
+ * wall-clock delta to every anchor stretched a shape dragged across a gap and
+ * dropped its ends inside the gap, where there are no candles at all. Counted
+ * in bars, the shape keeps its width in bars, and a whole-bar drag lands its
+ * anchors on bars. The count is not rounded: the body still follows the
+ * pointer smoothly rather than jumping a bar at a time when zoomed in. Falls
+ * back to the plain delta where the candles cannot place a time.
+ */
+export function shiftByBars(
+  candles: Candle[],
+  from: number,
+  to: number,
+): (time: number) => number {
+  const plain = (time: number) => time + (to - from)
+  const start = logicalFromTime(candles, from)
+  const end = logicalFromTime(candles, to)
+  if (start == null || end == null) return plain
+  const bars = end - start
+  return (time) => {
+    const logical = logicalFromTime(candles, time)
+    if (logical == null) return plain(time)
+    return timeFromLogical(candles, logical + bars) ?? plain(time)
   }
 }
 

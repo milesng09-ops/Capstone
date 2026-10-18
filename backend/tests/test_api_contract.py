@@ -398,3 +398,129 @@ def test_no_overlap_is_enforced_across_symbols_in_a_saved_run(client, monkeypatc
         assert saved["summary"]["trades_executed"] == 2
     finally:
         app.dependency_overrides.pop(backtest_service, None)
+
+
+def test_the_selection_dates_are_excluded_on_every_symbol(client, monkeypatch):
+    """ES, NQ and YM move together: the setup's own dates on a correlated
+    market are the same event, not a second occurrence to score."""
+    from app.api.deps import backtest_service
+    from app.models.domain import BarsResult, Candle
+    from app.services import backtest_service as module
+
+    hour = 3_600_000
+    excluded: dict[str, list] = {}
+
+    class Candles:
+        async def get_series_for_analysis(self, symbol, interval, start, end):
+            bars = [Candle(symbol=symbol, time=i * hour, open=100, high=100.1,
+                           low=99.9, close=100, volume=10) for i in range(100)
+                    if start <= i * hour <= end]
+            return BarsResult(symbol=symbol, interval=interval, provider="yahoo", quality="live",
+                              cached=True, fallback_active=False, bars=bars)
+
+    def matches(query, candles, interval, **kwargs):
+        excluded[candles[0].symbol] = kwargs["exclude_ranges"]
+        return []
+
+    def draws(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(module, "find_similar_windows", matches)
+    monkeypatch.setattr(module, "baseline_inputs", draws)
+    service = module.BacktestService(candle_service=Candles())
+    app.dependency_overrides[backtest_service] = lambda: service
+    try:
+        client.post("/api/backtests", json={
+            "primary_symbol": "ES", "symbols": ["ES", "NQ"], "interval": "1h",
+            "selection": {"start_time": 70 * hour, "end_time": 75 * hour},
+            "search": {"lookback_start": 0, "lookback_end": 100 * hour},
+        })
+        assert excluded == {"ES": [(70 * hour, 75 * hour)], "NQ": [(70 * hour, 75 * hour)]}
+    finally:
+        app.dependency_overrides.pop(backtest_service, None)
+
+
+def _stub_run(client, monkeypatch, *, providers, body):
+    """Run a backtest through the API with stubbed candles; record what was asked."""
+    from app.api.deps import backtest_service
+    from app.models.domain import BarsResult, Candle
+    from app.services import backtest_service as module
+
+    hour = 3_600_000
+    loads: list[tuple[str, int, int]] = []
+    searched: list[str] = []
+    references: list[str] = []
+
+    class Candles:
+        async def get_series_for_analysis(self, symbol, interval, start, end):
+            loads.append((symbol, start, end))
+            bars = [Candle(symbol=symbol, time=i * hour, open=100, high=100.1,
+                           low=99.9, close=100, volume=10) for i in range(100)
+                    if start <= i * hour <= end]
+            provider = providers(symbol, len(loads))
+            return BarsResult(symbol=symbol, interval=interval, provider=provider, quality="live",
+                              cached=True, fallback_active=False, bars=bars)
+
+    def matches(query, candles, interval, **kwargs):
+        searched.append(candles[0].symbol)
+        return []
+
+    real_smt = module.find_smt_divergences
+
+    def smt(primary, primary_swings, reference, reference_swings, **kwargs):
+        references.append(reference[0].symbol)
+        return real_smt(primary, primary_swings, reference, reference_swings, **kwargs)
+
+    monkeypatch.setattr(module, "find_similar_windows", matches)
+    monkeypatch.setattr(module, "baseline_inputs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(module, "find_smt_divergences", smt)
+    service = module.BacktestService(candle_service=Candles())
+    app.dependency_overrides[backtest_service] = lambda: service
+    try:
+        client.post("/api/backtests", json=body)
+    finally:
+        app.dependency_overrides.pop(backtest_service, None)
+    return loads, searched, references
+
+
+def test_an_smt_partner_is_compared_against_but_not_traded(client, monkeypatch):
+    # "Long NQ after an SMT divergence" with ES charted: ES is the comparison,
+    # NQ is the market. Searching ES as well quietly widened the run.
+    hour = 3_600_000
+    loads, searched, references = _stub_run(client, monkeypatch, providers=lambda s, n: "massive", body={
+        "primary_symbol": "NQ", "symbols": ["NQ", "ES"], "interval": "1h",
+        "selection": {"start_time": 70 * hour, "end_time": 75 * hour},
+        "search": {"lookback_start": 0, "lookback_end": 100 * hour, "search_symbols": ["NQ"]},
+        "detectors": {"require_smt_divergence": True},
+    })
+    assert searched == ["NQ"]
+    assert references == ["ES"]
+    assert ("ES", 0, 100 * hour) in loads
+
+
+def test_no_partner_is_loaded_when_smt_is_not_asked_for(client, monkeypatch):
+    hour = 3_600_000
+    loads, searched, _ = _stub_run(client, monkeypatch, providers=lambda s, n: "massive", body={
+        "primary_symbol": "NQ", "symbols": ["NQ", "ES"], "interval": "1h",
+        "selection": {"start_time": 70 * hour, "end_time": 75 * hour},
+        "search": {"lookback_start": 0, "lookback_end": 100 * hour, "search_symbols": ["NQ"]},
+    })
+    assert searched == ["NQ"]
+    assert all(symbol == "NQ" for symbol, _, _ in loads)
+
+
+def test_the_setup_is_read_again_when_the_history_came_from_another_provider(client, monkeypatch):
+    # The lookback fetch handed NQ from the fallback to the preferred provider,
+    # evicting the bars the selection had just been read from.
+    hour = 3_600_000
+    loads, _, _ = _stub_run(
+        client, monkeypatch,
+        providers=lambda symbol, n: "yahoo" if n == 1 else "massive",
+        body={
+            "primary_symbol": "NQ", "symbols": ["NQ"], "interval": "1h",
+            "selection": {"start_time": 70 * hour, "end_time": 75 * hour},
+            "search": {"lookback_start": 0, "lookback_end": 100 * hour},
+        },
+    )
+    selection_reads = [load for load in loads if load == ("NQ", 70 * hour, 75 * hour)]
+    assert len(selection_reads) == 2

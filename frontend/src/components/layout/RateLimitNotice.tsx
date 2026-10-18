@@ -22,17 +22,24 @@ import { Button } from '@/components/ui/primitives'
 import { useProviderStatus } from '@/hooks/useMarketData'
 import { PROVIDER_LABELS, type ProviderStatus } from '@/types/market'
 
-/** Ticks once a second, but only while something is actually counting down. */
+/**
+ * The current time, re-rendering once a second while something counts down.
+ *
+ * Read on every render rather than held in state. The interval only runs while
+ * a countdown is on screen, so a time kept in state was however old the last
+ * tick was -- after half an hour of healthy providers, the first frame of a new
+ * cool-off read "retrying in 1920s" until the first tick corrected it.
+ */
 function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
+  const [, setTick] = useState(0)
 
   useEffect(() => {
     if (!active) return
-    const id = window.setInterval(() => setNow(Date.now()), 1_000)
+    const id = window.setInterval(() => setTick((tick) => tick + 1), 1_000)
     return () => window.clearInterval(id)
   }, [active])
 
-  return now
+  return Date.now()
 }
 
 function label(provider: ProviderStatus): string {

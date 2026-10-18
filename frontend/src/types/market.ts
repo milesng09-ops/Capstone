@@ -84,6 +84,18 @@ export const INTERVAL_MS: Record<Interval, number> = {
   '1mo': 30 * 24 * 60 * 60_000,
 }
 
+/**
+ * True for bars that stand for a trading day, week or month.
+ *
+ * Takes a plain string because the chart hook carries its interval untyped;
+ * anything that is not a known interval is intraday, which is the labelling
+ * that was used for everything before this existed.
+ */
+export function isDailyOrLonger(interval: string): boolean {
+  const length = INTERVAL_MS[interval as Interval]
+  return length != null && length >= INTERVAL_MS['1d']
+}
+
 /** Match the backend's whole-bar aggregation rule for bias timeframes. */
 export function validBiasInterval(base: Interval, higher: Interval): boolean {
   if (INTERVAL_MS[higher] <= INTERVAL_MS[base] || base === '1w' || base === '1mo') return false

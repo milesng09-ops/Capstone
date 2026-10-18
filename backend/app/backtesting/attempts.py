@@ -71,6 +71,15 @@ def configuration_key(request: BacktestRequest) -> str:
             "search_symbols": sorted(search.search_symbols or []),
         },
     }
+    # Both change the answer, so both fork the count -- but only where they
+    # take effect. Fitted weights move every similarity; the timeframe matters
+    # once the bias condition reads it. Settings sitting unused behind a
+    # switch that is off are not a different attempt, and keys for runs that
+    # never used either stay what they were.
+    if request.learning.enabled:
+        payload["learning"] = request.learning.model_dump(mode="json")
+    if request.detectors.require_higher_timeframe_bias:
+        payload["higher_timeframe"] = request.higher_timeframe
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:32]
 

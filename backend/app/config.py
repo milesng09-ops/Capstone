@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     #: source mid-session.  Lower it to favour a fast answer from Yahoo over a
     #: slow one from Massive.
     massive_throttle_max_wait_seconds: float = 60.0
+    #: Where the Massive budget is kept between restarts, so ``--reload``
+    #: does not hand a fresh process a full minute's quota the old one has
+    #: already spent. Empty turns it off; the budget is then per process.
+    massive_quota_state_file: str = str(BACKEND_DIR / "var" / "massive_quota.json")
 
     # ---- Storage ---------------------------------------------------------
     database_url: str = ""

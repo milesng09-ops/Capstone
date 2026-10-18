@@ -6,7 +6,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -104,6 +104,45 @@ describe('RateLimitNotice', () => {
 
     await waitFor(() => expect(api.providerStatus).toHaveBeenCalled())
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('counts down from the time it is now, not from when it last ticked', async () => {
+    // The clock only runs while something is counting down, so after half an
+    // hour of healthy providers the first frame of a new cool-off read "retrying
+    // in 1920s" -- the half hour plus the real two minutes -- for a second.
+    // Only `Date` is faked: the query client still notifies on real timers.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-10-18T09:00:00Z'))
+      const healthy = status([
+        provider({ healthy: true, rate_limited: false, cooldown_until_ms: null }),
+      ])
+      vi.spyOn(api, 'providerStatus').mockResolvedValue(healthy as never)
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+      })
+      client.setQueryData(['provider-status'], healthy)
+      render(
+        <QueryClientProvider client={client}>
+          <RateLimitNotice />
+        </QueryClientProvider>,
+      )
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+
+      vi.setSystemTime(new Date('2026-10-18T09:30:00Z'))
+      act(() => {
+        client.setQueryData(
+          ['provider-status'],
+          status([provider({ cooldown_until_ms: Date.now() + 120_000 })]),
+        )
+      })
+
+      // The first frame it appears in, before any one-second tick has run.
+      const notice = await screen.findByRole('status')
+      expect(notice).toHaveTextContent('retrying in 120s')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stops showing once the cool-off deadline has already passed', async () => {

@@ -404,6 +404,351 @@ describe('the trade logic added after the first grammar', () => {
     expect(read.detectors.sessions).toEqual(['london'])
     expect(read.detectors.require_higher_timeframe_bias).toBe(true)
     expect(read.rules.direction).toBe('long')
+    // "Daily" is the one word in it that sets nothing: the bias is read on
+    // the timeframe set on the form, and saying otherwise would be the quiet
+    // drop this module exists to prevent. This used to expect nothing unread.
+    expect(read.unread).toEqual(['daily'])
+  })
+})
+
+type Condition =
+  | 'require_fair_value_gap'
+  | 'require_smt_divergence'
+  | 'require_higher_timeframe_bias'
+
+describe('negation', () => {
+  // These all used to switch the condition *on*: the grammar matched the
+  // noun and never looked at the word in front of it.
+  it.each<[string, Condition]>([
+    ['Short ES, stop 15 points, target 30 points, no fair value gap needed', 'require_fair_value_gap'],
+    ['long, no SMT needed, 2R', 'require_smt_divergence'],
+    ['long without a fair value gap', 'require_fair_value_gap'],
+    ['ignore the daily bias, long', 'require_higher_timeframe_bias'],
+  ])('does not switch on a condition it was told is not needed: %s', (text, key) => {
+    const read = interpret(text)
+
+    expect(read.detectors[key]).toBe(false)
+    expect(read.understood).toContainEqual(
+      expect.objectContaining({
+        setting: 'Condition',
+        value: expect.stringMatching(/^Not required/),
+      }),
+    )
+  })
+
+  it('reads an entry without the retracement as either entry, not the retracement', () => {
+    const read = interpret('enter without a fib retracement')
+
+    expect(read.detectors.entry_model).toBe('any')
     expect(read.unread).toEqual([])
+  })
+
+  it('counts a condition it was told to leave out as read, and says how it read it', () => {
+    // Ruling a condition out is an instruction understood, not a clause to
+    // flag as unreadable -- and the account quotes the negation with it.
+    const read = interpret('long, no SMT needed, 2R')
+
+    expect(read.unread).toEqual([])
+    expect(read.understood).toContainEqual({
+      phrase: 'no smt',
+      setting: 'Condition',
+      value: 'Not required: an SMT divergence',
+    })
+  })
+
+  it.each([
+    'fair value gap not required',
+    "don't need a fair value gap",
+    'no need for a fair value gap',
+    'skip the fvg',
+    'the fvg is optional',
+    'the fvg doesn’t matter',
+    'the fvg is not a requirement',
+  ])('reads %s as the gap ruled out', (text) => {
+    expect(interpret(text).detectors.require_fair_value_gap).toBe(false)
+  })
+
+  it('reports a "no" that rules out something else in front of the phrase', () => {
+    // It is the news that is ruled out here, and the entries in the second,
+    // which means avoiding gaps: a setting this cannot make. Neither is read
+    // as the gap condition switched either way.
+    for (const text of [
+      'no news days inside a fair value gap',
+      'no entries inside a fair value gap',
+    ]) {
+      const read = interpret(text)
+      expect(read.detectors.require_fair_value_gap, text).toBeUndefined()
+      expect(read.unread, text).toEqual([text])
+    }
+  })
+
+  it('lets two negations cancel', () => {
+    expect(interpret('never enter without a fair value gap').detectors.require_fair_value_gap)
+      .toBe(true)
+    expect(interpret('no trades without a fair value gap').detectors.require_fair_value_gap)
+      .toBe(true)
+
+    const read = interpret("don't go long without a fair value gap")
+    expect(read.detectors.require_fair_value_gap).toBe(true)
+    expect(read.rules.direction).toBe('long')
+  })
+
+  it('keeps a negation to the phrase it belongs to', () => {
+    // The "no" in "no retrace" is the retrace's, not the gap's.
+    const retrace = interpret('no retrace into a fair value gap')
+    expect(retrace.detectors.require_fair_value_gap).toBe(true)
+    expect(retrace.detectors.entry_model).toBe('immediate')
+
+    const turned = interpret('no SMT but inside a fair value gap')
+    expect(turned.detectors.require_smt_divergence).toBe(false)
+    expect(turned.detectors.require_fair_value_gap).toBe(true)
+  })
+
+  it('carries a negation across "or"', () => {
+    expect(interpret('no SMT or fair value gap').detectors).toMatchObject({
+      require_smt_divergence: false,
+      require_fair_value_gap: false,
+    })
+  })
+
+  it('reports a negation it cannot place rather than guessing', () => {
+    // Avoiding sweeps and waiting for one are written the same way, so this
+    // sets neither.
+    const read = interpret('never trade after a liquidity sweep')
+
+    expect(read.detectors.require_liquidity_sweep).toBeUndefined()
+    expect(read.unread).toEqual(['never trade after a liquidity sweep'])
+  })
+
+  it('reports a contradiction rather than letting the last word win', () => {
+    const read = interpret('inside a fair value gap, no fair value gap needed')
+
+    expect(read.detectors.require_fair_value_gap).toBe(true)
+    expect(read.unread).toEqual(['no fair value gap'])
+  })
+
+  it('reads a direction it was told to leave out', () => {
+    expect(interpret('long only, no shorts')).toMatchObject({
+      rules: { direction: 'long' },
+      unread: [],
+    })
+    // Refusing the trade without its condition is not refusing the trade.
+    expect(interpret('never short without SMT confirmation')).toMatchObject({
+      rules: { direction: 'short' },
+      detectors: { require_smt_divergence: true },
+    })
+  })
+
+  it('does not set an entry or an exit it was told not to use', () => {
+    // Both used to be set exactly as if the "don't" were not there.
+    for (const text of ["don't enter on the next open", "don't target liquidity"]) {
+      const read = interpret(text)
+      expect(read.rules, text).toEqual({})
+      expect(read.unread, text).toEqual([text])
+    }
+  })
+
+  it('reads a session it was told to stay out of', () => {
+    expect(interpret('london, not asia')).toMatchObject({
+      detectors: { sessions: ['london'] },
+      unread: [],
+    })
+
+    // With nothing asked for there is no filter to leave Asia out of: "every
+    // killzone but Asia" would drop the hours between them as well.
+    const read = interpret('avoid the asian session')
+    expect(read.detectors.sessions).toBeUndefined()
+    expect(read.unread).toEqual(['avoid the asian session'])
+  })
+})
+
+describe('ratios and decimals', () => {
+  // The first number after "risk reward" is the risk side, nearly always 1,
+  // and every one of these used to come out as a 1R target.
+  it.each<[string, number]>([
+    ['long, risk reward 1:2', 2],
+    ['long, risk-reward of 1:3', 3],
+    ['risk 1R to make 3R', 3],
+    ['risking 1R for 2R', 2],
+    ['reward to risk of 3:1', 3],
+    ['a 1:2 risk to reward', 2],
+    ['risk:reward 1:2.5', 2.5],
+  ])('reads %s as a %sR target', (text, value) => {
+    expect(interpret(text).rules).toMatchObject({
+      take_profit_type: 'risk_reward',
+      take_profit_value: value,
+    })
+  })
+
+  it('reads a decimal written without its leading zero', () => {
+    // These read as a 5% stop and a 5R target: ten times what was written.
+    expect(interpret('long, .5% stop, 2R').rules).toMatchObject({
+      stop_loss_value: 0.5,
+      take_profit_value: 2,
+    })
+    expect(interpret('long, 1% stop, .5R').rules).toMatchObject({
+      stop_loss_value: 1,
+      take_profit_value: 0.5,
+    })
+  })
+
+  it('does not read the risk side of a trade as its target', () => {
+    // R is the risk, so "risk 1R" names the unit. It sets nothing, and says so.
+    const read = interpret('long, risk 1R')
+
+    expect(read.rules.take_profit_type).toBeUndefined()
+    expect(read.unread).toEqual(['risk 1R'])
+  })
+
+  it('reports two targets it cannot choose between', () => {
+    const read = interpret('long, 2R or 3R')
+
+    expect(read.rules.take_profit_value).toBeUndefined()
+    expect(read.unread).toEqual(['2r or 3r'])
+  })
+
+  it('reports a ratio with nothing at risk', () => {
+    const read = interpret('risk reward 0:2')
+
+    expect(read.rules.take_profit_value).toBeUndefined()
+    expect(read.unread).toEqual(['risk reward 0:2'])
+  })
+})
+
+describe('direction, read from the whole description', () => {
+  it.each([
+    'Short after long wicks above the highs',
+    'Short after an upside sweep, 2R',
+    'Short NQ when bullish momentum fades',
+    'short it, 1% stop, exit if it turns bullish',
+    'shorts only after the highs are swept, 2R',
+    'Shorting NQ after the highs are swept',
+    'selling the rally',
+  ])('reads %s as short', (text) => {
+    expect(interpret(text).rules.direction).toBe('short')
+  })
+
+  it.each(['longs only', 'buying the dip', 'buys the first gap'])('reads %s as long', (text) => {
+    expect(interpret(text).rules.direction).toBe('long')
+  })
+
+  it('does not take the nouns built on trade words for trades', () => {
+    // Each of these would now be two directions in conflict, and so no
+    // direction at all, if the noun were read as a verb.
+    for (const text of [
+      'long after a sell-off',
+      'long after a short squeeze',
+      'long after the buy stops are taken',
+    ]) {
+      expect(interpret(text).rules.direction, text).toBe('long')
+    }
+    expect(interpret('short as long as the daily bias agrees').rules.direction).toBe('short')
+  })
+
+  it('lets a trade verb outrank a word describing the market, in one line', () => {
+    const read = interpret('Short NQ when bullish momentum fades')
+
+    expect(read.understood.filter((item) => item.setting === 'Direction')).toEqual([
+      { phrase: 'short', setting: 'Direction', value: 'Short' },
+    ])
+  })
+
+  it('reports a clause whose only direction word was outranked', () => {
+    // "Exit if it turns bullish" is an exit this grammar cannot express. It
+    // used to be read as a long, and now it is at least reported.
+    expect(interpret('short it, 1% stop, exit if it turns bullish').unread).toEqual([
+      'exit if it turns bullish',
+    ])
+  })
+
+  it('reports two trades that disagree instead of keeping the last', () => {
+    const read = interpret('long ES, short NQ')
+
+    expect(read.rules.direction).toBeUndefined()
+    expect(read.unread).toEqual(['long', 'short'])
+  })
+
+  it('reports two descriptions of the market that disagree, when nothing else decides', () => {
+    const read = interpret('bearish reversal after a bullish run')
+
+    expect(read.rules.direction).toBeUndefined()
+    expect(read.unread).toEqual(['bearish', 'bullish'])
+  })
+})
+
+describe('phrases read for the whole of what they say', () => {
+  it('reads both sessions a bare New York names', () => {
+    // This used to be London alone, with nothing reported: the New York
+    // trades were filtered out without a word.
+    const read = interpret('long during the London and New York sessions, 2R')
+
+    expect(read.detectors.sessions).toEqual(['london', 'new_york_am', 'new_york_pm'])
+    expect(read.unread).toEqual([])
+    expect(interpret('ny session only').detectors.sessions).toEqual([
+      'new_york_am',
+      'new_york_pm',
+    ])
+    expect(interpret('new york am and pm').detectors.sessions).toEqual([
+      'new_york_am',
+      'new_york_pm',
+    ])
+  })
+
+  it('reports a time that is not a killzone instead of rounding it to one', () => {
+    const read = interpret('long into the london close')
+
+    expect(read.detectors.sessions).toBeUndefined()
+    expect(read.unread).toEqual(['london close'])
+    // Quoted alone, whatever was said about it.
+    expect(interpret('long, not during ny lunch').unread).toEqual(['ny lunch'])
+  })
+
+  it('does not read a level named after a session as a session', () => {
+    const read = interpret('long after the asian range is swept')
+
+    expect(read.detectors.sessions).toBeUndefined()
+    expect(read.detectors.require_liquidity_sweep).toBe(true)
+  })
+
+  it('says whose timeframe the bias is read on, and that a named one was not set', () => {
+    const read = interpret('long with the daily bias')
+
+    expect(read.detectors.require_higher_timeframe_bias).toBe(true)
+    expect(read.unread).toEqual(['daily'])
+    expect(read.understood).toContainEqual(
+      expect.objectContaining({
+        value: 'The higher timeframe set on the form agreed with the trade',
+      }),
+    )
+  })
+
+  it('has nothing to report about a bias that names no timeframe', () => {
+    expect(interpret('long in line with the higher timeframe').unread).toEqual([])
+  })
+
+  it('needs a word that says search before reading a span of days as the lookback', () => {
+    expect(interpret('long after the past 2 days were bearish').search.lookbackDays)
+      .toBeUndefined()
+    expect(interpret('look back 90 days').search.lookbackDays).toBe(90)
+    expect(interpret('120 days of history').search.lookbackDays).toBe(120)
+  })
+
+  it('gives a phrase to one setting only', () => {
+    // The swing low is where the stop goes, not an entry condition.
+    const stop = interpret('stop below the swing low')
+    expect(stop.rules.stop_loss_type).toBe('pattern_extreme')
+    expect(stop.detectors.require_swing_point).toBeUndefined()
+
+    // "Exit within 5 bars" is a holding period, not how recent a condition is.
+    const exit = interpret('exit within 5 bars')
+    expect(exit.rules.maximum_holding_bars).toBe(5)
+    expect(exit.detectors.within_bars).toBeUndefined()
+  })
+
+  it('leaves the filler between a keyword and its value to the other rules', () => {
+    const read = interpret('hold inside the fvg for 12 bars')
+
+    expect(read.rules.maximum_holding_bars).toBe(12)
+    expect(read.detectors.require_fair_value_gap).toBe(true)
   })
 })

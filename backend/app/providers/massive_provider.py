@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -43,7 +44,7 @@ from app.providers.futures_calendar import ContractMonth, contract_segments
 from app.providers.trading_hours import empty_response_indicts_provider
 from app.providers.instruments import get_instrument, list_instruments
 from app.services.normalization import clip_to_range, normalize_candles
-from app.utils.timeutils import to_ms
+from app.utils.timeutils import now_ms, to_ms
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,18 @@ PAGE_LIMIT = 50_000
 #: Safety valve on cursor following, far above any real window.
 MAX_PAGES = 40
 
+#: How long a finished contract's rows are kept in memory, and how many.
+#:
+#: A six-month window is three contracts, so three calls -- over half a
+#: minute's quota. When the budget runs out on the third, the whole fetch
+#: fails and the first two answers used to be thrown away, then bought again
+#: when the chart retried. Kept briefly, the retry pays for the one contract
+#: it is missing. Only contracts that ended a day or more ago are kept: their
+#: bars are final, where the front month's are still forming.
+CONTRACT_MEMO_SECONDS = 15 * 60
+CONTRACT_MEMO_SIZE = 32
+CONTRACT_SETTLED_MS = 24 * 60 * 60 * 1000
+
 
 def contract_ticker(product: str, contract: ContractMonth) -> str:
     """Massive contract ticker, e.g. ``("ES", 2026-09)`` -> ``ESU6``.
@@ -117,6 +130,8 @@ class MassiveProvider(MarketDataProvider):
         self._limiter = limiter or get_massive_limiter()
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
+        #: ``(ticker, resolution, start_ms, end_ms)`` -> (monotonic time, rows).
+        self._contract_memo: dict[tuple[str, str, int, int], tuple[float, list[dict[str, Any]]]] = {}
 
     async def is_configured(self) -> bool:
         return bool(self._api_key)
@@ -177,7 +192,7 @@ class MassiveProvider(MarketDataProvider):
         for segment in contract_segments(start_ms, end_ms, tz_name=instrument.timezone):
             ticker = contract_ticker(product, segment.contract)
             rows.extend(
-                await self._fetch_contract(
+                await self._fetch_contract_memoised(
                     ticker, resolution, segment.start_ms, segment.end_ms
                 )
             )
@@ -200,6 +215,36 @@ class MassiveProvider(MarketDataProvider):
         return candles
 
     # ------------------------------------------------------------------
+    async def _fetch_contract_memoised(
+        self,
+        ticker: str,
+        resolution: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[dict[str, Any]]:
+        """:meth:`_fetch_contract`, answered from memory for a settled contract."""
+
+        key = (ticker, resolution, start_ms, end_ms)
+        now = time.monotonic()
+        for stale in [
+            k for k, (when, _) in self._contract_memo.items()
+            if now - when >= CONTRACT_MEMO_SECONDS
+        ]:
+            del self._contract_memo[stale]
+
+        hit = self._contract_memo.get(key)
+        if hit is not None:
+            logger.debug("Reusing %s %s from a fetch moments ago", ticker, resolution)
+            return hit[1]
+
+        rows = await self._fetch_contract(ticker, resolution, start_ms, end_ms)
+        if end_ms <= now_ms() - CONTRACT_SETTLED_MS:
+            if len(self._contract_memo) >= CONTRACT_MEMO_SIZE:
+                oldest = min(self._contract_memo, key=lambda k: self._contract_memo[k][0])
+                del self._contract_memo[oldest]
+            self._contract_memo[key] = (now, rows)
+        return rows
+
     async def _fetch_contract(
         self,
         ticker: str,
@@ -327,14 +372,20 @@ class MassiveProvider(MarketDataProvider):
                         provider=self.name,
                     )
                 if response.status_code == 429:
-                    wait = self._retry_after(response, delay)
-                    last_error = ProviderRateLimitError(
+                    # Not retried. The vendor counts every call on the key --
+                    # another process, another machine sharing it -- so a 429
+                    # means its window is full whatever ours says, and a retry
+                    # a second or four later is one more rejected call that
+                    # keeps it full. The budget is closed until the vendor
+                    # says it reopens, so queued callers wait it out too.
+                    wait = self._retry_after(response)
+                    self._limiter.block_for(wait)
+                    raise ProviderRateLimitError(
                         "Massive rate limit exceeded (HTTP 429)",
                         provider=self.name,
                         retry_after_seconds=wait,
                     )
-                    delay = wait
-                elif response.status_code >= 500:
+                if response.status_code >= 500:
                     last_error = ProviderUnavailableError(
                         f"Massive server error (HTTP {response.status_code})", provider=self.name
                     )
@@ -366,11 +417,18 @@ class MassiveProvider(MarketDataProvider):
         raise last_error
 
     @staticmethod
-    def _retry_after(response: httpx.Response, fallback: float) -> float:
+    def _retry_after(response: httpx.Response) -> float:
+        """How long the vendor wants left alone; a whole window if unsaid.
+
+        The quota is per minute, so without a header the only wait certain to
+        outlast it is a minute -- anything shorter is a guess that, when
+        wrong, costs another 429.
+        """
+
         header = response.headers.get("Retry-After")
         if header:
             try:
-                return min(max(float(header), 0.5), 30.0)
+                return min(max(float(header), 1.0), 300.0)
             except ValueError:
                 pass
-        return min(fallback * 2, 30.0)
+        return 60.0

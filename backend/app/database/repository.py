@@ -205,6 +205,19 @@ REAL_PROVIDERS: frozenset[str] = frozenset({"massive", "yahoo"})
 PROVIDER_PREFERENCE: tuple[str, ...] = ("massive", "yahoo")
 
 
+def provider_rank(provider: str) -> int:
+    """Position in :data:`PROVIDER_PREFERENCE`; lower is preferred.
+
+    A provider missing from the order ranks after every one in it, so a name
+    nobody has ranked can never displace one that has been.
+    """
+
+    try:
+        return PROVIDER_PREFERENCE.index(provider)
+    except ValueError:
+        return len(PROVIDER_PREFERENCE)
+
+
 def series_owner(session: Session, symbol: str, interval: str) -> str | None:
     """The real provider whose prices this series is made of.
 

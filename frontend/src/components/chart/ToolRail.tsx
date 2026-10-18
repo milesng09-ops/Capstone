@@ -492,13 +492,16 @@ export function ChartSettingsBody() {
           Says all three things the switch governs. It also gates
           click-to-jump, and a help line naming only the scroll and the zoom
           left that feature missing with nothing to point the user at.
+
+          `text-muted-foreground`: `text-muted` is the muted *background*
+          token, which drew both lines at about 1.1:1 against this panel.
         */}
-        <p className="pt-1 text-[10px] leading-snug text-muted">
+        <p className="pt-1 text-[10px] leading-snug text-muted-foreground">
           {sync.time
             ? 'Moving one chart moves them all, and clicking a candle takes every chart to that moment.'
             : 'Each chart scrolls, zooms, and jumps to a clicked candle on its own.'}
         </p>
-        <p className="pt-1 text-[10px] leading-snug text-muted">
+        <p className="pt-1 text-[10px] leading-snug text-muted-foreground">
           {sync.interval
             ? 'Every chart is on the same bar size.'
             : 'Each chart keeps its own bar size; set it on the chart.'}

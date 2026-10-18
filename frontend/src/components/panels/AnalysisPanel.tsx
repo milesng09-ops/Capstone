@@ -18,7 +18,12 @@ import { NumberField, ToggleField } from '@/components/ui/fields'
 import { Badge, Button, EmptyState, Spinner } from '@/components/ui/primitives'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useIct } from '@/hooks/useMarketData'
-import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
+import {
+  useChartedSymbols,
+  useSymbolInterval,
+  useTimeZone,
+  useWorkspace,
+} from '@/store/workspace'
 import { TOOL_LABELS, drawingTime } from '@/types/drawing'
 import {
   VALIDITY_LABELS,
@@ -47,9 +52,14 @@ export function AnalysisPanel() {
   // reading it here is what re-renders them when that changes.
   useTimeZone()
 
-  const range = useChartRange()
-  const interval = useWorkspace((state) => state.interval)
   const primary = useWorkspace((state) => state.primarySymbol)
+  // The interval the primary chart is drawn on, which with the interval link
+  // off is that pane's own -- not the shared one in the top bar. Asking for
+  // the shared one listed a different timeframe's detections beside switches
+  // that draw on this one. The range is held to what that interval can load,
+  // which also makes this the chart's own request and so a cache hit.
+  const interval = useSymbolInterval(primary)
+  const range = useChartRange(interval)
   const settings = useWorkspace((state) => state.ict)
   const showTrades = useWorkspace((state) => state.showTrades)
   const updateIct = useWorkspace((state) => state.updateIct)
@@ -78,6 +88,9 @@ export function AnalysisPanel() {
             value={settings.swingStrength}
             min={1}
             max={20}
+            // The analysis request takes a whole number and refuses anything
+            // else, which took every detection off the chart without a word.
+            integer
             disabled={!settings.enabled}
             onChange={(swingStrength) => updateIct({ swingStrength })}
           />
@@ -131,6 +144,7 @@ export function AnalysisPanel() {
             value={settings.liquidityMinTouches}
             min={2}
             max={10}
+            integer
             disabled={!settings.enabled}
             onChange={(liquidityMinTouches) => updateIct({ liquidityMinTouches })}
           />
@@ -308,8 +322,10 @@ export function AnalysisPanel() {
 
 function PoolRow({ pool }: { pool: LiquidityPool }) {
   const high = pool.kind === 'high'
+  // The same raised card as the divergence rows. `bg-surface-2` and `text-fg`
+  // were never tokens in the Tailwind config, so neither produced any CSS.
   return (
-    <li className="rounded-md border border-border bg-surface-2 px-2 py-1.5">
+    <li className="rounded-md border border-border bg-[hsl(var(--panel-raised))] px-2 py-1.5">
       <div className="flex items-baseline justify-between gap-2">
         <span
           className={cn(
@@ -328,7 +344,7 @@ function PoolRow({ pool }: { pool: LiquidityPool }) {
           {pool.touch_count} touches
           {pool.spread > 0 ? ` · ${formatNumber(pool.spread, 2)} wide` : ' · exact'}
         </span>
-        <span className={pool.swept ? 'text-muted-foreground' : 'text-fg'}>
+        <span className={pool.swept ? 'text-muted-foreground' : 'text-foreground'}>
           {pool.swept ? 'Swept' : 'Standing'}
         </span>
       </div>

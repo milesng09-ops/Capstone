@@ -41,8 +41,24 @@ from app.providers.health import ProviderHealthRegistry, get_health_registry
 from app.providers.massive_provider import MassiveProvider
 from app.providers.yahoo_provider import YahooProvider
 from app.utils.intervals import resolve_fetch_interval
+from app.utils.timeutils import now_ms
 
 logger = logging.getLogger(__name__)
+
+
+class FallbackFetchResult(ProviderFetchResult):
+    """A fetch result that remembers a quota was hit further up the chain.
+
+    When Massive is over its limit and Yahoo answers instead, the answer is
+    real data -- but for a series Massive owns it is not data the cache will
+    keep, and the reason the range stays missing is the quota, which clears
+    by itself. That has to reach the user as "rate limited, wait N seconds",
+    not as whatever the cache says about the fallback's prices; the UI tells
+    the two apart by ``rate_limited`` alone.
+    """
+
+    rate_limited: bool = False
+    retry_after_seconds: float | None = None
 
 #: Demo data is deliberately absent from every automatic chain.  It is real
 #: prices or nothing: a rate limit that quietly swapped in synthetic candles
@@ -171,6 +187,17 @@ class AutomaticFallbackProvider(MarketDataProvider):
             if not self._registry.is_available(name):
                 entry = self._registry.entry(name)
                 skip_reason = entry.last_error or "recent failure"
+                if entry.rate_limited and entry.cooldown_until_ms is not None:
+                    # Skipped for a quota cool-off, which is still a quota
+                    # problem: the same "wait" outranks what fails after it.
+                    rate_limit_error = rate_limit_error or ProviderRateLimitError(
+                        f"{provider.display_name} is cooling off after a rate limit: "
+                        f"{skip_reason}",
+                        provider=name,
+                        retry_after_seconds=max(
+                            0.0, (entry.cooldown_until_ms - now_ms()) / 1000
+                        ),
+                    )
                 if position + 1 < len(chain):
                     self._registry.record_fallback(name, chain[position + 1], skip_reason)
                 reason = reason or f"{provider.display_name} unavailable: {skip_reason}"
@@ -206,7 +233,13 @@ class AutomaticFallbackProvider(MarketDataProvider):
                     )
                 else:
                     self._registry.mark_failure(
-                        name, str(exc), permanent=exc.permanent, rate_limited=is_rate_limit
+                        name,
+                        str(exc),
+                        permanent=exc.permanent,
+                        rate_limited=is_rate_limit,
+                        retry_after_seconds=(
+                            exc.retry_after_seconds if is_rate_limit else None
+                        ),
                     )
                 if position + 1 < len(chain):
                     next_provider = self._providers[chain[position + 1]]
@@ -226,12 +259,16 @@ class AutomaticFallbackProvider(MarketDataProvider):
             self._registry.mark_success(name)
             self._last_active = name
             self._last_reason = reason if name != primary else None
-            return ProviderFetchResult(
+            return FallbackFetchResult(
                 provider=name,
                 interval=fetch_interval,
                 bars=bars,
                 quality=provider.quality,  # type: ignore[arg-type]
                 fallback_reason=self._last_reason,
+                rate_limited=rate_limit_error is not None,
+                retry_after_seconds=(
+                    rate_limit_error.retry_after_seconds if rate_limit_error else None
+                ),
             )
 
         # Nothing in the chain worked. There is no synthetic floor to land on

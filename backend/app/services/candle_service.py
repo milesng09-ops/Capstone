@@ -29,7 +29,9 @@ from app.database.repository import (
     DEMO_PROVIDER,
     TimeRange,
     candle_provider,
+    drop_provider_candles,
     drop_unreal_candles,
+    provider_rank,
     series_owner,
     has_real_candles,
     load_candles,
@@ -48,7 +50,7 @@ from app.providers.trading_hours import (
     empty_response_indicts_provider,
     has_trading_session,
 )
-from app.services.aggregation_service import aggregate_candles
+from app.services.aggregation_service import aggregate_candles, bucket_end
 from app.services.cache_service import (
     align_range,
     align_down,
@@ -59,8 +61,20 @@ from app.services.cache_service import (
     merge_adjacent,
     storage_interval,
 )
-from app.utils.intervals import get_interval, interval_ms, is_intraday
-from app.utils.timeutils import from_ms
+from app.utils.intervals import (
+    DAY_MS,
+    get_interval,
+    interval_ms,
+    is_calendar_anchored,
+    is_intraday,
+)
+from app.utils.timeutils import (
+    MAX_TIMESTAMP_MS,
+    MIN_TIMESTAMP_MS,
+    TimestampOutOfRangeError,
+    from_ms,
+    now_ms,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +96,12 @@ class _PersistOutcome(str, Enum):
     """
 
     STORED = "stored"
+    #: Stored, after evicting a less preferred provider that owned the series.
+    #: The evicted bars take their coverage with them, so the rest of the
+    #: window is missing until it is fetched again from the new owner -- which
+    #: the caller does in the same request rather than drawing a chart of a
+    #: few fresh bars.
+    STORED_REBASED = "stored_rebased"
     #: Stored, but the provider answered for less of the window than was
     #: asked for while the market was open in the part it skipped. Yahoo does
     #: this by design: it trims an intraday request to its own retention limit
@@ -116,8 +136,117 @@ _DECLINED_REASONS.update(
 )
 
 
+#: The provider answered for less of a window than was asked for.
+_SHORT_REASON = (
+    "The provider does not hold the whole of this window, so the chart starts "
+    "later than the range you asked for. Try a shorter history, or a larger "
+    "interval that reaches further back."
+)
+
+#: The market was open and nothing came back.
+_NOT_SERVED_REASON = (
+    "The provider returned no candles for part of this window while the market "
+    "was open, so that stretch is still missing. It will be asked for again."
+)
+
+#: The preferred provider was over its quota, so a fallback answered -- with a
+#: different series, which is not mixed in. Unlike the plain refusal above, the
+#: answer here is to wait, not to clear anything.
+_RATE_LIMITED_FOREIGN_REASON = (
+    "The fallback's prices are a different series and are not mixed into this "
+    "one, so this stretch is fetched again once the rate limit clears."
+)
+
+
 class RequestTooLargeError(ValueError):
     """Raised when a query would exceed the configured cost limits."""
+
+
+def _deadline(seconds: float | None) -> float | None:
+    return None if seconds is None else time.monotonic() + max(0.0, seconds)
+
+
+@dataclass(frozen=True)
+class _TailFailure:
+    """Why the last attempt at a series' forming tail came back empty-handed.
+
+    Kept so that reusing that attempt -- the whole point of the tail memo --
+    reports the failure rather than a clean cache hit.
+    """
+
+    reason: str
+    rate_limited: bool
+    #: When the provider said it would take requests again, on the monotonic
+    #: clock, so a reuse a few seconds later counts down instead of repeating
+    #: the original wait.
+    retry_at: float | None
+
+    def retry_after(self) -> float | None:
+        if self.retry_at is None:
+            return None
+        return max(0.0, self.retry_at - time.monotonic())
+
+
+@dataclass
+class _FetchState:
+    """Running account of one :meth:`CandleService._ensure_cached` call."""
+
+    provider: str
+    quality: str = "delayed"
+    fallback_reason: str | None = None
+    fetched_any: bool = False
+    attempted: int = 0
+    failed: int = 0
+    rate_limited: bool = False
+    retry_after: float | None = None
+    #: A less preferred owner was evicted while storing, so the rest of the
+    #: window has to be fetched again from the provider that replaced it.
+    rebased: bool = False
+
+    def wait(self, seconds: float | None) -> None:
+        if seconds is not None:
+            self.retry_after = seconds if self.retry_after is None else max(self.retry_after, seconds)
+
+    def fail(
+        self, reason: str, *, rate_limited: bool = False, retry_after: float | None = None
+    ) -> None:
+        self.failed += 1
+        self.fallback_reason = self.fallback_reason or reason
+        if rate_limited:
+            self.rate_limited = True
+            self.wait(retry_after)
+
+    def reuse(self, failure: _TailFailure) -> None:
+        self.attempted += 1
+        self.fail(
+            failure.reason,
+            rate_limited=failure.rate_limited,
+            retry_after=failure.retry_after(),
+        )
+
+    def outcome(self) -> "_CacheOutcome":
+        reason = self.fallback_reason
+        if self.failed:
+            missing = f"{self.failed} of {self.attempted} missing range(s) could not be fetched"
+            reason = f"{missing}: {reason}" if reason else missing
+        return _CacheOutcome(
+            served_from_cache=not self.fetched_any,
+            provider=self.provider,
+            fallback_reason=reason,
+            quality=self.quality,
+            incomplete=self.failed > 0,
+            rate_limited=self.rate_limited,
+            retry_after_seconds=self.retry_after,
+        )
+
+
+def _with_cause(result: object, reason: str) -> str:
+    """``reason``, led by the provider chain's own account when it gave one."""
+
+    cause = (getattr(result, "fallback_reason", None) or "").strip()
+    if not cause:
+        return reason
+    return f"{cause if cause.endswith(('.', '!', '?')) else cause + '.'} {reason}"
 
 
 @dataclass(frozen=True)
@@ -157,10 +286,14 @@ class CandleService:
     def __init__(self, provider: AutomaticFallbackProvider | None = None) -> None:
         self._provider = provider or AutomaticFallbackProvider()
         self._locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
-        #: Per series: when its forming tail was last fetched, on the
-        #: monotonic clock, and the freshness horizon in force at that moment.
-        #: See :meth:`_settled_gaps_only` for why both are needed.
+        #: Per series: when its forming tail was last asked for, on the
+        #: monotonic clock, and where that request began -- the start of the
+        #: earliest gap that reached into the tail. See
+        #: :meth:`_settled_gaps_only` for why both are needed.
         self._tail_fetched: dict[tuple[str, str], tuple[float, int]] = {}
+        #: Per series: how the last tail request failed, if it did. Read only
+        #: while the memo above is in force.
+        self._tail_failures: dict[tuple[str, str], _TailFailure] = {}
 
     @property
     def provider(self) -> AutomaticFallbackProvider:
@@ -177,6 +310,15 @@ class CandleService:
 
         if end <= start:
             raise ValueError("'to' must be greater than 'from'")
+        if start < MIN_TIMESTAMP_MS or end > MAX_TIMESTAMP_MS:
+            # Checked here as well as where query parameters are parsed: the
+            # backtest body reaches this service without passing through that
+            # parser, and a timestamp past a signed 64-bit integer otherwise
+            # fails inside SQLite as a 500.
+            raise TimestampOutOfRangeError(
+                f"The window {start}..{end} is outside the supported range "
+                "(1970-01-01 to 2100-01-01, in Unix milliseconds)."
+            )
 
         requested = TimeRange(start, end)
         # Sized against the interval that is actually FETCHED, not the one that
@@ -220,8 +362,19 @@ class CandleService:
         # stored series rather than of the interval on screen, so that every
         # view of one range asks for exactly the same window.
         padding = edge_padding_ms(interval)
+        right = requested.end + padding
+        if is_calendar_anchored(interval):
+            # The padding is a day, and a week or a month is not, so a window
+            # ending inside one -- every backtest selection does, since it ends
+            # at the *open* of its last bar -- used to aggregate that last bar
+            # from a single day: the right open, a Monday close, a fifth of the
+            # volume. A bucket that has already closed is loaded whole. One
+            # still forming is left alone; there is nothing after now to load.
+            closes = bucket_end(requested.end, interval, instrument.timezone)
+            if closes <= now_ms():
+                right = max(right, closes - 1)
         padded = align_range(
-            TimeRange(requested.start - padding, requested.end + padding),
+            TimeRange(max(MIN_TIMESTAMP_MS, requested.start - padding), right),
             store_interval,
         )
 
@@ -281,7 +434,7 @@ class CandleService:
 
     # ------------------------------------------------------------------
     def _tail_fetch(self, symbol: str, store_interval: str) -> int | None:
-        """The horizon the tail was last fetched against, if that was recent.
+        """Where the last request for the tail began, if it was recent.
 
         The tail is never recorded as covered -- that is the whole freshness
         policy, and it is what keeps the bar currently forming up to date. The
@@ -301,31 +454,41 @@ class CandleService:
         recorded = self._tail_fetched.get((symbol, store_interval))
         if recorded is None:
             return None
-        when, horizon = recorded
+        when, tail_start = recorded
         if (time.monotonic() - when) >= get_settings().fresh_tail_min_seconds:
             return None
-        return horizon
+        return tail_start
 
     def _settled_gaps_only(
         self, symbol: str, store_interval: str, gaps: list[TimeRange]
     ) -> list[TimeRange]:
-        """Drop gaps that are nothing but a tail we have just fetched.
+        """Drop gaps that are nothing but a tail we have just asked for.
 
-        A gap is only dropped when it lies entirely beyond the horizon **as
-        it stood at the last fetch**, which is the subtlety this turns on.
-        The horizon is ``now`` minus a couple of bars, so it moves forward
-        with the wall clock: a gap that begins exactly where the last fetch
-        stopped recording coverage is the tail, and a second later the
-        present horizon has moved past its start, making it look like missing
-        history. Measured against the horizon it was actually fetched at, it
-        is what it is -- and anything reaching back before that really is
-        history, however far forward it also runs.
+        A gap is the tail just asked for when it still reaches past the
+        present horizon and begins no earlier than that request did -- the
+        same stretch, or the part of it that was not recorded as covered.
+        Anything beginning before that request reached back to is history,
+        however far forward it also runs, and is never dropped.
+
+        The comparison is with where the request *began*, not with the
+        horizon in force when it was made, which is the subtlety this turns
+        on. The tail gap begins where coverage stopped, and that is behind
+        the horizon whenever the last bar is: after a failed attempt, which
+        records no coverage at all, and over a weekend, a holiday or the
+        daily halt, when the last bar is Friday's or the one before the halt.
+        Measured against the horizon, those tails read as missing history and
+        were asked for on every request -- the provider that had just refused
+        asked again a moment later, and a weekend view of one market made a
+        provider call per request for a market that was shut.
         """
 
-        horizon = self._tail_fetch(symbol, store_interval)
-        if horizon is None:
+        tail_start = self._tail_fetch(symbol, store_interval)
+        if tail_start is None:
             return gaps
-        settled = [gap for gap in gaps if gap.start < horizon]
+        horizon = fresh_horizon(store_interval)
+        settled = [
+            gap for gap in gaps if not (gap.start >= tail_start and gap.end > horizon)
+        ]
         if len(settled) == len(gaps):
             return gaps
         logger.debug(
@@ -347,45 +510,75 @@ class CandleService:
         gaps = await anyio.to_thread.run_sync(
             self._compute_gaps, symbol, store_interval, window, force_refresh
         )
+        reused: _TailFailure | None = None
         if not force_refresh:
-            gaps = self._settled_gaps_only(symbol, store_interval, gaps)
+            kept = self._settled_gaps_only(symbol, store_interval, gaps)
+            if len(kept) != len(gaps):
+                # The tail was asked for moments ago. If that attempt failed,
+                # reusing it must say so rather than read as a clean cache hit.
+                reused = self._tail_failures.get((symbol, store_interval))
+            gaps = kept
 
         if not gaps:
             provider_name = (
                 await anyio.to_thread.run_sync(self._cached_provider, symbol, store_interval)
                 or self._preferred_provider()
             )
-            return _CacheOutcome(
-                served_from_cache=True,
-                provider=provider_name,
-                fallback_reason=None,
-                quality="cached",
-                incomplete=False,
-            )
+            state = _FetchState(provider=provider_name, quality="cached")
+            if reused is not None:
+                state.reuse(reused)
+            return state.outcome()
 
+        state = _FetchState(provider=self._preferred_provider())
+        if reused is not None:
+            state.reuse(reused)
+        await self._fetch_gaps(symbol, store_interval, gaps, state)
+
+        if state.rebased:
+            # The series just changed hands: a preferred provider answered for
+            # a series a fallback had filled, and the fallback's bars went, with
+            # their coverage. What is missing now is the rest of this window,
+            # and it is fetched here, once, rather than serving a chart of the
+            # few bars that were just stored and leaving the rest to whenever
+            # the next request happens to come.
+            more = await anyio.to_thread.run_sync(
+                self._compute_gaps, symbol, store_interval, window, False
+            )
+            more = self._settled_gaps_only(symbol, store_interval, more)
+            if more:
+                await self._fetch_gaps(symbol, store_interval, more, state)
+
+        return state.outcome()
+
+    async def _fetch_gaps(
+        self,
+        symbol: str,
+        store_interval: str,
+        gaps: list[TimeRange],
+        state: _FetchState,
+    ) -> None:
+        """Fetch and store each gap, recording what happened in ``state``."""
+
+        key = (symbol, store_interval)
         gaps = merge_adjacent(gaps, store_interval)
         # Marked on the attempt rather than on success. A provider that just
         # refused is the last one worth asking again a tenth of a second
         # later, and the caller reports the range as unfilled either way.
         horizon = fresh_horizon(store_interval)
-        if any(gap.end > horizon for gap in gaps):
-            self._tail_fetched[(symbol, store_interval)] = (time.monotonic(), horizon)
+        tail = [gap for gap in gaps if gap.end > horizon]
+        if tail:
+            self._tail_fetched[key] = (time.monotonic(), min(gap.start for gap in tail))
+        tail_failure: _TailFailure | None = None
 
-        provider_name = self._preferred_provider()
-        fallback_reason: str | None = None
-        quality = "delayed"
-        fetched_any = False
-        failed_gaps = 0
-        rate_limited = False
-        retry_after: float | None = None
-
-        for gap in gaps:
+        for requested in gaps:
+            in_tail = requested.end > horizon
+            state.attempted += 1
             # Coverage edges need not coincide with bar opens. A finer
             # provider response must contain the whole bucket before it can
             # replace an already cached aggregate.
             gap = TimeRange(
-                align_down(gap.start, store_interval),
-                align_down(gap.end, store_interval) + interval_ms(store_interval) - 1,
+                align_down(requested.start, store_interval),
+                align_down(requested.end, store_interval) + interval_ms(store_interval) - 1,
             )
             try:
                 result = await self._provider.fetch(
@@ -403,15 +596,11 @@ class CandleService:
                     gap.end,
                     exc,
                 )
-                rate_limited = True
-                if exc.retry_after_seconds is not None:
-                    retry_after = (
-                        exc.retry_after_seconds
-                        if retry_after is None
-                        else max(retry_after, exc.retry_after_seconds)
+                state.fail(str(exc), rate_limited=True, retry_after=exc.retry_after_seconds)
+                if in_tail and tail_failure is None:
+                    tail_failure = _TailFailure(
+                        str(exc), True, _deadline(exc.retry_after_seconds)
                     )
-                fallback_reason = fallback_reason or str(exc)
-                failed_gaps += 1
                 continue
             except Exception as exc:  # noqa: BLE001 - degrade to whatever is cached
                 logger.warning(
@@ -422,8 +611,9 @@ class CandleService:
                     gap.end,
                     exc,
                 )
-                fallback_reason = fallback_reason or str(exc)
-                failed_gaps += 1
+                state.fail(str(exc))
+                if in_tail and tail_failure is None:
+                    tail_failure = _TailFailure(str(exc), False, None)
                 continue
 
             bars = result.bars
@@ -436,56 +626,60 @@ class CandleService:
             outcome = await anyio.to_thread.run_sync(
                 self._persist, symbol, store_interval, bars, result.provider, gap
             )
+            # Set when the chain met a quota before this answer: the preferred
+            # provider is over its limit, and that -- not the answer -- is why
+            # anything still missing is missing.
+            limited = bool(getattr(result, "rate_limited", False))
+            wait = getattr(result, "retry_after_seconds", None) if limited else None
+
+            if outcome in (_PersistOutcome.STORED, _PersistOutcome.STORED_REBASED):
+                # Only a range that was actually stored may name the provider
+                # and the quality of the response.
+                state.provider = result.provider
+                state.quality = result.quality
+                state.fallback_reason = result.fallback_reason or state.fallback_reason
+                state.fetched_any = True
+                state.rebased = state.rebased or outcome is _PersistOutcome.STORED_REBASED
+                continue
+
             if outcome is _PersistOutcome.STORED_SHORT:
                 # The bars we did get are real and are kept; the response
                 # simply has to admit it is shorter than the window asked for.
-                failed_gaps += 1
-                fallback_reason = fallback_reason or (
-                    "The provider does not hold the whole of this window, so the "
-                    "chart starts later than the range you asked for. Try a shorter "
-                    "history, or a larger interval that reaches further back."
+                state.fail(
+                    _with_cause(result, _SHORT_REASON) if limited else _SHORT_REASON,
+                    rate_limited=limited,
+                    retry_after=wait,
                 )
-                provider_name = result.provider
-                quality = result.quality
-                fetched_any = True
+                state.provider = result.provider
+                state.quality = result.quality
+                state.fetched_any = True
                 continue
 
-            if outcome is not _PersistOutcome.STORED:
-                # The range stays unfilled either way, which the response
-                # reports as incomplete -- a gap in the chart is honest. But
-                # the two reasons want different responses from the user, so
-                # they are not given the same sentence.
-                failed_gaps += 1
-                fallback_reason = fallback_reason or _DECLINED_REASONS.get(
-                    outcome,
-                    "The provider returned no candles for part of this window "
-                    "while the market was open, so that stretch is still missing. "
-                    "It will be asked for again.",
+            # The range stays unfilled either way, which the response reports
+            # as incomplete -- a gap in the chart is honest. But the reasons
+            # want different responses from the user, so they are not given
+            # the same sentence. Above all, a quota is not a reason to clear
+            # the cache: that is advice for a fallback serving a different
+            # series, and taken during a cool-off it would rebuild the series
+            # from that very fallback.
+            if limited:
+                reason = _with_cause(
+                    result,
+                    _RATE_LIMITED_FOREIGN_REASON
+                    if outcome is _PersistOutcome.DECLINED_FOREIGN
+                    else _DECLINED_REASONS.get(outcome, _NOT_SERVED_REASON),
                 )
-                continue
+            else:
+                reason = _DECLINED_REASONS.get(outcome, _NOT_SERVED_REASON)
+            state.fail(reason, rate_limited=limited, retry_after=wait)
+            if in_tail and tail_failure is None:
+                tail_failure = _TailFailure(reason, limited, _deadline(wait))
 
-            # Only a range that was actually stored may name the provider and
-            # the quality of the response.
-            provider_name = result.provider
-            quality = result.quality
-            fallback_reason = result.fallback_reason or fallback_reason
-            fetched_any = True
-
-        if failed_gaps:
-            missing = f"{failed_gaps} of {len(gaps)} missing range(s) could not be fetched"
-            fallback_reason = (
-                f"{missing}: {fallback_reason}" if fallback_reason else missing
-            )
-
-        return _CacheOutcome(
-            served_from_cache=not fetched_any,
-            provider=provider_name,
-            fallback_reason=fallback_reason,
-            quality=quality,
-            incomplete=failed_gaps > 0,
-            rate_limited=rate_limited,
-            retry_after_seconds=retry_after,
-        )
+        if tail:
+            if tail_failure is None:
+                self._tail_failures.pop(key, None)
+            else:
+                self._tail_failures[key] = tail_failure
 
     # ------------------------------------------------------------------
     # Synchronous helpers, executed on worker threads
@@ -521,9 +715,15 @@ class CandleService:
         bars arriving for a series that still holds generated ones -- evicts
         them, because that is the moment the stand-in stops being needed.
 
-        Returns which of the three outcomes applied.
+        Two real providers are ranked by :data:`PROVIDER_PREFERENCE`. A less
+        preferred one is declined for a series the other owns; the preferred
+        one takes over a series the other filled, evicting it, which is the
+        rule the startup repair already applies to a series holding both.
+
+        Returns which of the outcomes applied.
         """
 
+        rebased = False
         with session_scope() as session:
             if provider == DEMO_PROVIDER:
                 if has_real_candles(session, symbol, store_interval):
@@ -540,19 +740,37 @@ class CandleService:
                 # series are different series, not two readings of the same
                 # one, and blending them draws a 300-point roll step as a
                 # cliff in the middle of the chart. The owner keeps the
-                # series; the fallback's bars are served to nobody rather
-                # than stored where they will be read as the same instrument.
+                # series against a fallback, whose bars are served to nobody
+                # rather than stored where they will be read as the same
+                # instrument.
                 owner = series_owner(session, symbol, store_interval)
                 if owner is not None and owner != provider:
+                    if provider_rank(provider) >= provider_rank(owner):
+                        logger.warning(
+                            "Declined %d %s bars for %s %s: the series holds %s prices",
+                            len(bars),
+                            provider,
+                            symbol,
+                            store_interval,
+                            owner,
+                        )
+                        return _PersistOutcome.DECLINED_FOREIGN
+                    # The owner is the fallback: it filled the series while the
+                    # preferred provider was cooling off, or before it had a key.
+                    # Declining the preferred provider here locked it out for
+                    # good -- every later answer refused, the forming bar never
+                    # updated -- so the fallback is evicted instead, coverage and
+                    # all, and the caller fetches the rest of the window again.
+                    removed = drop_provider_candles(session, symbol, store_interval, owner)
+                    rebased = True
                     logger.warning(
-                        "Declined %d %s bars for %s %s: the series holds %s prices",
-                        len(bars),
-                        provider,
+                        "Evicted %d %s bars from %s %s: %s is preferred and has answered",
+                        removed,
+                        owner,
                         symbol,
                         store_interval,
-                        owner,
+                        provider,
                     )
-                    return _PersistOutcome.DECLINED_FOREIGN
 
                 evicted = drop_unreal_candles(session, symbol, store_interval)
                 if evicted:
@@ -596,6 +814,10 @@ class CandleService:
         # wearing a real provider's name, told about the length of the series
         # instead of its contents. The tail is exempt: it is trimmed on
         # purpose, because the forming bar is refetched every time.
+        if rebased:
+            # Whether the new owner holds the whole window is decided by the
+            # refetch of the rest of it, which follows immediately.
+            return _PersistOutcome.STORED_REBASED
         instrument = get_instrument(symbol)
         if bars and has_trading_session(
             gap.start, served_start, tz_name=instrument.timezone
@@ -634,10 +856,22 @@ class CandleService:
         is the same permanent hole by the other door. Coverage rows are
         end-inclusive, so the last bar's own timestamp is the end: claiming an
         interval beyond it would mark a bar that was never fetched.
+
+        Except where no bar could have been. Closed market before the first
+        bar holds none, and neither does settled history between the end of
+        the last bar's own bucket and the end of the gap when the market was
+        shut for all of it -- the weekend after a Friday close, or nothing at
+        all because the gap ends inside that bucket. Stopping at the last
+        bar's open there left a seam between two fetches that met at a bar
+        boundary: the gap ``[last + 1ms, next - 1ms]`` was aligned back to
+        ``last``, answered with that one bar, recorded as nothing new, and
+        asked for again on every request. The trailing extension is held to
+        settled history so the forming tail is never claimed, and the bar at
+        its edge is always asked for again.
         """
 
+        instrument = get_instrument(symbol)
         if not bars:
-            instrument = get_instrument(symbol)
             if empty_response_indicts_provider(
                 gap.start, gap.end, store_interval, tz_name=instrument.timezone
             ):
@@ -645,7 +879,22 @@ class CandleService:
             return gap.start, gap.end
 
         times = [bar.time for bar in bars]
-        return max(gap.start, min(times)), min(gap.end, max(times))
+        first, last = min(times), max(times)
+        start = max(gap.start, first)
+        end = min(gap.end, last)
+        if start > gap.start and not has_trading_session(
+            gap.start, first, tz_name=instrument.timezone
+        ):
+            start = gap.start
+        if (
+            end < gap.end
+            and gap.end < fresh_horizon(store_interval)
+            and not has_trading_session(
+                last + interval_ms(store_interval), gap.end + 1, tz_name=instrument.timezone
+            )
+        ):
+            end = gap.end
+        return start, end
 
     @staticmethod
     def _load_from_cache(symbol: str, store_interval: str, window: TimeRange) -> list[Candle]:
@@ -678,6 +927,13 @@ class CandleService:
         range is fetched in slices that each respect the configured limit and
         then stitched back together.
 
+        **The whole window is capped, not just each slice.** Every interval is
+        built from an intraday stored series, and a chart may not ask for more
+        than ``max_intraday_history_days`` of one. Without the same limit here
+        the slicing turned any range into a fan-out: a single detections
+        request for 1970 to now made 28 slices per symbol, about nine provider
+        calls each against a five-a-minute quota.
+
         **Provenance is stitched too.** Reporting the last slice's verdict for
         the whole series is how a win rate measured across a rate-limited or
         part-generated window came to be labelled ``live``: the earlier slices
@@ -687,21 +943,41 @@ class CandleService:
         """
 
         settings = get_settings()
-        step = max(1, settings.max_bars_per_request) * interval_ms(storage_interval(interval))
-        step = min(step, settings.max_intraday_history_days * 24 * 60 * 60 * 1000)
-        collected: dict[int, Candle] = {}
-        chunks: list[BarsResult] = []
-        cursor = start
+        store = storage_interval(interval)
+        if end > start and is_intraday(store):
+            span_days = (end - start) / DAY_MS
+            if span_days > settings.max_intraday_history_days:
+                raise RequestTooLargeError(
+                    f"Requested {span_days:,.0f} days of history to analyse on {interval}. "
+                    f"The limit is {settings.max_intraday_history_days} days - "
+                    "narrow the date range."
+                )
+        step = max(1, settings.max_bars_per_request) * interval_ms(store)
+        step = min(step, settings.max_intraday_history_days * DAY_MS)
+        # One provider's prices from end to end. A preferred provider answering
+        # for a series a fallback filled takes it over and evicts the old
+        # owner's bars -- but slices read before that happened were already
+        # collected from the old owner, and stitched together the two would
+        # put a step in the prices at the seam. One more pass reads every slice
+        # from the series as it now stands.
+        for _attempt in range(2):
+            collected: dict[int, Candle] = {}
+            chunks: list[BarsResult] = []
+            cursor = start
 
-        while cursor < end:
-            chunk_end = min(cursor + step, end)
-            result = await self.get_bars(symbol, interval, cursor, chunk_end)
-            for candle in result.bars:
-                collected[candle.time] = candle
-            chunks.append(result)
-            if chunk_end >= end:
+            while cursor < end:
+                chunk_end = min(cursor + step, end)
+                result = await self.get_bars(symbol, interval, cursor, chunk_end)
+                for candle in result.bars:
+                    collected[candle.time] = candle
+                chunks.append(result)
+                if chunk_end >= end:
+                    break
+                cursor = chunk_end
+
+            owners = {chunk.provider for chunk in chunks} - {DEMO_PROVIDER}
+            if len(owners) <= 1:
                 break
-            cursor = chunk_end
 
         bars = [collected[key] for key in sorted(collected)]
         if not chunks:

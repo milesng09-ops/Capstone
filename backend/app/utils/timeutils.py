@@ -13,6 +13,29 @@ from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
 
+#: The span of time the application can carry end to end, in Unix ms: from the
+#: epoch to 2100-01-01.  Everything outside it fails somewhere further down --
+#: a negative timestamp cannot be turned back into a ``datetime`` on Windows,
+#: and one past the year 9999 (or past a signed 64-bit integer) cannot be
+#: bound into SQLite -- and failing there meant a 503, or a 200 carrying a raw
+#: ``[Errno 22]``, for what is simply a bad parameter.  The bound is checked
+#: where a timestamp enters, so the answer is a 400 that names the problem.
+MIN_TIMESTAMP_MS = 0
+MAX_TIMESTAMP_MS = 4_102_444_800_000
+
+
+class TimestampOutOfRangeError(ValueError):
+    """A timestamp outside :data:`MIN_TIMESTAMP_MS` .. :data:`MAX_TIMESTAMP_MS`."""
+
+
+def ensure_timestamp_in_range(value: int, *, name: str = "Timestamp") -> int:
+    if not MIN_TIMESTAMP_MS <= value <= MAX_TIMESTAMP_MS:
+        raise TimestampOutOfRangeError(
+            f"{name} {value} is outside the supported range "
+            "(1970-01-01 to 2100-01-01, in Unix milliseconds)"
+        )
+    return value
+
 
 def now_ms() -> int:
     return int(datetime.now(tz=UTC).timestamp() * 1000)
@@ -35,6 +58,10 @@ def parse_time_param(value: str | int | float | datetime) -> int:
     forgiving about what the charting layer sends.
     """
 
+    return ensure_timestamp_in_range(_parse_time(value))
+
+
+def _parse_time(value: str | int | float | datetime) -> int:
     if isinstance(value, datetime):
         return to_ms(value)
     if isinstance(value, (int, float)):

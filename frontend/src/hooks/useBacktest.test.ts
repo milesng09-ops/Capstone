@@ -1,11 +1,23 @@
-import { describe, expect, it } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { createElement, type ReactNode } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { buildBacktestRequest } from '@/hooks/useBacktest'
+import {
+  buildBacktestRequest,
+  RUN_BACKTEST_MUTATION_KEY,
+  searchedSymbols,
+  useRunBacktest,
+} from '@/hooks/useBacktest'
 import { buildRange } from '@/hooks/useChartRange'
+import { ApiError, api } from '@/services/api'
+import { useWorkspace } from '@/store/workspace'
 import {
   DEFAULT_DETECTOR_FILTERS,
   DEFAULT_SEARCH_CONFIG,
   DEFAULT_TRADE_RULES,
+  type BacktestRequest,
+  type BacktestResult,
 } from '@/types/backtest'
 import type { SelectionRange } from '@/types/market'
 
@@ -171,5 +183,178 @@ describe('the higher timeframe a bias is read from', () => {
     })
 
     expect(request.higher_timeframe).toBe('4h')
+  })
+})
+
+describe('the bar size a run is made at', () => {
+  // Drawn on a primary pane of its own 5m while the toolbar said 1h.
+  const fiveMinuteSetup: SelectionRange = { ...selection, source_interval: '5m' }
+
+  it('is the one the setup was drawn on, not the toolbar interval', () => {
+    // Sent at 1h, the 49 five-minute bars of a setup were tested as five
+    // hourly ones.
+    const request = build({ selection: fiveMinuteSetup, interval: '1h' })
+
+    expect(request.interval).toBe('5m')
+  })
+
+  it('reads the bias against that bar size too', () => {
+    // 15m is made of whole 5m bars; against 1h it was "corrected" to 4h.
+    const request = build({
+      selection: fiveMinuteSetup,
+      interval: '1h',
+      detectors: { ...DEFAULT_DETECTOR_FILTERS, require_higher_timeframe_bias: true },
+      higherTimeframe: '15m',
+    })
+
+    expect(request.higher_timeframe).toBe('15m')
+  })
+})
+
+describe('an SMT condition with one market named', () => {
+  const smt = { ...DEFAULT_DETECTOR_FILTERS, require_smt_divergence: true }
+  const nqOnly = { ...DEFAULT_SEARCH_CONFIG, searchSymbols: ['NQ'] }
+
+  it('loads a charted partner to compare against, without trading it', () => {
+    // "Long NQ after an SMT divergence" narrowed the run to NQ, and every
+    // match was then dropped as "no confirmed SMT divergence". Searching the
+    // partner fixed that by trading ES too; it is loaded, not searched.
+    const request = build({ search: nqOnly, detectors: smt })
+
+    expect(request.symbols).toEqual(['NQ', 'ES'])
+    expect(request.search.search_symbols).toEqual(['NQ'])
+  })
+
+  it('says which market it added, so the panel can too', () => {
+    const searched = searchedSymbols({
+      primarySymbol: 'NQ',
+      symbols: ['NQ', 'ES'],
+      search: nqOnly,
+      detectors: smt,
+    })
+
+    expect(searched).toEqual({ symbols: ['NQ', 'ES'], addedForSmt: ['ES'] })
+  })
+
+  it('adds nothing when no divergence is asked for', () => {
+    expect(build({ search: nqOnly }).symbols).toEqual(['NQ'])
+  })
+
+  it('adds nothing when two markets are already searched', () => {
+    const request = build({
+      search: { ...DEFAULT_SEARCH_CONFIG, searchSymbols: ['NQ', 'YM'] },
+      detectors: smt,
+    })
+
+    expect(request.symbols).toEqual(['NQ', 'YM'])
+  })
+
+  it('has nothing to add when no other market is charted', () => {
+    const request = build({ symbols: ['NQ'], search: nqOnly, detectors: smt })
+
+    expect(request.symbols).toEqual(['NQ'])
+  })
+})
+
+describe('running a backtest', () => {
+  const RESULT = { id: 'run-7', trades: [], matches: [] } as unknown as BacktestResult
+
+  function wrapper() {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const Wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children)
+    return { client, Wrapper }
+  }
+
+  /**
+   * A request that resolves or rejects only when the test says so. Waits for
+   * the request to have been sent, which the mutation does a tick after
+   * `mutate`, so a test can unmount while it is genuinely in flight.
+   */
+  function deferred() {
+    let settle: { resolve: (value: BacktestResult) => void; reject: (error: Error) => void }
+    const sent = vi.spyOn(api, 'createBacktest').mockImplementation(
+      () =>
+        new Promise<BacktestResult>((resolve, reject) => {
+          settle = { resolve, reject }
+        }),
+    )
+    return async () => {
+      await waitFor(() => expect(sent).toHaveBeenCalled())
+      return settle
+    }
+  }
+
+  beforeEach(() => {
+    useWorkspace.setState({ activeBacktestId: null, runError: null })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('opens a run that finishes after the panel that started it has gone', async () => {
+    // Focus mode, the Analysis tab and collapsing the column all unmount the
+    // Strategy panel, and options passed to `mutate` die with it.
+    const settle = deferred()
+    const { Wrapper } = wrapper()
+    const { result, unmount } = renderHook(() => useRunBacktest(), { wrapper: Wrapper })
+
+    act(() => {
+      result.current.mutate({} as BacktestRequest, {
+        onSuccess: (run) => useWorkspace.getState().setActiveBacktestId(run.id),
+      })
+    })
+    const request = await settle()
+    unmount()
+    await act(async () => request.resolve(RESULT))
+
+    await waitFor(() => expect(useWorkspace.getState().activeBacktestId).toBe('run-7'))
+  })
+
+  it('keeps the reason a run failed after the panel has gone', async () => {
+    const settle = deferred()
+    const { Wrapper } = wrapper()
+    const { result, unmount } = renderHook(() => useRunBacktest(), { wrapper: Wrapper })
+
+    act(() => result.current.mutate({} as BacktestRequest))
+    const request = await settle()
+    unmount()
+    await act(async () =>
+      request.reject(new ApiError('A backtest is already running for this session.', 409)),
+    )
+
+    await waitFor(() =>
+      expect(useWorkspace.getState().runError).toBe(
+        'A backtest is already running for this session.',
+      ),
+    )
+  })
+
+  it('clears an old failure when the next run starts', async () => {
+    deferred()
+    useWorkspace.setState({ runError: 'an earlier failure' })
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useRunBacktest(), { wrapper: Wrapper })
+
+    act(() => result.current.mutate({} as BacktestRequest))
+
+    await waitFor(() => expect(useWorkspace.getState().runError).toBeNull())
+  })
+
+  it('runs under a key any component can watch while it is in flight', async () => {
+    deferred()
+    const { client, Wrapper } = wrapper()
+    const { result } = renderHook(() => useRunBacktest(), { wrapper: Wrapper })
+
+    act(() => result.current.mutate({} as BacktestRequest))
+
+    await waitFor(() =>
+      expect(client.isMutating({ mutationKey: RUN_BACKTEST_MUTATION_KEY })).toBe(1),
+    )
+    const [run] = client.getMutationCache().getAll()
+    expect(run.options.mutationKey).toEqual(['run-backtest'])
   })
 })

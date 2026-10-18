@@ -29,6 +29,44 @@ function decimalsOf(step: number): number {
   return (String(step).split('.')[1] ?? '').length
 }
 
+/** What a setting can hold. Mirrors the backend's own field constraints. */
+interface Bounds {
+  min?: number
+  max?: number
+  /** `min` itself is refused, as a stop or a target of zero is. */
+  minExclusive?: boolean
+  /** Whole numbers only: a bar count of 2.5 is a typo, not a setting. */
+  integer?: boolean
+}
+
+/**
+ * Whether a parsed number may be handed to the store.
+ *
+ * Asked *before* publishing, not merely to colour the field afterwards. A
+ * value the backend refuses fails the whole run with "The configuration could
+ * not be used as entered", naming no field -- and a fractional swing strength
+ * failed the analysis request outright, which took every detection off the
+ * chart without a word.
+ */
+function accepts(value: number, { min, max, minExclusive, integer }: Bounds): boolean {
+  if (!Number.isFinite(value)) return false
+  if (integer && !Number.isInteger(value)) return false
+  if (min != null && (minExclusive ? value <= min : value < min)) return false
+  if (max != null && value > max) return false
+  return true
+}
+
+/** The rule a marked field broke, in words, for its tooltip. */
+function describeBounds({ min, max, minExclusive, integer }: Bounds): string {
+  const kind = integer ? 'A whole number' : 'A number'
+  if (min != null && max != null) {
+    return `${kind} ${minExclusive ? 'above' : 'from'} ${min} to ${max}`
+  }
+  if (min != null) return `${kind} ${minExclusive ? 'above' : 'of at least'} ${min}`
+  if (max != null) return `${kind} of at most ${max}`
+  return kind
+}
+
 export function Field({
   label,
   hint,
@@ -62,6 +100,8 @@ export function NumberField({
   onChange,
   min,
   max,
+  minExclusive,
+  integer,
   step = 1,
   suffix,
   disabled,
@@ -72,6 +112,10 @@ export function NumberField({
   onChange: (value: number) => void
   min?: number
   max?: number
+  /** Refuse `min` itself, for settings the backend wants strictly positive. */
+  minExclusive?: boolean
+  /** Whole numbers only, for every setting the backend types as an integer. */
+  integer?: boolean
   step?: number
   suffix?: string
   disabled?: boolean
@@ -80,17 +124,28 @@ export function NumberField({
   // like "0." survives the next keystroke instead of being normalised away.
   const [draft, setDraft] = useState<string | null>(null)
 
+  const bounds: Bounds = { min, max, minExclusive, integer }
   const display = draft ?? (Number.isFinite(value) ? String(value) : '')
   const parsed = draft == null ? value : parseDecimal(draft)
-  const outOfRange =
-    parsed != null && ((min != null && parsed < min) || (max != null && parsed > max))
+  // A complete number the setting cannot hold. Half-typed text -- "", "-",
+  // "." on the way somewhere -- is not marked: it is not an answer yet.
+  const invalid = parsed != null && !accepts(parsed, bounds)
 
   const nudge = (direction: 1 | -1) => {
     const base = parsed ?? value
     if (!Number.isFinite(base)) return
-    const next = Number((base + direction * step).toFixed(decimalsOf(step)))
+    // From a fraction in a whole-number field, step to the neighbouring whole
+    // number rather than carrying the fraction along: 2.5 up is 3, not 3.5.
+    const from = integer ? (direction > 0 ? Math.floor(base) : Math.ceil(base)) : base
+    const stepped = Number((from + direction * step).toFixed(decimalsOf(step)))
+    let next = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, stepped))
+    // Clamped onto an exclusive floor, the nearest value it allows is a step
+    // above it.
+    if (minExclusive && min != null && next <= min) {
+      next = Number((min + step).toFixed(decimalsOf(step)))
+    }
     setDraft(null)
-    onChange(Math.min(max ?? Infinity, Math.max(min ?? -Infinity, next)))
+    if (accepts(next, bounds)) onChange(next)
   }
 
   return (
@@ -103,18 +158,20 @@ export function NumberField({
             CONTROL_CLASS,
             'numeric',
             suffix && 'pr-7',
-            outOfRange && 'border-destructive focus:border-destructive',
+            invalid && 'border-destructive focus:border-destructive',
           )}
           value={display}
           disabled={disabled}
-          aria-invalid={outOfRange || undefined}
+          aria-invalid={invalid || undefined}
+          title={invalid ? describeBounds(bounds) : undefined}
           onChange={(event) => {
             const raw = event.target.value
             setDraft(raw)
-            // Only publish once the text is a complete number; keep the last
-            // good value otherwise rather than pushing NaN into a request.
+            // Only publish a complete number the setting can hold. Anything
+            // else stays on screen as typed, marked, while the last good value
+            // stays in force -- and is what the field shows again on blur.
             const next = parseDecimal(raw)
-            if (next != null) onChange(next)
+            if (next != null && accepts(next, bounds)) onChange(next)
           }}
           onBlur={() => setDraft(null)}
           onKeyDown={(event) => {

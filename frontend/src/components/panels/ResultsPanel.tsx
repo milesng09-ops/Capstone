@@ -25,6 +25,7 @@ import { cn } from '@/utils/cn'
 import {
   directionClass,
   formatDateTime,
+  formatForInterval,
   formatInteger,
   formatNumber,
   formatPercent,
@@ -98,8 +99,12 @@ export function ResultsPanel() {
     )
   }
 
+  // The panel scrolls as a whole once its fixed rows -- the headline tiles and
+  // the warnings -- are taller than the pane. On a phone the tiles wrap four
+  // rows deep, and without this they spilled out of the pane and over the
+  // status bar beneath it, covering the History buttons.
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto">
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border py-1.5 pl-3 pr-9">
         <span className="label-caps">Results</span>
         {summary.gxt && <Badge tone="warn">GXT research · experimental</Badge>}
@@ -133,7 +138,7 @@ export function ResultsPanel() {
         </p>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 pb-3">
+      <div className="flex min-h-[8rem] flex-1 flex-col gap-2 px-3 pb-3">
         {tab === 'equity' && <EquityCurve points={summary.equity_curve} />}
         {tab === 'trades' && (
           <>
@@ -158,6 +163,7 @@ export function ResultsPanel() {
                 trades={result.trades}
                 selectedId={selectedTradeId}
                 onSelect={selectTrade}
+                interval={result.interval}
               />
             </div>
           </>
@@ -455,7 +461,7 @@ function MatchesList({ result }: { result: BacktestResult }) {
             <span className="numeric w-6 text-muted-foreground">#{match.rank}</span>
             <Badge>{match.symbol}</Badge>
             <span className="numeric text-muted-foreground">
-              {formatDateTime(match.start_time)}
+              {formatForInterval(match.start_time, result.interval)}
             </span>
             <span
               className="numeric ml-auto"

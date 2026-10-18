@@ -42,8 +42,14 @@ export function useBars(
     enabled: enabled && Boolean(symbol),
     staleTime: BAR_STALE_MS,
     // Keeping the previous chart on screen while a new interval loads avoids
-    // the panel collapsing to an empty box on every toolbar click.
-    placeholderData: (previous) => previous,
+    // the panel collapsing to an empty box on every toolbar click -- but only
+    // the same market's. The primary pane is one component whichever symbol
+    // it shows, so switching it from NQ to an uncached YM handed NQ's candles
+    // over as YM's until YM arrived: an NQ price under a YM label, YM's
+    // drawings on NQ's scale, and the magnet snapping new YM drawings to NQ
+    // prices. A different market starts empty instead.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === symbol ? previous : undefined,
   })
 }
 
@@ -91,7 +97,10 @@ export function useIct(
       ),
     enabled: settings.enabled && Boolean(symbol),
     staleTime: BAR_STALE_MS,
-    placeholderData: (previous) => previous,
+    // Same rule as the bars, for the same reason: one market's swings and
+    // gaps drawn on another's candles are evidence for nothing.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === symbol ? previous : undefined,
   })
 }
 

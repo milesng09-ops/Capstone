@@ -136,18 +136,19 @@ def compute_metrics(
         )
 
     low, high = wilson_interval(len(winners), len(trades))
-    p_value = None
+    raw_p_value = None
     if baseline is not None and baseline.trades_executed:
-        p_value = round(
-            binomial_tail_probability(
-                len(winners), len(trades), baseline.win_rate / 100.0
-            ),
-            6,
+        raw_p_value = binomial_tail_probability(
+            len(winners), len(trades), baseline.win_rate / 100.0
         )
+    p_value = round(raw_p_value, 6) if raw_p_value is not None else None
 
+    # From the unrounded figure: a single-test p below 5e-7 rounds to zero,
+    # and the family-wise correction of zero is zero however many
+    # configurations were tried.
     family_wise = (
-        round(family_wise_probability(p_value, configurations_tried), 6)
-        if p_value is not None
+        round(family_wise_probability(raw_p_value, configurations_tried), 6)
+        if raw_p_value is not None
         else None
     )
     if learned_weights is not None:
@@ -164,6 +165,14 @@ def compute_metrics(
             "figure beside it does, treating them as independent, which they are not -- "
             "so the real number is lower than shown. Ideas discarded before being run "
             "were attempts too, and nothing can count those."
+        )
+    overlapping = _overlapping_trades(trades)
+    if overlapping:
+        assumptions.append(
+            f"{overlapping} of these trades opened while another was still running, "
+            "often on the same move in a correlated market. The interval and the "
+            "chance-alone odds count every trade as an independent result, which "
+            "overlapping ones are not, so both read as more certain than the sample is."
         )
 
     return BacktestSummary(
@@ -221,12 +230,26 @@ def _compound(returns: list[float]) -> float:
 
 
 def _equity_curve(trades: list[SimulatedTrade]) -> tuple[list[EquityPoint], float]:
+    """Equity as the trades *closed*, numbered as the trade list numbers them.
+
+    Trades arrive in entry order, which is the order they are listed and
+    numbered in. With overlapping trades allowed that is not the order the
+    money moved: a trade entered second can close fourth. Compounding in entry
+    order put a later winner's profit into the equity before an earlier exit's
+    loss had happened, and the drawdown measured along that path was smaller
+    than any the account would actually have seen. Each point keeps its
+    trade's number so the curve still points back at a row of the table.
+    """
+
     equity = STARTING_EQUITY
     peak = STARTING_EQUITY
     max_drawdown = 0.0
     points: list[EquityPoint] = []
 
-    for number, trade in enumerate(trades, start=1):
+    numbered = list(enumerate(trades, start=1))
+    numbered.sort(key=lambda item: (item[1].exit_time, item[1].entry_time, item[0]))
+
+    for number, trade in numbered:
         equity *= max(0.0, 1.0 + trade.net_return / 100.0)
         peak = max(peak, equity)
         drawdown = (equity - peak) / peak * 100.0 if peak > 0 else 0.0
@@ -241,6 +264,18 @@ def _equity_curve(trades: list[SimulatedTrade]) -> tuple[list[EquityPoint], floa
         )
 
     return points, abs(max_drawdown)
+
+
+def _overlapping_trades(trades: list[SimulatedTrade]) -> int:
+    """How many trades were entered before an earlier one had closed."""
+
+    count = 0
+    latest_exit: int | None = None
+    for trade in sorted(trades, key=lambda item: (item.entry_time, item.exit_time)):
+        if latest_exit is not None and trade.entry_time < latest_exit:
+            count += 1
+        latest_exit = trade.exit_time if latest_exit is None else max(latest_exit, trade.exit_time)
+    return count
 
 
 def _longest_streak(values: list[float], *, positive: bool) -> int:

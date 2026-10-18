@@ -15,16 +15,22 @@ import { useTimeZone } from '@/store/workspace'
 import { Badge } from '@/components/ui/primitives'
 import { EXIT_REASON_LABELS, type Trade } from '@/types/backtest'
 import { cn } from '@/utils/cn'
-import { directionClass, formatDateTime, formatPercent, formatPrice } from '@/utils/format'
+import { directionClass, formatForInterval, formatPercent, formatPrice } from '@/utils/format'
 
 interface Props {
   ruleBased?: boolean
   trades: Trade[]
   selectedId: string | null
   onSelect: (id: string | null) => void
+  /**
+   * The run's bar size. A daily or longer bar is stamped at the session that
+   * opens the evening before it trades, so its time is printed as the trading
+   * day -- the same date the chart's axis gives it.
+   */
+  interval?: string
 }
 
-export function TradesTable({ trades, selectedId, onSelect, ruleBased = false }: Props) {
+export function TradesTable({ trades, selectedId, onSelect, ruleBased = false, interval = '1h' }: Props) {
   // Timestamps below are drawn in the zone chosen in the status bar;
   // reading it here is what re-renders them when that changes.
   useTimeZone()
@@ -96,7 +102,7 @@ export function TradesTable({ trades, selectedId, onSelect, ruleBased = false }:
                   </span>
                 </Td>
                 <Td className="numeric whitespace-nowrap text-muted-foreground">
-                  {formatDateTime(trade.entry_time)}
+                  {formatForInterval(trade.entry_time, interval)}
                 </Td>
                 <Td className="numeric text-right">{formatPrice(trade.entry_price)}</Td>
                 <Td className="numeric text-right">{formatPrice(trade.exit_price)}</Td>

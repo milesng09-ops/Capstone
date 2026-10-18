@@ -62,3 +62,79 @@ describe('NumberField', () => {
     expect(input).toHaveAttribute('aria-invalid', 'true')
   })
 })
+
+/*
+ * What a field may hand to the store, as against what it may show.
+ *
+ * Every one of these values used to be published while the field went red:
+ * the backend then refused the run with "The configuration could not be used
+ * as entered", naming no field, and a fractional swing strength failed the
+ * analysis request outright -- every detection left the chart with no message
+ * at all. The text the user typed stays on screen, marked; the setting keeps
+ * the last value it can actually hold.
+ */
+describe('NumberField publishes only values the setting can hold', () => {
+  it('keeps an out-of-range entry off the store', async () => {
+    const { onChange, input } = setup(1, { min: 0, max: 5 })
+    await userEvent.clear(input)
+    await userEvent.type(input, '9')
+
+    expect(onChange).not.toHaveBeenCalledWith(9)
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('refuses a fraction in a whole-number field, and says so', async () => {
+    const { onChange, input } = setup(2, { min: 1, max: 20, integer: true, step: 1 })
+    await userEvent.clear(input)
+    await userEvent.type(input, '2.5')
+
+    expect(onChange).not.toHaveBeenCalledWith(2.5)
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input.title).toMatch(/whole number from 1 to 20/i)
+  })
+
+  it('goes back to the value in force once the field is left', async () => {
+    const { input } = setup(2, { min: 1, max: 20, integer: true, step: 1 })
+    await userEvent.clear(input)
+    await userEvent.type(input, '2.5')
+    await userEvent.tab()
+
+    expect(input.value).toBe('2')
+    expect(input).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('treats an exclusive minimum as exclusive', async () => {
+    // A stop or a target of zero is refused by the backend outright.
+    const { onChange, input } = setup(1, { min: 0, minExclusive: true, step: 0.1 })
+    await userEvent.clear(input)
+    await userEvent.type(input, '0')
+
+    expect(onChange).not.toHaveBeenCalledWith(0)
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('never steps onto an exclusive minimum', async () => {
+    const { onChange, input } = setup(0.1, { min: 0, minExclusive: true, step: 0.1 })
+    await userEvent.click(input)
+    await userEvent.keyboard('{ArrowDown}')
+
+    expect(onChange).not.toHaveBeenCalledWith(0)
+  })
+
+  it('steps a whole-number field in whole numbers from a fractional entry', async () => {
+    const { onChange, input } = setup(2, { min: 1, max: 20, integer: true, step: 1 })
+    await userEvent.clear(input)
+    await userEvent.type(input, '2.5')
+    await userEvent.keyboard('{ArrowUp}')
+
+    expect(onChange).toHaveBeenLastCalledWith(3)
+  })
+
+  it('still publishes an ordinary entry as it is typed', async () => {
+    const { onChange, input } = setup(2, { min: 1, max: 20, integer: true, step: 1 })
+    await userEvent.clear(input)
+    await userEvent.type(input, '12')
+
+    expect(onChange).toHaveBeenLastCalledWith(12)
+  })
+})

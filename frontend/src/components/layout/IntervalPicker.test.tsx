@@ -103,4 +103,24 @@ describe('IntervalPicker', () => {
     expect(screen.getByRole('button', { name: /^1m\b.*7d history/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^1D.*2y history/ })).toBeTruthy()
   })
+
+  it('draws the reach, the pins and the footer in a colour that can be read', () => {
+    // `text-muted` is the muted *background* token: about 1.1:1 against the
+    // menu, so all three were present and invisible -- the pins most of all,
+    // at 40% opacity on top of that.
+    render(<IntervalPicker />)
+    openMenu()
+    const menu = screen.getByRole('group', { name: 'All timeframes' })
+
+    expect(menu.querySelectorAll('.text-muted')).toHaveLength(0)
+    for (const reach of within(menu).getAllByText(/history$/)) {
+      expect(reach.className).toMatch(/\btext-(muted-)?foreground\b/)
+    }
+    expect(within(menu).getByText(/^Pin the ones you use/).className).toContain(
+      'text-muted-foreground',
+    )
+    expect(within(menu).getByRole('button', { name: 'Pin 1W' }).className).toContain(
+      'text-muted-foreground',
+    )
+  })
 })

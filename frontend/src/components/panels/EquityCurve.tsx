@@ -58,14 +58,24 @@ export function EquityCurve({ points }: { points: EquityPoint[] }) {
 
   // Anchor the curve at zero so the first trade's move is visible rather than
   // being the whole line.
+  //
+  // The x axis counts trades as they *closed*, which is the order the curve
+  // compounds them in. Each point still carries its trade's own number for
+  // the tooltip, and with overlapping trades that number is not the position:
+  // trade 3 can close before trade 2.
   const data = [
-    { trade_number: 0, equity: 0, drawdown: 0, time: returns[0].time },
-    ...returns,
+    { closed: 0, trade_number: 0, equity: 0, drawdown: 0, time: returns[0].time },
+    ...returns.map((point, index) => ({ ...point, closed: index + 1 })),
   ]
 
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -18 }}>
+      {/*
+        No negative left margin: it pulled the axis labels past the edge of
+        the chart, and a losing curve read "0.3%, 0.6%, 1.2%" with every minus
+        sign cut off.
+      */}
+      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
         <defs>
           <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={palette.accent} stopOpacity={0.35} />
@@ -76,7 +86,7 @@ export function EquityCurve({ points }: { points: EquityPoint[] }) {
         <CartesianGrid stroke={palette.grid} strokeDasharray="3 3" vertical={false} />
 
         <XAxis
-          dataKey="trade_number"
+          dataKey="closed"
           tick={{ fill: palette.muted, fontSize: 10 }}
           tickLine={false}
           axisLine={{ stroke: palette.border }}
@@ -86,7 +96,7 @@ export function EquityCurve({ points }: { points: EquityPoint[] }) {
           tick={{ fill: palette.muted, fontSize: 10 }}
           tickLine={false}
           axisLine={false}
-          width={46}
+          width={52}
           tickFormatter={(value: number) => `${value.toFixed(1)}%`}
         />
 

@@ -232,6 +232,33 @@ class BacktestService:
                 )
             )
 
+        # The pattern and the history it is matched against from one provider.
+        # Loading the lookback can hand the primary series to a preferred
+        # provider, which evicts the bars the selection was just read from; a
+        # query built from the old owner's prices would then be compared with
+        # the new owner's.
+        primary_series = next((item for item in series if item.symbol == primary), None)
+        if primary_series is not None and primary_series.provider != selection_result.provider:
+            selection_result = await self._candles.get_series_for_analysis(
+                primary, interval, request.selection.start_time, request.selection.end_time
+            )
+            selection_candles = selection_result.bars
+            if len(selection_candles) < settings.min_pattern_length:
+                raise BacktestValidationError(
+                    f"The selected period contains {len(selection_candles)} candles on the "
+                    f"{interval} interval. At least {settings.min_pattern_length} are required."
+                )
+            try:
+                query = build_query(
+                    selection_candles,
+                    interval,
+                    request.search.pattern_length,
+                    min_length=settings.min_pattern_length,
+                    max_length=settings.max_pattern_length,
+                )
+            except PatternError as exc:
+                raise BacktestValidationError(str(exc)) from exc
+
         usable = [item for item in series if len(item.candles) >= query.length + required_future_bars]
         if not usable:
             raise BacktestValidationError(
@@ -243,7 +270,8 @@ class BacktestService:
         # weight fitting runs first and needs the same pools: it labels its
         # training windows through the engine, so a liquidity target with no
         # shelves to aim at labels nothing and the fit silently finds no data.
-        detectors = self._detector_context(request, usable, primary)
+        partners = await self._smt_partners(request, usable, primary, search_symbols, interval)
+        detectors = self._detector_context(request, usable, primary, partners)
 
         # ---- fitted weights, on history the result is not read from ----
         exclusion = (request.selection.start_time, request.selection.end_time)
@@ -281,7 +309,12 @@ class BacktestService:
         # ---- deterministic similarity search --------------------------
         found: list[tuple[_SymbolSeries, PatternWindow]] = []
         for item in usable:
-            exclude = [exclusion] if item.symbol == primary else []
+            # The selection is off limits on every symbol, not just the one it
+            # was drawn on. ES, NQ and YM move together, so the same dates on a
+            # correlated market are the same event rather than a second
+            # occurrence of it: kept, they come back as the closest "matches"
+            # there are and score the very move the setup was picked from.
+            exclude = [exclusion]
             # Everything the weights were fitted on is off limits to the run
             # that reports a result, on every symbol -- the fit read the
             # primary, but the stretch itself is what must not be scored on.
@@ -403,7 +436,13 @@ class BacktestService:
             all_trades,
             total_matches=len(found),
             skipped_matches=skipped_total,
-            data_quality=self._data_quality_notes(series, usable, query, interval),
+            data_quality=self._data_quality_notes(series, usable, query, interval)
+            + [
+                f"{item.symbol}: {len(item.candles):,} {interval} candles loaded as the "
+                "SMT reference only -- compared against, not searched or traded"
+                + ("." if item.quality not in ("demo", "partial") else f" ({item.quality} data).")
+                for item in partners
+            ],
             extra_assumptions=self._extra_assumptions(query, request),
             baseline=baseline,
             condition_filtered_matches=filtered_total,
@@ -533,8 +572,18 @@ class BacktestService:
             # Overlap is allowed (the selection is excluded explicitly), but a
             # lookback that starts after the selection ends is a mistake.
             pass
+        # A selection runs from the open of its first bar to the open of its
+        # last, so N contiguous bars span N - 1 intervals: five hourly candles
+        # are four hours wide. Measuring against N intervals refused exactly the
+        # five-candle selection the chart offers as long enough. The hour of
+        # slack is the spring daylight-saving change, which takes an hour out
+        # of a daily, weekly or monthly span drawn across it. This stays a
+        # quick refusal before anything is fetched; the candle count checked
+        # after the fetch is the authoritative rule.
+        daylight_saving_slack_ms = 60 * 60 * 1000
         span = request.selection.end_time - request.selection.start_time
-        if span < interval_ms(request.interval) * settings.min_pattern_length:
+        shortest = interval_ms(request.interval) * (settings.min_pattern_length - 1)
+        if span + daylight_saving_slack_ms < shortest:
             raise BacktestValidationError(
                 "The selected period is too short for the chosen interval. "
                 "Select a wider range or switch to a smaller interval."
@@ -595,7 +644,57 @@ class BacktestService:
         return notes
 
     # ------------------------------------------------------------------
-    def _detector_context(self, request: BacktestRequest, usable, primary: str) -> dict:
+    async def _smt_partners(
+        self,
+        request: BacktestRequest,
+        usable: list[_SymbolSeries],
+        primary: str,
+        search_symbols: list[str],
+        interval: str,
+    ) -> list[_SymbolSeries]:
+        """A market to read SMT against that the run does not search.
+
+        SMT is a comparison, and the partner used to be taken from the searched
+        series only. A run told to trade NQ alone therefore had nothing to
+        compare against and dropped every match; adding the partner to the
+        search fixed that by trading it as well, quietly widening the run to a
+        market nobody asked for. The request's `symbols` names the charted
+        markets, so the first of those that is not searched is loaded here for
+        the comparison and nothing else.
+        """
+
+        if not request.detectors.require_smt_divergence:
+            return []
+        if any(item.symbol != primary for item in usable):
+            return []
+        for name in request.symbols:
+            symbol = get_instrument(name).symbol
+            if symbol == primary or symbol in search_symbols:
+                continue
+            result = await self._candles.get_series_for_analysis(
+                symbol,
+                interval,
+                request.search.lookback_start,
+                request.search.lookback_end,
+            )
+            return [
+                _SymbolSeries(
+                    symbol=symbol,
+                    candles=result.bars,
+                    provider=result.provider,
+                    quality=result.quality,
+                    fallback_reason=result.fallback_reason,
+                )
+            ]
+        return []
+
+    def _detector_context(
+        self,
+        request: BacktestRequest,
+        usable,
+        primary: str,
+        partners: list[_SymbolSeries] | None = None,
+    ) -> dict:
         """Swings, gaps, divergences and liquidity pools per symbol, once.
 
         Empty when nothing needs them, so a run that asks for no conditions
@@ -608,6 +707,7 @@ class BacktestService:
             return {}
 
         strength = request.detectors.swing_strength
+        partners = partners or []
         swings_by_symbol = {}
         gaps_by_symbol = {}
         bias_by_symbol: dict[str, list] = {}
@@ -617,6 +717,11 @@ class BacktestService:
             )
             gaps_by_symbol[item.symbol] = find_fair_value_gaps(item.candles)
             bias_by_symbol[item.symbol] = self._bias_states(request, item.candles)
+        # A reference is read, never traded: it needs its swings and gaps for
+        # the comparison and nothing else.
+        for item in partners:
+            swings_by_symbol[item.symbol] = find_swing_points(item.candles, strength=strength)
+            gaps_by_symbol[item.symbol] = find_fair_value_gaps(item.candles)
 
         context: dict = {}
         for item in usable:
@@ -627,7 +732,7 @@ class BacktestService:
             reference = next(
                 (
                     other
-                    for other in usable
+                    for other in [*usable, *partners]
                     if other.symbol != item.symbol
                     and (item.symbol == primary or other.symbol == primary)
                 ),
@@ -1177,10 +1282,10 @@ class BacktestService:
             inputs = baseline_inputs(
                 candles,
                 window_length=query_length,
-                # Only the primary series holds the selection, so only it has
-                # a region to keep the baseline out of -- the same rule the
-                # search applies when it builds `exclude`.
-                exclude_ranges=([exclusion] if symbol == primary else [])
+                # The selection's dates are kept out on every symbol -- the same
+                # rule the search applies when it builds `exclude`, so the
+                # baseline draws from the pool the matches were drawn from.
+                exclude_ranges=[exclusion]
                 + ([train_range] if train_range is not None else []),
                 required_future_bars=required_future_bars,
                 samples=draw,

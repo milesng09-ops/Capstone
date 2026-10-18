@@ -100,7 +100,7 @@ def find_smt_divergences(
     reference_symbol = reference_candles[0].symbol
     reference_by_time = {candle.time: candle for candle in reference_candles}
     reference_index = {candle.time: index for index, candle in enumerate(reference_candles)}
-    reference_swing_times = {(point.time, point.kind) for point in reference_swings}
+    reference_swing_at = {(point.time, point.kind): point for point in reference_swings}
 
     primary_gaps = primary_gaps or []
     reference_gaps = reference_gaps or []
@@ -140,11 +140,11 @@ def find_smt_divergences(
             if primary_took == reference_took:
                 continue
 
-            validity = _classify(
+            validity, reference_known = _classify(
                 kind,
                 reference_previous,
                 reference_current,
-                reference_swing_times,
+                reference_swing_at,
                 reference_gaps,
                 reference_index,
             )
@@ -170,7 +170,11 @@ def find_smt_divergences(
                     lagging_symbol=reference_symbol if primary_took else primary_symbol,
                     validity=validity,
                     valid=valid,
-                    confirmed_time=max(current.confirmed_time, current.time),
+                    # The reference's pivots are confirmed on the reference's
+                    # own bars. Where it is missing one the primary has --
+                    # an hour nobody traded YM -- its swing confirms later,
+                    # and the validity it lends is not known before then.
+                    confirmed_time=max(current.confirmed_time, current.time, reference_known),
                     inside_fair_value_gap=gap is not None,
                     fair_value_gap_time=gap.time if gap else None,
                     strength=_strength(
@@ -188,25 +192,31 @@ def _classify(
     kind: SmtKind,
     reference_previous: Candle,
     reference_current: Candle,
-    reference_swing_times: set[tuple[int, str]],
+    reference_swing_at: dict[tuple[int, str], SwingPoint],
     reference_gaps: list[FairValueGap],
     reference_index: dict[int, int],
-) -> SmtValidity:
-    """Decide whether the reference anchors make this divergence tradable."""
+) -> tuple[SmtValidity, int]:
+    """Decide whether the reference anchors make this divergence tradable.
+
+    Returns the validity and the time it became knowable: the latest
+    confirmation among the reference swing points it rests on. A gap edge
+    adds nothing, since only gaps revealed by the anchor's own bar count.
+    """
 
     anchors = (reference_previous, reference_current)
-    both_swings = all((candle.time, kind) in reference_swing_times for candle in anchors)
-    if both_swings:
-        return "swing_pair"
+    swings = [reference_swing_at.get((candle.time, kind)) for candle in anchors]
+    known = max((swing.confirmed_time for swing in swings if swing is not None), default=0)
+    if all(swing is not None for swing in swings):
+        return "swing_pair", known
 
     # A non-swing anchor is still accepted when it sits on a gap edge.
-    for candle in anchors:
-        if (candle.time, kind) in reference_swing_times:
+    for candle, swing in zip(anchors, swings):
+        if swing is not None:
             continue
         price = candle.high if kind == "high" else candle.low
         if not _on_gap_edge(price, candle.time, reference_gaps, reference_index):
-            return "unconfirmed"
-    return "fvg_edge"
+            return "unconfirmed", known
+    return "fvg_edge", known
 
 
 def _on_gap_edge(

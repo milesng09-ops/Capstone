@@ -15,7 +15,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { ToolRail } from '@/components/chart/ToolRail'
+import { ChartSettingsBody, ToolRail } from '@/components/chart/ToolRail'
 import { useWorkspace } from '@/store/workspace'
 import { TOOL_LABELS, type ToolMode } from '@/types/drawing'
 
@@ -62,5 +62,20 @@ describe('ToolRail', () => {
       // "level from here" means to someone opening this for the first time.
       expect(title!.length).toBeGreaterThan(TOOL_LABELS[mode].length + 10)
     }
+  })
+})
+
+describe('ChartSettingsBody', () => {
+  it('explains the chart links in a colour that can be read', () => {
+    // These two lines are the only place that says what the switches govern,
+    // and `text-muted` -- the muted background token -- drew them at about
+    // 1.1:1 against the panel.
+    const { container } = render(<ChartSettingsBody />)
+
+    expect(container.querySelectorAll('.text-muted')).toHaveLength(0)
+    expect(screen.getByText(/chart (scrolls|moves)|charts? (scroll|move)/i).className).toContain(
+      'text-muted-foreground',
+    )
+    expect(screen.getByText(/bar size/).className).toContain('text-muted-foreground')
   })
 })

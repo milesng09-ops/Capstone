@@ -72,6 +72,7 @@ import {
   type RangeChip,
   projectDrawing,
   resizeDrawing,
+  shiftByBars,
   translateDrawing,
   type DrawingHit,
   type ProjectedDrawing,
@@ -117,6 +118,14 @@ import type { ChartPalette } from '@/lib/chart'
 
 /** Pointer distance, in pixels, within which a drag snaps to a swing point. */
 const SNAP_RADIUS = 14
+
+/**
+ * How close, in pixels, the pointer has to be to a bar's open, high, low or
+ * close before the magnet takes the price. Smaller than the swing snap: the
+ * four levels of one bar sit close together, and a wide reach would have the
+ * point flick between them.
+ */
+const MAGNET_RADIUS_PX = 12
 
 /** Minimum drag distance before a gesture counts as a shape, not a stray click. */
 const MIN_DRAG_PX = 4
@@ -190,6 +199,13 @@ interface Props {
   magnet: boolean
   /** Only the primary chart defines the backtest selection. */
   allowSelection: boolean
+  /**
+   * How far down the pane the range tabs start. The legend sits in the same
+   * top-left corner, and the tabs were painted under it -- "setup" across the
+   * symbol, "test window" across the OHLC row -- so the panel says where the
+   * legend ends.
+   */
+  chipTop?: number
   onCreateDrawing: (drawing: DrawingDraft) => void
   onUpdateDrawing: (id: string, drawing: Drawing) => void
   onSelectDrawing: (id: string | null) => void
@@ -274,6 +290,7 @@ export function ChartOverlay({
   snapToSwings,
   magnet,
   allowSelection,
+  chipTop = 6,
   onCreateDrawing,
   onUpdateDrawing,
   onSelectDrawing,
@@ -283,6 +300,9 @@ export function ChartOverlay({
   onGestureComplete,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  // Read by the window-level drag listener, which is registered once.
+  const candlesRef = useRef(candles)
+  candlesRef.current = candles
 
   // Each gesture is mirrored into a ref so that the imperative redraw -- which
   // the chart triggers on every pan and zoom -- never paints a stale frame,
@@ -323,9 +343,15 @@ export function ChartOverlay({
     })
   }, [])
 
+  // The handle is cleared as well as cancelled. StrictMode runs this cleanup
+  // and then mounts the same instance again, refs intact: a cancelled frame
+  // left in the ref reads as "a paint is already on its way", so every later
+  // request returned early and the overlay never painted again -- no
+  // drawings, no setup band, no trades, anywhere `npm run dev` was used.
   useEffect(
     () => () => {
       if (frameRef.current) window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = 0
     },
     [],
   )
@@ -359,10 +385,13 @@ export function ChartOverlay({
     [scheduleDraw],
   )
 
+  // A new symbol is a new chart under the same overlay: an armed first point
+  // left over from the old one would finish on the new symbol at the old
+  // symbol's price.
   useEffect(() => {
     updatePending(null)
     updateDrag(null)
-  }, [tool, updatePending, updateDrag])
+  }, [tool, symbol, updatePending, updateDrag])
 
   const updateHover = useCallback((value: DrawingHit | null) => {
     hoverRef.current = value
@@ -421,12 +450,12 @@ export function ChartOverlay({
   const rangeChips = useMemo<RangeChip[]>(() => {
     if (!allowSelection) return []
     const chips: RangeChip[] = []
-    if (selection) chips.push(rangeChip('selection', 'setup', 6, 6))
+    if (selection) chips.push(rangeChip('selection', 'setup', 6, chipTop))
     if (testWindow) {
-      chips.push(rangeChip('window', 'test window', 6, 6 + CHIP_HEIGHT_PX + 4))
+      chips.push(rangeChip('window', 'test window', 6, chipTop + CHIP_HEIGHT_PX + 4))
     }
     return chips
-  }, [allowSelection, selection, testWindow])
+  }, [allowSelection, chipTop, selection, testWindow])
 
   const chipsRef = useRef<RangeChip[]>(rangeChips)
   chipsRef.current = rangeChips
@@ -447,15 +476,33 @@ export function ChartOverlay({
     // above; writing it here as well made painting the thing that decided how
     // big it was, which is how it came to be 300x150 whenever the first frame
     // never arrived.
-    if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
-      canvas.width = width * ratio
-      canvas.height = height * ratio
+    //
+    // Whole device pixels. At a fractional ratio -- 125% display scaling, 110%
+    // browser zoom -- `width * ratio` is not an integer, the assignment
+    // truncated it, and the comparison never matched again, so the bitmap was
+    // reallocated on every frame. The transform maps the rounding back.
+    const pixelWidth = Math.round(width * ratio)
+    const pixelHeight = Math.round(height * ratio)
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth
+      canvas.height = pixelHeight
     }
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
+    ctx.setTransform(pixelWidth / width, 0, 0, pixelHeight / height, 0, 0)
     ctx.clearRect(0, 0, width, height)
+
+    // Everything is clipped to the candle area. The canvas covers the whole
+    // pane, axes included, so a shelf or a Fibonacci band running to the
+    // right edge crossed the price labels and struck through the dates.
+    const plot = handle.plotSize?.()
+    const plotWidth = plot ? Math.min(width, plot.width) : width
+    const plotHeight = plot ? Math.min(height, plot.height) : height
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(0, 0, plotWidth, plotHeight)
+    ctx.clip()
 
     const palette = handle.palette()
     const yOf = handle.priceToY
@@ -636,13 +683,36 @@ export function ChartOverlay({
     // interval loaded. "I don't know if the line disappeared or what's going
     // on" is a fair reading of silence. Say it instead.
     if (offData > 0) {
-      paintOffDataNote(ctx, offData, height, palette)
+      paintOffDataNote(ctx, offData, plotWidth, plotHeight, palette)
     }
 
     const gesture = pendingRef.current
     if (gesture) {
-      paintPending(ctx, gesture, tool, width, height, drawingColor, palette.accent)
+      // Where the chart puts the gesture *now*. The pixels stored with it are
+      // where it was when the pointer last moved, and the chart can have
+      // panned, zoomed or been resized since -- F, R, a splitter -- which left
+      // the preview starting somewhere the commit would not.
+      const place = (point: DrawingPoint, x: number, y: number) => ({
+        x: xOfDrawing(point.time) ?? x,
+        y: yOf(point.price) ?? y,
+      })
+      const start = place(gesture.start, gesture.startX, gesture.startY)
+      const current = place(gesture.current, gesture.currentX, gesture.currentY)
+      const path = gesture.path
+        .map((point) => place(point, Number.NaN, Number.NaN))
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+      paintPending(
+        ctx,
+        { ...gesture, startX: start.x, startY: start.y, currentX: current.x, currentY: current.y },
+        path,
+        tool,
+        width,
+        height,
+        drawingColor,
+        palette.accent,
+      )
     }
+    ctx.restore()
   }, [
     boxes,
     trades,
@@ -696,8 +766,12 @@ export function ChartOverlay({
       const canvas = canvasRef.current
       if (!canvas) return null
       const rect = canvas.getBoundingClientRect()
-      const x = clientX - rect.left
-      const y = clientY - rect.top
+      // Held to the candle area. The overlay spans the axes as well, and a
+      // point placed over them is painted nowhere -- the paint is clipped to
+      // the plot -- so a shape dragged off the edge stops at it instead.
+      const plot = handle.plotSize?.()
+      const x = plot ? Math.min(Math.max(clientX - rect.left, 0), plot.width) : clientX - rect.left
+      const y = plot ? Math.min(Math.max(clientY - rect.top, 0), plot.height) : clientY - rect.top
 
       // `xToTime` is null everywhere past the last bar, which used to abort
       // the gesture before it started. The free conversion stays defined.
@@ -714,9 +788,19 @@ export function ChartOverlay({
       // levels. Applied before the swing snap, which is the stronger claim --
       // a swing point is a specific bar *and* a specific price, so when one is
       // in range it should win outright rather than be nudged off its level.
+      //
+      // A weak magnet: it takes the price only when the pointer is already
+      // within reach of the level. Pulling unconditionally pinned an end being
+      // dragged to the bar's high or low whenever the pointer went beyond
+      // them, and flicked it between the four levels on the way -- an end that
+      // did not follow the hand. Close to a level it still lands exactly on
+      // it, which is what the magnet is for.
       if (magnet) {
         const level = magnetPrice(candles, time, price)
-        if (level != null) price = level
+        const levelY = level == null ? null : handle.priceToY(level)
+        if (level != null && levelY != null && Math.abs(levelY - y) <= MAGNET_RADIUS_PX) {
+          price = level
+        }
       }
 
       // Snapping to a swing point is what makes "connect these two highs"
@@ -769,9 +853,18 @@ export function ChartOverlay({
       return
     }
 
+    // The axes belong to the chart: a press there drags the scale, and a
+    // drawing clipped out of sight under them is not something to grab.
+    const insidePlot = (x: number, y: number) => {
+      const plot = handle.plotSize?.()
+      return !plot || (x <= plot.width && y <= plot.height)
+    }
+
     const locate = (event: PointerEvent): DrawingHit | null => {
       const rect = canvas.getBoundingClientRect()
-      return hitTestAt(event.clientX - rect.left, event.clientY - rect.top)
+      const x = event.clientX - rect.left
+      const y = event.clientY - rect.top
+      return insidePlot(x, y) ? hitTestAt(x, y) : null
     }
 
     const offsetOf = (event: PointerEvent) => {
@@ -803,9 +896,16 @@ export function ChartOverlay({
 
     const handleDown = (event: PointerEvent) => {
       if (event.button !== 0) return
-      // The legend floats in this same element. Pressing a badge or the fit
-      // button is not a press on the chart and should not disturb anything.
-      if (event.target instanceof Element && event.target.closest('button, a, input')) {
+      // The legend and a drawing's toolbar float in this same element. A press
+      // anywhere on them -- a badge, the toolbar's label, the gap between two
+      // swatches -- is not a press on the chart, and must not deselect the
+      // drawing or the trade underneath.
+      if (
+        event.target instanceof Element &&
+        event.target.closest(
+          'button, a, input, textarea, select, [role="toolbar"], .chart-legend',
+        )
+      ) {
         return
       }
 
@@ -814,6 +914,7 @@ export function ChartOverlay({
       // chart by pointer -- losing it to a drawing that happens to lie under
       // the corner would put the user straight back where they started.
       const rect = canvas.getBoundingClientRect()
+      if (!insidePlot(event.clientX - rect.left, event.clientY - rect.top)) return
       const chip = hitTestChips(
         chipsRef.current,
         event.clientX - rect.left,
@@ -931,7 +1032,7 @@ export function ChartOverlay({
         active.hit.part === 'body'
           ? translateDrawing(
               active.original,
-              resolved.raw.time - active.origin.time,
+              shiftByBars(candlesRef.current, active.origin.time, resolved.raw.time),
               resolved.raw.price - active.origin.price,
             )
           : resizeDrawing(active.original, active.hit, resolved.point)
@@ -966,13 +1067,21 @@ export function ChartOverlay({
       onUpdateDrawing(active.original.id, shape)
     }
 
+    // A cancelled pointer is an interruption, not a release -- the rule a new
+    // shape already follows. Finishing here wrote the drawing wherever a touch
+    // happened to be when the browser took it over for a scroll.
+    const abandon = () => {
+      suppressRef.current = false
+      if (dragRef.current) updateDrag(null)
+    }
+
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', finish)
-    window.addEventListener('pointercancel', finish)
+    window.addEventListener('pointercancel', abandon)
     return () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', finish)
-      window.removeEventListener('pointercancel', finish)
+      window.removeEventListener('pointercancel', abandon)
     }
   }, [onUpdateDrawing, pointAt, snapToSwings, updateDrag])
 
@@ -990,6 +1099,16 @@ export function ChartOverlay({
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || !drawingActive) return
+    // A press on an axis is not a point on the chart. With a tool held the
+    // overlay takes the whole pane, axes included, and a level begun there
+    // was stored below the candles where nothing draws it.
+    const plot = handle.plotSize?.()
+    if (plot) {
+      const rect = event.currentTarget.getBoundingClientRect()
+      if (event.clientX - rect.left > plot.width || event.clientY - rect.top > plot.height) {
+        return
+      }
+    }
 
     // A range is made of bars, not of shapes, so it never snaps to a swing
     // point -- that would move the window off the candles it names.
@@ -1059,6 +1178,10 @@ export function ChartOverlay({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
+    // Only the button that places points can finish a shape. A right-click
+    // while one is armed is for the menu, and it used to drop the second
+    // point wherever the menu was opened.
+    if (event.button !== 0) return
 
     const gesture = pendingRef.current
     if (!gesture) return
@@ -1270,6 +1393,9 @@ export function ChartOverlay({
         // the chart's pan, zoom and wheel untouched even over a drawing.
         pointerEvents: drawingActive ? 'auto' : 'none',
         cursor: drawingActive ? 'crosshair' : 'default',
+        // A held tool keeps the touch: otherwise the browser takes a finger
+        // drag over as a scroll, cancels the pointer, and the shape is lost.
+        touchAction: drawingActive ? 'none' : undefined,
       }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -2009,6 +2135,8 @@ function paintDrawing(
 function paintPending(
   ctx: CanvasRenderingContext2D,
   gesture: PendingGesture,
+  /** The brush stroke's recorded points, already placed on screen. */
+  path: Array<{ x: number; y: number }>,
   tool: ToolMode,
   width: number,
   height: number,
@@ -2051,6 +2179,7 @@ function paintPending(
     ctx.lineCap = 'round'
     ctx.beginPath()
     ctx.moveTo(gesture.startX, gesture.startY)
+    for (const point of path) ctx.lineTo(point.x, point.y)
     ctx.lineTo(gesture.currentX, gesture.currentY)
     ctx.stroke()
   } else if (tool === 'vertical') {
@@ -2210,12 +2339,13 @@ function paintArrowhead(
 /**
  * A note that some drawings exist but have nowhere to go on this chart.
  *
- * Bottom-left, quiet, and counted rather than named: the point is to replace
+ * Bottom-right, quiet, and counted rather than named: the point is to replace
  * silence with a fact, not to put a list on the chart.
  */
 function paintOffDataNote(
   ctx: CanvasRenderingContext2D,
   count: number,
+  width: number,
   height: number,
   palette: ChartPalette,
 ) {
@@ -2229,14 +2359,16 @@ function paintOffDataNote(
   ctx.textBaseline = 'bottom'
   const textWidth = ctx.measureText(label).width
 
+  // Bottom right: the chart library's logo holds the bottom-left corner.
+  const left = Math.max(6, width - textWidth - 18)
   ctx.globalAlpha = 0.9
   ctx.fillStyle = palette.background
-  ctx.fillRect(6, height - 22, textWidth + 12, 16)
+  ctx.fillRect(left, height - 22, textWidth + 12, 16)
   ctx.globalAlpha = 1
   ctx.strokeStyle = palette.muted
   ctx.lineWidth = 1
-  ctx.strokeRect(6.5, height - 21.5, textWidth + 11, 15)
+  ctx.strokeRect(left + 0.5, height - 21.5, textWidth + 11, 15)
   ctx.fillStyle = palette.muted
-  ctx.fillText(label, 12, height - 9)
+  ctx.fillText(label, left + 6, height - 9)
   ctx.restore()
 }

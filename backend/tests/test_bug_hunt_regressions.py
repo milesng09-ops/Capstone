@@ -186,7 +186,8 @@ def test_random_baseline_excludes_training_on_every_symbol(monkeypatch):
                            exclusion=(50, 60), train_range=(0, 20), primary="ES",
                            by_symbol={"ES": [1], "NQ": [1]}, series_by_symbol=series,
                            detectors={}, within_ms=HOUR)
-    assert excluded == [[(50, 60), (0, 20)], [(0, 20)]]
+    # The selection's dates as well: on NQ they are the same event as on ES.
+    assert excluded == [[(50, 60), (0, 20)], [(50, 60), (0, 20)]]
 
 
 def test_overlap_rule_orders_all_symbols_together():
@@ -223,3 +224,105 @@ def test_training_drops_labels_whose_exit_crosses_the_split(monkeypatch):
     service = module.BacktestService(candle_service=object())
     service._fit_weights(request=req, candles=candles, query=query, required_future_bars=10,
                          exclusion=(110 * HOUR, 114 * HOUR), selection_candles=selection)
+
+
+# --------------------------------------------------------------------------
+# 18 Oct 2026 hunt
+# --------------------------------------------------------------------------
+def _trade(**changes):
+    trade = BacktestEngine(bars(), TradeRules()).run([MatchInput("m", 0, 4, 1)])[0][0]
+    return replace(trade, **changes)
+
+
+def test_equity_compounds_in_the_order_trades_closed():
+    # B was entered second but closed last; its profit must not be in the
+    # equity at C's exit, or the drawdown read along the curve is a fiction.
+    a = _trade(pattern_match_id="a", entry_time=0, exit_time=3, net_return=-10)
+    b = _trade(pattern_match_id="b", entry_time=1, exit_time=5, net_return=20)
+    c = _trade(pattern_match_id="c", entry_time=2, exit_time=4, net_return=-10)
+    points, drawdown = _equity_curve([a, b, c])
+    assert [point.trade_number for point in points] == [1, 3, 2]
+    assert [point.time for point in points] == [3, 4, 5]
+    assert [point.equity for point in points] == pytest.approx([90, 81, 97.2])
+    assert drawdown == pytest.approx(19)
+
+
+def test_family_wise_odds_are_corrected_before_rounding(monkeypatch):
+    from app.backtesting import metrics
+    from app.backtesting.significance import Baseline
+
+    monkeypatch.setattr(metrics, "binomial_tail_probability", lambda *args: 3.23e-7)
+    summary = metrics.compute_metrics(
+        [_trade(net_return=1)], total_matches=1, skipped_matches=0,
+        baseline=Baseline(samples=10, trades_executed=10, wins=5, win_rate=50.0,
+                          average_return=0.0, expectancy=0.0, seed=1),
+        configurations_tried=100,
+    )
+    assert summary.baseline_p_value == 0
+    assert summary.family_wise_p_value == pytest.approx(3.2e-5, abs=1e-6)
+
+
+def test_overlapping_trades_are_said_to_overstate_the_interval():
+    from app.backtesting.metrics import compute_metrics
+
+    apart = [_trade(entry_time=0, exit_time=2, net_return=1),
+             _trade(entry_time=2, exit_time=4, net_return=1)]
+    together = [_trade(entry_time=0, exit_time=3, net_return=1),
+                _trade(entry_time=1, exit_time=4, net_return=1)]
+
+    def notes(trades):
+        summary = compute_metrics(trades, total_matches=2, skipped_matches=0)
+        return [line for line in summary.assumptions if "opened while another" in line]
+
+    assert notes(apart) == []
+    assert len(notes(together)) == 1 and notes(together)[0].startswith("1 of these")
+
+
+def test_learning_and_bias_timeframe_fork_the_attempt_count():
+    from app.backtesting.attempts import configuration_key
+
+    plain = configuration_key(request())
+    fitted = configuration_key(request(learning={"enabled": True}))
+    unused = configuration_key(request(learning={"enabled": False, "train_fraction": 0.7}))
+    assert fitted != plain
+    assert unused == plain
+
+    def bias(higher):
+        return configuration_key(request(higher_timeframe=higher,
+                                         detectors={"require_higher_timeframe_bias": True}))
+
+    assert bias("4h") != bias("1d")
+
+
+@pytest.mark.parametrize("field", ["stop_loss_value", "take_profit_value"])
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", 1e309])
+def test_nonfinite_stop_or_target_is_a_validation_error(field, value):
+    with pytest.raises(ValidationError):
+        TradeRules.model_validate({field: value})
+
+
+@pytest.mark.anyio
+async def test_an_analysis_series_is_read_again_if_its_owner_changed_midway(monkeypatch):
+    # A takeover in a later slice evicts the earlier slices' owner; stitching
+    # both put two providers' prices in one series.
+    from app.models.domain import BarsResult
+    from app.services.candle_service import CandleService
+
+    calls = []
+
+    async def get_bars(symbol, interval, start, end):
+        calls.append((start, end))
+        provider = "yahoo" if len(calls) == 1 else "massive"
+        bar = Candle(symbol=symbol, time=start, open=1, high=1, low=1, close=1, volume=1)
+        return BarsResult(symbol=symbol, interval=interval, provider=provider, cached=True,
+                          fallback_active=False, quality="live", bars=[bar])
+
+    service = CandleService(provider=None)
+    monkeypatch.setattr(service, "get_bars", get_bars)
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "max_bars_per_request", 10)
+    result = await service.get_series_for_analysis("ES", "1h", 0, 30 * HOUR)
+
+    first_pass = len(calls) // 2
+    assert len(calls) == 2 * first_pass and first_pass >= 2
+    assert result.provider == "massive"

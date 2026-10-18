@@ -8,8 +8,9 @@
  * invisible to a test that only asks whether the panel renders.
  */
 
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Floating } from '@/components/ui/Floating'
@@ -211,5 +212,99 @@ describe('Floating', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
 
     expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+/*
+ * The panel is portalled to the end of <body>, so in tab order it came after
+ * every control in the workspace. Opening the timeframe menu -- or the chart
+ * appearance panel, the only keyboard route to the chart-link switches -- left
+ * focus on the button, the next Tab went on through the rail, and the panel was
+ * reached last of all. Escape from inside it then dropped focus to <body>.
+ */
+describe('Floating and the keyboard', () => {
+  function Toggle() {
+    const [open, setOpen] = useState(false)
+    const anchorRef = useRef<HTMLDivElement | null>(null)
+    return (
+      <div>
+        <div ref={anchorRef}>
+          <button type="button" onClick={() => setOpen((current) => !current)}>
+            open panel
+          </button>
+        </div>
+        <button type="button">elsewhere</button>
+        {open && (
+          <Floating
+            at={{ x: 10, y: 10 }}
+            onClose={() => setOpen(false)}
+            anchorRef={anchorRef}
+            label="Test panel"
+          >
+            <span>heading</span>
+            <button type="button">first</button>
+            <button type="button" onClick={() => setOpen(false)}>
+              pick
+            </button>
+          </Floating>
+        )}
+      </div>
+    )
+  }
+
+  async function open() {
+    const user = userEvent.setup()
+    render(<Toggle />)
+    const trigger = screen.getByRole('button', { name: 'open panel' })
+    trigger.focus()
+    await user.keyboard('{Enter}')
+    return { user, trigger }
+  }
+
+  it('moves focus to the first control when it opens', async () => {
+    await open()
+    expect(screen.getByRole('button', { name: 'first' })).toHaveFocus()
+  })
+
+  it('is next in tab order once it is open', async () => {
+    const { user } = await open()
+    await user.tab()
+    expect(screen.getByRole('button', { name: 'pick' })).toHaveFocus()
+  })
+
+  it('hands focus back to the button that opened it on Escape', async () => {
+    const { user, trigger } = await open()
+    // Wherever focus is inside the panel when it goes, it must not be lost.
+    screen.getByRole('button', { name: 'first' }).focus()
+    await user.keyboard('{Escape}')
+
+    expect(screen.queryByRole('group', { name: 'Test panel' })).toBeNull()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('hands focus back when a choice inside it closes it', async () => {
+    const { user, trigger } = await open()
+    await user.click(screen.getByRole('button', { name: 'pick' }))
+
+    expect(screen.queryByRole('group', { name: 'Test panel' })).toBeNull()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('hands focus back when a press outside closes it', async () => {
+    const { trigger } = await open()
+    screen.getByRole('button', { name: 'first' }).focus()
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'elsewhere' }))
+
+    expect(screen.queryByRole('group', { name: 'Test panel' })).toBeNull()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('leaves focus where the user already put it', async () => {
+    const { user } = await open()
+    const elsewhere = screen.getByRole('button', { name: 'elsewhere' })
+    elsewhere.focus()
+    await user.keyboard('{Escape}')
+
+    expect(elsewhere).toHaveFocus()
   })
 })

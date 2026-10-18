@@ -241,6 +241,77 @@ describe('timeAxisOptions', () => {
   })
 })
 
+describe('labels for daily, weekly and monthly bars', () => {
+  /*
+   * Stamped the way the backend stamps them: at the 17:00 Chicago session
+   * open on the evening *before* the day they trade. Read off the stamp, the
+   * Monday bar said Sunday and the October candle said September.
+   */
+  const mondaySession = Date.UTC(2026, 9, 11, 22) / 1000 // Sun 11 Oct, 17:00 CDT
+  const fridaySession = Date.UTC(2026, 9, 15, 22) / 1000 // Thu 15 Oct, 17:00 CDT
+  const october = Date.UTC(2026, 8, 30, 22) / 1000 // Wed 30 Sep, 17:00 CDT
+  const january = Date.UTC(2026, 11, 31, 23) / 1000 // Thu 31 Dec, 17:00 CST
+
+  const label = (zone: string, interval: string | undefined, at: number, type: number) => {
+    const options = timeAxisOptions(zone, interval)
+    const tick = options.timeScale?.tickMarkFormatter as TickMarkFormatter
+    return tick(at as UTCTimestamp, type as TickMarkType, 'en-GB')
+  }
+
+  type TimeFormatter = (time: UTCTimestamp) => string
+
+  const crosshair = (zone: string, interval: string, at: number) => {
+    const options = timeAxisOptions(zone, interval)
+    const format = options.localization?.timeFormatter as TimeFormatter
+    return format(at as UTCTimestamp)
+  }
+
+  it('names a daily bar by the day it trades, not the evening it opens', () => {
+    expect(label('America/Chicago', '1d', mondaySession, 2)).toBe('12 Oct')
+    expect(label('America/Chicago', '1d', fridaySession, 2)).toBe('16 Oct')
+  })
+
+  it('names a monthly bar by its own month', () => {
+    expect(label('America/Chicago', '1mo', october, 1)).toBe('Oct 26')
+  })
+
+  it('gets the year right across the turn of one, on a winter open', () => {
+    // January opens at 17:00 CST on 31 December -- a different UTC offset
+    // from the summer stamps above, and a different year from its label.
+    expect(label('America/Chicago', '1mo', january, 0)).toBe('2027')
+    expect(label('America/Chicago', '1mo', january, 1)).toBe('Jan 27')
+  })
+
+  it('reads the trading day on the exchange clock, whatever the chart is drawn in', () => {
+    // A trading day is the exchange's: 22:00 UTC on Sunday is Monday's
+    // session in New York, in Tokyo and in Los Angeles alike.
+    expect(label('UTC', '1d', mondaySession, 2)).toBe('12 Oct')
+    expect(label('Asia/Tokyo', '1d', mondaySession, 2)).toBe('12 Oct')
+    expect(label('America/Los_Angeles', '1w', mondaySession, 2)).toBe('12 Oct')
+  })
+
+  it('puts the trading day in the crosshair label, without the open time', () => {
+    expect(crosshair('America/Chicago', '1d', mondaySession)).toBe('12 Oct 2026')
+    expect(crosshair('America/Chicago', '1mo', october)).toBe('Oct 2026')
+  })
+
+  it('leaves intraday bars labelled as the moments they are', () => {
+    expect(label('America/Chicago', '1h', mondaySession, 2)).toBe('11 Oct')
+    expect(label('America/Chicago', '1h', mondaySession, 3)).toBe('17:00')
+    expect(crosshair('America/Chicago', '4h', mondaySession)).toBe('11 Oct 2026, 17:00')
+    // And so does a caller that does not say which interval it is drawing.
+    expect(label('America/Chicago', undefined, mondaySession, 2)).toBe('11 Oct')
+  })
+
+  it('is passed through by chartOptions', () => {
+    const palette = readChartPalette()
+    const options = chartOptions(palette, 2, 'America/Chicago', true, '1d')
+    const tick = options.timeScale?.tickMarkFormatter as TickMarkFormatter
+
+    expect(tick(mondaySession as UTCTimestamp, 2 as TickMarkType, 'en-GB')).toBe('12 Oct')
+  })
+})
+
 describe('magnetPrice', () => {
   /**
    * The magnet exists so "this low took that low" can be drawn as the exact

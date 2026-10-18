@@ -107,10 +107,17 @@ def fib_zone_at(
     first_kind = "low" if direction == "long" else "high"
     second_kind = "high" if direction == "long" else "low"
 
-    # The most recent pivot of the closing kind, then the most recent opposite
-    # pivot *before* it. Taken in that order so the leg is the one price has
-    # just made, not an older pair that happens to be the right way round.
-    end = _latest(known, second_kind)
+    # The leg must be the newest structure on the chart. A pivot of the
+    # opening kind confirmed after the closing one means price has already
+    # turned the leg into something else -- a long's up leg followed by a new
+    # confirmed low has been retraced and answered, or broken outright -- and
+    # searching back past it for an older pair that happens to be the right
+    # way round measures a band nothing is retracing any more.
+    latest_time = max(point.time for point in known)
+    end = next(
+        (point for point in known if point.time == latest_time and point.kind == second_kind),
+        None,
+    )
     if end is None:
         return None
     start = _latest([point for point in known if point.time < end.time], first_kind)

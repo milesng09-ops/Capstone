@@ -252,3 +252,62 @@ describe('a refit', () => {
     expect(b.calls.applyLogicalRange).toEqual([])
   })
 })
+
+describe('panes on different bar sizes', () => {
+  /*
+   * With the interval link off, a scroll on a 5-minute NQ used to land a
+   * daily ES on the same bar *index* -- around 17,000 -- which is an empty
+   * stretch far past its hundred-odd bars. An index means the same thing
+   * only on the same bar size.
+   */
+  function on(interval: string): ReturnType<typeof chart> {
+    return { ...chart(), interval: () => interval }
+  }
+
+  it('does not pass a scroll to a pane drawn at another interval', () => {
+    const fine = on('5m')
+    const coarse = on('1d')
+    detach.push(registerChart('fine', fine), registerChart('coarse', coarse))
+
+    broadcastLogicalRange('fine', range)
+
+    expect(coarse.calls.applyLogicalRange).toEqual([])
+  })
+
+  it('still passes it to a pane on the same interval', () => {
+    const left = on('5m')
+    const right = on('5m')
+    const daily = on('1d')
+    detach.push(
+      registerChart('left', left),
+      registerChart('right', right),
+      registerChart('daily', daily),
+    )
+
+    broadcastLogicalRange('left', range)
+
+    expect(right.calls.applyLogicalRange).toEqual([[range]])
+    expect(daily.calls.applyLogicalRange).toEqual([])
+  })
+
+  it('still sends every pane to a clicked moment, which is a time, not an index', () => {
+    const fine = on('5m')
+    const coarse = on('1d')
+    detach.push(registerChart('fine', fine), registerChart('coarse', coarse))
+
+    broadcastTimeJump('fine', 1_700_000_000_000)
+
+    expect(coarse.calls.jumpToTime).toEqual([[1_700_000_000_000]])
+  })
+
+  it('links a chart that has not said its interval as before', () => {
+    const fine = on('5m')
+    detach.push(registerChart('fine', fine))
+
+    broadcastLogicalRange('fine', range)
+
+    // `a` and `b` are registered without one.
+    expect(a.calls.applyLogicalRange).toEqual([[range]])
+    expect(b.calls.applyLogicalRange).toEqual([[range]])
+  })
+})

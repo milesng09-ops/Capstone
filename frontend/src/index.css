@@ -181,17 +181,28 @@
  * design to keep in step with the first.
  */
 @media (pointer: coarse) {
-  button,
+  button:not([role='switch']),
   select,
   [role='button'],
   input:not([type='range']) {
     min-height: 32px;
   }
 
-  button,
+  button:not([role='switch']),
   select,
   [role='button'] {
     min-width: 32px;
+  }
+
+  /*
+   * A switch is drawn by its own box -- a 28x16 track with the knob inside --
+   * so the 32px floor turned it into a 32x32 circle with the knob stuck at the
+   * top. The fingertip gets its room from an invisible margin instead.
+   */
+  [role='switch']::after {
+    content: '';
+    position: absolute;
+    inset: -8px;
   }
 
   /* The rails are 40px wide; a 32px floor inside them still fits. */

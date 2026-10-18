@@ -55,7 +55,7 @@ from app.utils.intervals import (
     UnsupportedIntervalError,
     normalise_resolution,
 )
-from app.utils.timeutils import parse_time_param
+from app.utils.timeutils import TimestampOutOfRangeError, parse_time_param
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +317,12 @@ async def create_backtest_run(
         return await service.run(request, caller)
     except BacktestBusyError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    except (BacktestValidationError, RequestTooLargeError, UnknownSymbolError) as exc:
+    except (
+        BacktestValidationError,
+        RequestTooLargeError,
+        UnknownSymbolError,
+        TimestampOutOfRangeError,
+    ) as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except UnsupportedIntervalError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

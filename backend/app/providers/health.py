@@ -88,13 +88,19 @@ class ProviderHealthRegistry:
         reason: str,
         permanent: bool = False,
         rate_limited: bool = False,
+        retry_after_seconds: float | None = None,
     ) -> None:
         settings = get_settings()
-        ttl = (
+        ttl: float = (
             settings.provider_health_permanent_ttl_seconds
             if permanent
             else settings.provider_health_ttl_seconds
         )
+        if rate_limited and retry_after_seconds is not None and not permanent:
+            # A quota names its own end. Sitting out the generic two minutes
+            # after the vendor said one would leave a working provider idle,
+            # and the client-side budget is closed for the same span anyway.
+            ttl = max(1.0, retry_after_seconds)
         with self._lock:
             entry = self._entries.setdefault(provider, HealthEntry())
             entry.healthy = False
@@ -102,9 +108,9 @@ class ProviderHealthRegistry:
             entry.rate_limited = rate_limited
             entry.failure_count += 1
             entry.last_checked_ms = now_ms()
-            entry.cooldown_until_ms = now_ms() + ttl * 1000
+            entry.cooldown_until_ms = now_ms() + int(ttl * 1000)
         logger.warning(
-            "Provider '%s' marked unhealthy for %ss: %s", provider, ttl, reason
+            "Provider '%s' marked unhealthy for %.0fs: %s", provider, ttl, reason
         )
 
     def note_throttled(self, provider: str, retry_after_seconds: float) -> None:

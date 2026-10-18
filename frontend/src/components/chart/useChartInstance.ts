@@ -41,7 +41,7 @@ import {
   isApplyingSync,
   registerChart,
 } from '@/lib/chartSync'
-import { useTimeZone } from '@/store/workspace'
+import { useTimeZone, useWorkspace } from '@/store/workspace'
 import type { Candle, ChartSettings } from '@/types/market'
 
 export interface ChartHandle {
@@ -59,6 +59,12 @@ export interface ChartHandle {
   /** Called whenever the visible range or the element size changes. */
   subscribe: (listener: () => void) => () => void
   palette: () => ChartPalette
+  /**
+   * The candle area alone, without the price and time axes beside and below
+   * it. Optional so a stand-in handle can leave it out: the whole surface is
+   * then treated as the plot.
+   */
+  plotSize?: () => { width: number; height: number } | null
 }
 
 interface Options {
@@ -67,6 +73,18 @@ interface Options {
   candles: Candle[]
   /** Refit when this changes: a new interval reframes the whole pane. */
   interval: string
+  /**
+   * What else reframes the pane -- the length of history loaded. Folded into
+   * the refit key with the interval, so a click on 14d or 2y fits the bars it
+   * brings instead of keeping the bar spacing of the old span.
+   */
+  view?: string
+  /**
+   * Whether `candles` belong to the current interval and view. While the next
+   * series is in flight the query keeps showing the previous one, and a refit
+   * against those would fit the outgoing bars and then never run again.
+   */
+  settled?: boolean
   precision: number
   /** Notified as the pointer moves over bars, for the OHLC readout. */
   onHoverBar?: (candle: Candle | null) => void
@@ -78,6 +96,8 @@ export function useChartInstance({
   id,
   candles,
   interval,
+  view = '',
+  settled = true,
   precision,
   onHoverBar,
   settings,
@@ -98,14 +118,23 @@ export function useChartInstance({
 
   const timeZone = useTimeZone()
   const zoneRef = useRef(timeZone)
+  // Daily and longer bars open at 17:00 the evening before the day they
+  // trade, so their labels are read on the exchange's clock; both are kept in
+  // refs so the create effect can label a new chart without rebuilding on
+  // every change of either.
+  const exchangeZone = useWorkspace((state) => state.exchangeZone)
+  const exchangeZoneRef = useRef(exchangeZone)
+  const intervalRef = useRef(interval)
 
   const [ready, setReady] = useState(false)
   const resetViewRef = useRef<() => void>(() => {})
-  const fittedIntervalRef = useRef<string | null>(null)
+  const fittedViewRef = useRef<string | null>(null)
 
   candlesRef.current = candles
   hoverRef.current = onHoverBar
   zoneRef.current = timeZone
+  exchangeZoneRef.current = exchangeZone
+  intervalRef.current = interval
 
   const notify = useCallback(() => {
     for (const listener of listenersRef.current) listener()
@@ -115,12 +144,19 @@ export function useChartInstance({
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    fittedIntervalRef.current = null
+    fittedViewRef.current = null
 
     const palette = readChartPalette()
     paletteRef.current = palette
 
-    const options = chartOptions(palette, precision, zoneRef.current, settingsRef.current.showGrid)
+    const options = chartOptions(
+      palette,
+      precision,
+      zoneRef.current,
+      settingsRef.current.showGrid,
+      intervalRef.current,
+      exchangeZoneRef.current,
+    )
     const chart = createChart(container, {
       ...options,
       layout: {
@@ -141,6 +177,11 @@ export function useChartInstance({
 
     const volume = chart.addHistogramSeries({
       priceFormat: { type: 'volume' },
+      // Volume has no axis of its own on screen, so its last value would be
+      // tagged on the *price* axis: "75420.00" sitting on a 7,200-7,800 ES
+      // scale reads as a price, and covers the tick labels beside it.
+      lastValueVisible: false,
+      priceLineVisible: false,
       // An empty id makes this an overlay with its own hidden scale, so
       // volume never squashes the price axis.
       priceScaleId: '',
@@ -183,6 +224,9 @@ export function useChartInstance({
     chart.subscribeClick(handleClick)
 
     const unregister = registerChart(id, {
+      // Asked at broadcast time: the scroll-and-zoom link copies bar indices,
+      // which mean different stretches of time on different intervals.
+      interval: () => intervalRef.current,
       applyCrosshair: (time) => {
         const target = seriesRef.current
         if (!target) return
@@ -253,8 +297,8 @@ export function useChartInstance({
   // Relabelling the axis is an options change rather than a rebuild, so the
   // zoom, the drawings and the data all stay exactly where they are.
   useEffect(() => {
-    chartRef.current?.applyOptions(timeAxisOptions(timeZone))
-  }, [timeZone, ready])
+    chartRef.current?.applyOptions(timeAxisOptions(timeZone, interval, exchangeZone))
+  }, [timeZone, interval, exchangeZone, ready])
 
   // ---- data ------------------------------------------------------------
   useEffect(() => {
@@ -306,8 +350,19 @@ export function useChartInstance({
 
       const logical = logicalFromTime(candlesRef.current, ms)
       if (logical == null) return null
-      const coordinate = timeScale.logicalToCoordinate(logical as Logical)
-      return coordinate == null ? null : Number(coordinate)
+      // The library only places whole bar positions: any fraction comes back
+      // as 0, the left edge of the pane. A time between two bars -- every
+      // 1h anchor on a 4h chart, every point past the last candle -- landed
+      // there, so changing timeframe stacked drawings and trade boxes against
+      // the left side. Bars are evenly spaced, so the fraction is a straight
+      // interpolation between the two whole positions either side.
+      const whole = Math.floor(logical)
+      const left = timeScale.logicalToCoordinate(whole as Logical)
+      if (left == null) return null
+      if (whole === logical) return Number(left)
+      const right = timeScale.logicalToCoordinate((whole + 1) as Logical)
+      if (right == null) return null
+      return Number(left) + (Number(right) - Number(left)) * (logical - whole)
     },
     xToTimeFree: (x) => {
       const chart = chartRef.current
@@ -323,6 +378,12 @@ export function useChartInstance({
       if (!series) return null
       const price = series.coordinateToPrice(y)
       return price == null ? null : Number(price)
+    },
+    plotSize: () => {
+      const chart = chartRef.current
+      if (!chart) return null
+      const size = chart.paneSize()
+      return size.width > 0 && size.height > 0 ? size : null
     },
     subscribe: (listener) => {
       listenersRef.current.add(listener)
@@ -398,15 +459,18 @@ export function useChartInstance({
    * as soon as the button is pressed, while the candles for it are still in
    * flight, so refitting there fits the outgoing series and then never runs
    * again once the real ones arrive -- leaving exactly the view it was meant
-   * to fix. Waiting until the candles change and comparing against the last
-   * interval actually fitted refits once, against the bars it is describing.
+   * to fix. "The candles changed" is not that signal either: the query keeps
+   * the previous series on screen while the next one loads, so the first
+   * change after a click can still be the old bars. `settled` is what says
+   * the candles are the ones the interval and view describe.
    */
+  const viewKey = `${interval}|${view}`
   useEffect(() => {
-    if (!ready || candles.length === 0) return
-    if (fittedIntervalRef.current === interval) return
-    fittedIntervalRef.current = interval
+    if (!ready || candles.length === 0 || !settled) return
+    if (fittedViewRef.current === viewKey) return
+    fittedViewRef.current = viewKey
     resetView()
-  }, [candles, interval, ready, resetView, id, precision])
+  }, [candles, viewKey, settled, ready, resetView, id, precision])
 
   return { containerRef, handle: handleRef.current, ready, resetView }
 }

@@ -193,9 +193,9 @@ class TradeRules(BaseModel):
     direction: Direction = "long"
     entry_type: EntryType = "selection_close"
     stop_loss_type: StopLossType = "percentage"
-    stop_loss_value: float = 1.0
+    stop_loss_value: float = Field(1.0, allow_inf_nan=False)
     take_profit_type: TakeProfitType = "risk_reward"
-    take_profit_value: float = 2.0
+    take_profit_value: float = Field(2.0, allow_inf_nan=False)
     maximum_holding_bars: int = Field(24, ge=1, le=2000)
     fee_percent: float = Field(0.02, ge=0, le=5)
     slippage_percent: float = Field(0.01, ge=0, le=5)

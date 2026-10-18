@@ -132,4 +132,18 @@ describe('StrategyStart', () => {
 
     expect(screen.getByRole('button', { name: /Read it/ })).toHaveProperty('disabled', true)
   })
+
+  it('prints its two caveats in a colour that can be read', () => {
+    // "Phrase matching, not a language model" is the honest half of this
+    // feature, and `text-muted` -- the muted background token -- drew it, and
+    // the note under anything unread, at about 1.1:1.
+    open()
+    describeAs('long, but only when the VIX is under 20')
+
+    expect(document.querySelectorAll('.text-muted')).toHaveLength(0)
+    expect(screen.getByText(/^Phrase matching, not a language model/).className).toContain(
+      'text-muted-foreground',
+    )
+    expect(screen.getByText(/^These set nothing/).className).toContain('text-muted-foreground')
+  })
 })

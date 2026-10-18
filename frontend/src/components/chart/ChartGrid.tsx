@@ -59,62 +59,74 @@ export function ChartGrid() {
   const [ratio, setRatio] = useState(DEFAULT_PRIMARY_RATIO)
 
   const references = symbols.filter((symbol) => symbol !== primary)
+  const single = references.length === 0
+  const grid = !single && layout === 'grid'
+  const row = !single && layout === 'columns'
 
-  // One chart needs no arrangement at all.
-  if (references.length === 0) {
-    return (
-      <div className="min-h-0 flex-1">
-        <Pane symbol={primary} isPrimary />
-      </div>
-    )
-  }
-
-  // The grid is fixed rather than draggable: with the primary spanning the top
-  // row there is no single divider to drag that would not also skew the pair
-  // underneath it out of alignment with each other.
-  if (layout === 'grid') {
-    return (
-      <div className="grid min-h-0 flex-1 auto-rows-fr grid-cols-2 gap-px bg-border">
-        <div className={cn('min-h-0', references.length > 1 && 'col-span-2')}>
-          <Pane symbol={primary} isPrimary />
-        </div>
-        {references.map((symbol) => (
-          <div key={symbol} className="min-h-0">
-            <Pane symbol={symbol} />
-          </div>
-        ))}
-      </div>
-    )
-  }
-
-  const row = layout === 'columns'
-
+  /*
+   * One tree for every arrangement, with the same element in the same place.
+   * React keeps a chart only while its position in the tree is unchanged, and
+   * each layout used to return a differently shaped tree: adding a comparison
+   * market rebuilt the primary chart, and switching between stacked and grid
+   * rebuilt the references -- every zoom and every armed drawing lost to a
+   * button that should only have moved them. The slots that a layout does not
+   * use are held with `null`, and the references sit in a wrapper that turns
+   * into `display: contents` for the grid, so its cells are still grid items.
+   *
+   * The grid always gives the primary the whole top row, which is what its
+   * button promises. With one reference that made it a 50/50 split side by
+   * side, the same thing as columns under a different name.
+   */
   return (
-    <div className={cn('flex min-h-0 flex-1', row ? 'flex-row' : 'flex-col')}>
-      <div className="min-h-0 min-w-0" style={{ flex: `${ratio} 1 0%` }}>
+    <div
+      className={cn(
+        'min-h-0 flex-1',
+        grid
+          ? 'grid auto-rows-fr grid-cols-2 gap-px bg-border'
+          : cn('flex', row ? 'flex-row' : 'flex-col'),
+      )}
+    >
+      <div
+        className={cn('min-h-0 min-w-0', grid && 'col-span-2', single && 'flex-1')}
+        style={single || grid ? undefined : { flex: `${ratio} 1 0%` }}
+      >
         <Pane symbol={primary} isPrimary />
       </div>
 
-      <Splitter
-        direction={row ? 'row' : 'column'}
-        ratio={ratio}
-        onRatioChange={setRatio}
-        label="Resize the primary chart"
-      />
+      {/* The grid is fixed rather than draggable: with the primary spanning
+          the top row there is no single divider to drag that would not also
+          skew the pair underneath it out of alignment with each other. */}
+      {single || grid ? null : (
+        <Splitter
+          direction={row ? 'row' : 'column'}
+          ratio={ratio}
+          onRatioChange={setRatio}
+          label="Resize the primary chart"
+        />
+      )}
 
-      <div
-        className={cn(
-          'flex min-h-0 min-w-0 gap-px bg-border',
-          row ? 'flex-row' : 'flex-col',
-        )}
-        style={{ flex: `${1 - ratio} 1 0%` }}
-      >
-        {references.map((symbol) => (
-          <div key={symbol} className="min-h-0 min-w-0 flex-1">
-            <Pane symbol={symbol} />
-          </div>
-        ))}
-      </div>
+      {single ? null : (
+        <div
+          className={cn(
+            grid
+              ? 'contents'
+              : cn('flex min-h-0 min-w-0 gap-px bg-border', row ? 'flex-row' : 'flex-col'),
+          )}
+          style={grid ? undefined : { flex: `${1 - ratio} 1 0%` }}
+        >
+          {references.map((symbol) => (
+            <div
+              key={symbol}
+              className={cn(
+                'min-h-0 min-w-0',
+                grid ? references.length === 1 && 'col-span-2' : 'flex-1',
+              )}
+            >
+              <Pane symbol={symbol} />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

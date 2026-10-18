@@ -15,6 +15,7 @@
  */
 
 import { useMemo } from 'react'
+import { useIsMutating } from '@tanstack/react-query'
 import { BoxSelect, CalendarRange, Play, RotateCcw, X } from 'lucide-react'
 
 import { PositionSizing } from '@/components/panels/PositionSizing'
@@ -24,10 +25,15 @@ import { Badge, Button, Disclosure, Spinner } from '@/components/ui/primitives'
 import { StrategyStart } from '@/components/panels/StrategyStart'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars } from '@/hooks/useMarketData'
-import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
+import {
+  buildBacktestRequest,
+  RUN_BACKTEST_MUTATION_KEY,
+  useRunBacktest,
+} from '@/hooks/useBacktest'
 import {
   canReadBias,
   useChartedSymbols,
+  useSymbolInterval,
   useTimeZone,
   useWorkspace,
 } from '@/store/workspace'
@@ -101,11 +107,19 @@ function PatternStrategyPanel() {
   // reading it here is what re-renders them when that changes.
   useTimeZone()
 
-  const range = useChartRange()
-  const interval = useWorkspace((state) => state.interval)
+  const primary = useWorkspace((state) => state.primarySymbol)
+  /*
+   * The interval the setup was drawn on: the primary pane's own, which with
+   * the interval link off is not the shared one in the top bar. Reading the
+   * shared one looked 5m timestamps up among 1h candles -- the setup sat on
+   * "aligning..." with the run disabled, or, when both ends fell on the hour,
+   * was priced from 1h bars and run as a 1h backtest of a 5m pattern. The
+   * range is the one that pane can load, so the bars below are the chart's.
+   */
+  const interval = useSymbolInterval(primary)
+  const range = useChartRange(interval)
   const higherTimeframe = useWorkspace((state) => state.higherTimeframe)
   const setHigherTimeframe = useWorkspace((state) => state.setHigherTimeframe)
-  const primary = useWorkspace((state) => state.primarySymbol)
   const selection = useWorkspace((state) => state.selection)
   const testWindow = useWorkspace((state) => state.testWindow)
   const rules = useWorkspace((state) => state.rules)
@@ -122,7 +136,6 @@ function PatternStrategyPanel() {
   const updateDetectors = useWorkspace((state) => state.updateDetectors)
   const updateLearning = useWorkspace((state) => state.updateLearning)
   const resetStrategy = useWorkspace((state) => state.resetStrategy)
-  const setActiveBacktestId = useWorkspace((state) => state.setActiveBacktestId)
 
   // What the fold is worth knowing without opening it. Stands on its own:
   // it needs no setup, no levels and no plan, only the two fields inside.
@@ -180,10 +193,20 @@ function PatternStrategyPanel() {
   }, [candles, testWindow])
 
   const runBacktest = useRunBacktest()
+  /*
+   * Whether a run is in flight, and how the last one failed, are read from the
+   * query client and the store rather than from this panel's own mutation.
+   * The panel is unmounted by focus mode, the Analysis tab and the collapse
+   * button, any of them mid-run: remounted, its own mutation knew of no run --
+   * the button was offered again while the first was still going, and a
+   * failure that landed meanwhile was never shown.
+   */
+  const running = useIsMutating({ mutationKey: RUN_BACKTEST_MUTATION_KEY }) > 0
+  const runError = useWorkspace((state) => state.runError)
 
   const tooShort = Boolean(summary && summary.bars < 5)
   const windowTooSmall = windowBars != null && windowBars < 20
-  const canRun = Boolean(selection && summary && !tooShort && !runBacktest.isPending)
+  const canRun = Boolean(selection && summary && !tooShort && !running)
 
   const handleRun = () => {
     if (!selection) return
@@ -200,9 +223,10 @@ function PatternStrategyPanel() {
       testWindow,
       higherTimeframe,
     })
-    runBacktest.mutate(request, {
-      onSuccess: (result) => setActiveBacktestId(result.id),
-    })
+    // Nothing is passed to `mutate`. Putting the result on screen is the
+    // hook's job: options given here are dropped if this panel unmounts
+    // before the run lands, and the run then never opened.
+    runBacktest.mutate(request)
   }
 
   return (
@@ -352,6 +376,9 @@ function PatternStrategyPanel() {
             value={search.lookbackDays}
             min={7}
             max={730}
+            // Whole days: the request turns this into millisecond bounds the
+            // backend takes as integers, and half a day of them is not one.
+            integer
             suffix="d"
             onChange={(lookbackDays) => updateSearch({ lookbackDays })}
           />
@@ -379,7 +406,10 @@ function PatternStrategyPanel() {
           <NumberField
             label="Stop value"
             value={rules.stop_loss_value}
+            // Strictly positive for every stop it applies to: a stop of zero
+            // is no stop, and the backend refuses the run over it.
             min={0}
+            minExclusive
             step={0.1}
             disabled={rules.stop_loss_type === 'pattern_extreme'}
             onChange={(stop_loss_value) => updateRules({ stop_loss_value })}
@@ -402,6 +432,7 @@ function PatternStrategyPanel() {
             }
             value={rules.take_profit_value}
             min={0}
+            minExclusive
             step={0.1}
             onChange={(take_profit_value) => updateRules({ take_profit_value })}
           />
@@ -490,6 +521,7 @@ function PatternStrategyPanel() {
             value={detectors.within_bars}
             min={1}
             max={500}
+            integer
             suffix="bars"
             onChange={(within_bars) => updateDetectors({ within_bars })}
           />
@@ -499,6 +531,7 @@ function PatternStrategyPanel() {
             value={detectors.swing_strength}
             min={1}
             max={20}
+            integer
             onChange={(swing_strength) => updateDetectors({ swing_strength })}
           />
         </div>
@@ -530,8 +563,9 @@ function PatternStrategyPanel() {
           }
         />
 
+        {/* Amber, like the panel's other warnings: `text-warn` was never a token. */}
         {!canReadBias(interval) && (
-          <p className="text-2xs leading-relaxed text-warn">
+          <p className="text-2xs leading-relaxed text-amber-400">
             {interval === '1mo'
               ? `${INTERVAL_LABELS[interval]} is the coarsest timeframe there is, so there is nothing above it to read a bias from.`
               : `No higher timeframe is composed of whole ${INTERVAL_LABELS[interval]} bars.`}
@@ -616,7 +650,9 @@ function PatternStrategyPanel() {
               hint="The shallow edge of the band, as a fraction of the leg"
               value={detectors.fib_low}
               min={0}
-              max={1}
+              // Each edge is bounded by the other: a band whose shallow edge
+              // is deeper than its deep one is refused by the backend.
+              max={detectors.fib_high}
               step={0.01}
               onChange={(fib_low) => updateDetectors({ fib_low })}
             />
@@ -624,7 +660,7 @@ function PatternStrategyPanel() {
               label="To"
               hint="The deep edge. 0.62 to 0.79 is the optimal trade entry."
               value={detectors.fib_high}
-              min={0}
+              min={detectors.fib_low}
               max={1}
               step={0.01}
               onChange={(fib_high) => updateDetectors({ fib_high })}
@@ -712,6 +748,7 @@ function PatternStrategyPanel() {
             value={learning.query_samples}
             min={1}
             max={400}
+            integer
             suffix="windows"
             onChange={(query_samples) => updateLearning({ query_samples })}
           />
@@ -751,6 +788,7 @@ function PatternStrategyPanel() {
             value={rules.maximum_holding_bars}
             min={1}
             max={2000}
+            integer
             suffix="bars"
             onChange={(maximum_holding_bars) => updateRules({ maximum_holding_bars })}
           />
@@ -759,6 +797,7 @@ function PatternStrategyPanel() {
             value={rules.atr_period}
             min={2}
             max={200}
+            integer
             disabled={rules.stop_loss_type !== 'atr_multiple'}
             onChange={(atr_period) => updateRules({ atr_period })}
           />
@@ -800,6 +839,7 @@ function PatternStrategyPanel() {
             value={search.maximumMatches}
             min={1}
             max={25}
+            integer
             onChange={(maximumMatches) => updateSearch({ maximumMatches })}
           />
           <NumberField
@@ -823,16 +863,16 @@ function PatternStrategyPanel() {
 
       {/* ---- run: always reachable, whatever is open above ---- */}
       <section className="shrink-0 space-y-2 border-t border-border pt-2.5 mt-3">
-        {runBacktest.isError && (
+        {runError && !running && (
           <p className="rounded-md border border-bear/30 bg-bear/10 p-2 text-2xs leading-relaxed text-bear">
-            {(runBacktest.error as Error).message}
+            {runError}
           </p>
         )}
 
         <div className="flex gap-2">
           <Button variant="primary" className="flex-1" disabled={!canRun} onClick={handleRun}>
-            {runBacktest.isPending ? <Spinner /> : <Play size={14} />}
-            {runBacktest.isPending ? 'Testing...' : 'Test strategy'}
+            {running ? <Spinner /> : <Play size={14} />}
+            {running ? 'Testing...' : 'Test strategy'}
           </Button>
           <Button
             size="icon"

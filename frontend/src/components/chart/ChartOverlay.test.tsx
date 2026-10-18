@@ -8,7 +8,8 @@
  * drawing -- none of which needs real candles to be meaningful.
  */
 
-import { fireEvent, render } from '@testing-library/react'
+import { StrictMode } from 'react'
+import { act, fireEvent, render } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChartOverlay } from '@/components/chart/ChartOverlay'
@@ -813,5 +814,275 @@ describe('the size of the surface', () => {
 
     expect(canvas.style.width).toBe('')
     expect(canvas.style.height).toBe('')
+  })
+})
+
+describe('painting under StrictMode', () => {
+  it('still paints after React mounts it, tears it down and mounts it again', () => {
+    // A frame queue that honours cancellation, as the browser does. The bug
+    // lived in exactly that: the remount found a cancelled frame's handle
+    // still in its ref, took it for a paint on its way, and never asked again.
+    const frames = new Map<number, FrameRequestCallback>()
+    let next = 0
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      next += 1
+      frames.set(next, callback)
+      return next
+    })
+    const caf = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      frames.delete(id)
+    })
+
+    try {
+      const { container } = render(
+        <StrictMode>
+          <div>
+            <ChartOverlay
+              symbol="NQ"
+              handle={handle}
+              candles={candles}
+              interval="1h"
+              ict={undefined}
+              ictSettings={DEFAULT_ICT_SETTINGS}
+              drawings={[level]}
+              selection={null}
+              testWindow={null}
+              trades={[]}
+              selectedTradeId={null}
+              evidence={null}
+              tool="cursor"
+              drawingColor="#818cf8"
+              drawingWidth={2}
+              magnet={false}
+              selectedDrawingId={null}
+              snapToSwings={false}
+              allowSelection
+              onCreateDrawing={vi.fn()}
+              onUpdateDrawing={vi.fn()}
+              onSelectDrawing={vi.fn()}
+              onSelectionChange={vi.fn()}
+              onTestWindowChange={vi.fn()}
+              onSelectTrade={vi.fn()}
+              onGestureComplete={vi.fn()}
+            />
+          </div>
+        </StrictMode>,
+      )
+      const canvas = container.querySelector('canvas') as HTMLCanvasElement
+      Object.defineProperty(canvas.parentElement, 'clientWidth', { value: 640 })
+      Object.defineProperty(canvas.parentElement, 'clientHeight', { value: 320 })
+
+      // The chart reporting a pan is a request for a paint.
+      act(() => {
+        for (const listener of notifyListeners) listener()
+      })
+      act(() => {
+        for (const [id, callback] of [...frames]) {
+          frames.delete(id)
+          callback(0)
+        }
+      })
+
+      // Sized to the pane: the paint ran, rather than the 300x150 default.
+      expect(canvas.width).toBe(640 * (window.devicePixelRatio || 1))
+    } finally {
+      raf.mockRestore()
+      caf.mockRestore()
+    }
+  })
+})
+
+describe('bug hunt, 18 Oct', () => {
+  const selection = {
+    symbol: 'NQ',
+    start_time: 900_000,
+    end_time: 903_600,
+    source_interval: '1h' as const,
+  }
+
+  it('does not finish an armed shape on a right-click, which is for the menu', () => {
+    const { canvas, onCreateDrawing, onGestureComplete } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 101, 101))
+    fireEvent(canvas, pointer('pointermove', 240, 180))
+    fireEvent(
+      canvas,
+      new MouseEvent('pointerup', { bubbles: true, button: 2, clientX: 240, clientY: 180 }),
+    )
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+    expect(onGestureComplete).not.toHaveBeenCalled()
+  })
+
+  it('drops an armed first point when the chart switches symbol', () => {
+    // Left armed, the next click finished the old symbol's shape on the new
+    // one, starting from the old symbol's price.
+    const { canvas, container: _container, rerender, ...props } = setup({ tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointerup', 101, 101))
+    rerender(<ChartOverlay {...props} symbol="YM" />)
+    fireEvent(canvas, pointer('pointermove', 240, 180))
+    fireEvent(canvas, pointer('pointerdown', 240, 180))
+    fireEvent(canvas, pointer('pointerup', 240, 180))
+
+    expect(props.onCreateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('puts a drawing back when the browser takes the pointer mid-move', () => {
+    const { container, onUpdateDrawing } = setup({ drawings: [level] })
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    fireEvent(window, pointer('pointermove', 100, 200))
+    fireEvent(window, new MouseEvent('pointercancel', { bubbles: true }))
+
+    expect(onUpdateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('ignores a press on the drawing toolbar, even between its buttons', () => {
+    const { canvas, onSelectDrawing, onSelectTrade } = setup({ drawings: [level] })
+    const toolbar = document.createElement('div')
+    toolbar.setAttribute('role', 'toolbar')
+    canvas.parentElement!.appendChild(toolbar)
+
+    toolbar.dispatchEvent(pointer('pointerdown', 100, 150))
+    window.dispatchEvent(pointer('pointerup', 100, 150))
+
+    expect(onSelectDrawing).not.toHaveBeenCalled()
+    expect(onSelectTrade).not.toHaveBeenCalled()
+  })
+
+  it('leaves a press on the axes to the chart, even over a drawing', () => {
+    const plotted: ChartHandle = { ...handle, plotSize: () => ({ width: 300, height: 300 }) }
+    const { container, onSelectDrawing } = setup({ handle: plotted, drawings: [level] })
+
+    // The level runs the width of the pane at y=150; x=350 is the price axis.
+    fireEvent(container, pointer('pointerdown', 350, 150))
+    expect(onSelectDrawing).not.toHaveBeenCalled()
+
+    fireEvent(container, pointer('pointerdown', 100, 150))
+    expect(onSelectDrawing).toHaveBeenCalledWith('level-1')
+  })
+
+  it('puts the range tabs below the legend when told where it ends', () => {
+    const { canvas, onSelectionChange } = setup({ selection, chipTop: 48 })
+
+    canvas.parentElement!.dispatchEvent(pointer('pointerdown', 20, 12))
+    expect(onSelectionChange).not.toHaveBeenCalled()
+
+    canvas.parentElement!.dispatchEvent(pointer('pointerdown', 20, 54))
+    expect(onSelectionChange).toHaveBeenCalledWith(null)
+  })
+
+  it('previews a freehand stroke along the path it took', () => {
+    const lines: Array<[number, number]> = []
+    const recorder: any = new Proxy(function () {}, {
+      get: (_target, key) =>
+        key === 'lineTo'
+          ? (x: number, y: number) => {
+              lines.push([x, y])
+            }
+          : key === 'measureText'
+            ? () => ({ width: 10 })
+            : recorder,
+      apply: () => recorder,
+      set: () => true,
+    })
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    const context = vi
+      .spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(recorder as CanvasRenderingContext2D)
+
+    try {
+      const { canvas } = setup({ tool: 'brush' })
+      Object.defineProperty(canvas.parentElement, 'clientWidth', { value: 640 })
+      Object.defineProperty(canvas.parentElement, 'clientHeight', { value: 320 })
+
+      fireEvent(canvas, pointer('pointerdown', 100, 100))
+      fireEvent(canvas, pointer('pointermove', 140, 130))
+      fireEvent(canvas, pointer('pointermove', 180, 100))
+      fireEvent(canvas, pointer('pointermove', 220, 140))
+      lines.length = 0
+      act(() => {
+        for (const frame of frames.splice(0)) frame(0)
+      })
+
+      // The corners of the stroke, not one segment from the press.
+      expect(lines).toEqual(expect.arrayContaining([[140, 130], [180, 100], [220, 140]]))
+    } finally {
+      raf.mockRestore()
+      context.mockRestore()
+    }
+  })
+})
+
+describe('dragging one end of a line, with the magnet on', () => {
+  // Bars at 100 and 500 whose four levels all sit between 0.5 and 2.
+  const line: Drawing = {
+    id: 'line',
+    kind: 'trendline',
+    symbol: 'NQ',
+    color: '#818cf8',
+    width: 2,
+    createdAt: 0,
+    from: { time: 100, price: 150 },
+    to: { time: 500, price: 150 },
+  }
+
+  function dragEnd(toY: number) {
+    const { container, onUpdateDrawing } = setup({
+      candles: nearbyBars,
+      drawings: [line],
+      selectedDrawingId: 'line',
+      magnet: true,
+    })
+    fireEvent(container, pointer('pointerdown', 500, 150))
+    fireEvent(window, pointer('pointermove', 500, (150 + toY) / 2))
+    fireEvent(window, pointer('pointermove', 500, toY))
+    fireEvent(window, pointer('pointerup', 500, toY))
+    const calls = vi.mocked(onUpdateDrawing).mock.calls
+    return calls.at(-1)?.[1] as Drawing & { to: { price: number } }
+  }
+
+  it('follows the pointer when no level of the bar is near it', () => {
+    // The strong magnet pinned the end to the bar's high (2) however far
+    // above it the pointer was, so the end did not follow the hand.
+    expect(dragEnd(120).to.price).toBe(120)
+  })
+
+  it('still lands exactly on a level the pointer is close to', () => {
+    expect(dragEnd(8).to.price).toBe(2)
+  })
+})
+
+describe('a held tool and the axes', () => {
+  const plotted: ChartHandle = { ...handle, plotSize: () => ({ width: 300, height: 300 }) }
+
+  it('does not start a shape on an axis', () => {
+    const { canvas, onCreateDrawing } = setup({ handle: plotted, tool: 'horizontal' })
+
+    // x=350 is over the price axis; y=320 over the time axis.
+    fireEvent(canvas, pointer('pointerdown', 350, 150))
+    fireEvent(canvas, pointer('pointerup', 350, 150))
+    fireEvent(canvas, pointer('pointerdown', 100, 320))
+    fireEvent(canvas, pointer('pointerup', 100, 320))
+
+    expect(onCreateDrawing).not.toHaveBeenCalled()
+  })
+
+  it('stops a shape dragged off the candle area at its edge', () => {
+    const { canvas, onCreateDrawing } = setup({ handle: plotted, tool: 'rectangle' })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 100))
+    fireEvent(canvas, pointer('pointermove', 360, 340))
+    fireEvent(canvas, pointer('pointerup', 360, 340))
+
+    const drawn = vi.mocked(onCreateDrawing).mock.calls[0][0] as { to: { time: number; price: number } }
+    expect(drawn.to.price).toBe(300)
   })
 })

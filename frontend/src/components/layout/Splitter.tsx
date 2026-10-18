@@ -47,6 +47,8 @@ export function Splitter({
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const parent = event.currentTarget.parentElement
     if (!parent) return
+    // A drag, not a text selection across the panels it passes over.
+    event.preventDefault()
     boxRef.current = parent.getBoundingClientRect()
     event.currentTarget.setPointerCapture(event.pointerId)
   }
@@ -66,6 +68,13 @@ export function Splitter({
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
+  // The drag ends however the pointer goes: a touch taken for a scroll, or
+  // the button released over another window after Alt+Tab. Left set, the
+  // next hover kept resizing with no button held.
+  const endDrag = () => {
+    boxRef.current = null
+  }
+
   return (
     <div
       role="separator"
@@ -78,6 +87,8 @@ export function Splitter({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={endDrag}
+      onLostPointerCapture={endDrag}
       onKeyDown={(event) => {
         const back = direction === 'row' ? 'ArrowLeft' : 'ArrowUp'
         const forward = direction === 'row' ? 'ArrowRight' : 'ArrowDown'
@@ -86,7 +97,9 @@ export function Splitter({
         onRatioChange(clamp(ratio + (event.key === forward ? KEY_STEP : -KEY_STEP)))
       }}
       className={cn(
-        'group relative z-10 shrink-0 bg-border transition-colors',
+        // `touch-none`: a finger on the divider moves the divider, rather than
+        // the browser taking the touch over as a scroll halfway through.
+        'group relative z-10 shrink-0 touch-none bg-border transition-colors',
         'hover:bg-primary/70 focus-visible:bg-primary focus-visible:outline-none',
         // The hit area is padded out past the hairline: a 1px target is
         // technically draggable and practically not.

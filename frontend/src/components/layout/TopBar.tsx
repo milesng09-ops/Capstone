@@ -111,6 +111,9 @@ export function TopBar() {
               size="sm"
               variant="toolbar"
               data-active={active}
+              // The lit border says it to the eye; this says it to a screen
+              // reader, which otherwise hears two identical market buttons.
+              aria-pressed={active}
               onClick={() => toggleCompareSymbol(symbol)}
               title={
                 active
@@ -127,11 +130,17 @@ export function TopBar() {
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <LayoutPicker />
 
+        {/*
+          From `lg`, not `xl`: gated at 1280px, a 1024-1279px laptop had no way
+          at all to put an earlier run back on screen. Narrower there, where the
+          bar also carries the full product name and the "no API key" badge;
+          the run labels are long, and the select truncates rather than wraps.
+        */}
         {historyQuery.data && historyQuery.data.length > 0 && (
-          <label className="hidden items-center gap-1.5 xl:flex">
+          <label className="hidden items-center gap-1.5 lg:flex">
             <span className="label-caps">Run</span>
             <select
-              className="h-6 max-w-[18rem] rounded border border-input bg-[hsl(var(--panel-raised))] px-1.5 text-2xs outline-none focus:border-primary/60"
+              className="h-6 max-w-[10rem] rounded border border-input bg-[hsl(var(--panel-raised))] px-1.5 text-2xs outline-none focus:border-primary/60 xl:max-w-[18rem]"
               value={activeId ?? ''}
               onChange={(event) => setActiveBacktestId(event.target.value || null)}
             >

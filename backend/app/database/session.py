@@ -41,7 +41,14 @@ def get_engine() -> Engine:
     if _engine is None:
         settings = get_settings()
         url = settings.resolved_database_url
-        connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
+        # A first load fetches several series at once, and each one writes its
+        # bars from a worker thread. SQLite takes one writer at a time and by
+        # default gives up after five seconds of waiting, so nine series
+        # loading together failed with "database is locked" -- a 503, and the
+        # fetched bars thrown away. Thirty seconds outlasts any one write here.
+        connect_args = (
+            {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
+        )
         _engine = create_engine(
             url,
             future=True,

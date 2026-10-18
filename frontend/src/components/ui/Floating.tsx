@@ -35,6 +35,11 @@ import { cn } from '@/utils/cn'
 /** Kept off the window edges, so a clamped panel still reads as floating. */
 const EDGE_PX = 8
 
+/** What can take focus inside a panel, in the order Tab would visit it. */
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 interface Props {
   /** Where to put the top-left corner, in window coordinates, before clamping. */
   at: { x: number; y: number }
@@ -107,6 +112,40 @@ export function Floating({ at, onClose, anchorRef, label, className, children }:
     }
   }, [at, anchorRef])
 
+  /*
+   * Focus goes in when the panel opens, and back where it came from when it
+   * closes.
+   *
+   * Portalled to the end of <body>, the panel comes after every control in the
+   * workspace in tab order. Opening the timeframe menu -- or chart appearance,
+   * the only keyboard route to the chart-link switches -- left focus on the
+   * button, so the panel was reached last of all, and Escape from inside it
+   * dropped focus to <body>.
+   *
+   * A layout effect, so the hand-back runs while the focused control is still
+   * in the document. A passive cleanup runs after the panel has gone, by which
+   * time the browser has already moved focus to <body>.
+   */
+  useLayoutEffect(() => {
+    const panel = panelRef.current
+    if (!panel) return
+    const opener = document.activeElement
+    const trigger = opener instanceof HTMLElement ? opener : null
+
+    const target = panel.querySelector<HTMLElement>(FOCUSABLE) ?? panel
+    target.focus({ preventScroll: true })
+
+    return () => {
+      // Taken back only from the panel itself, or from nowhere. A press that
+      // closed the panel by landing on another control leaves focus there.
+      const active = document.activeElement
+      const ours = active == null || active === document.body || panel.contains(active)
+      if (ours && trigger && trigger !== document.body && trigger.isConnected) {
+        trigger.focus({ preventScroll: true })
+      }
+    }
+  }, [])
+
   useEffect(() => {
     // Read from the DOM rather than through React's tree: the panel is
     // portalled out of the component that owns it, so asking anything up
@@ -151,6 +190,9 @@ export function Floating({ at, onClose, anchorRef, label, className, children }:
       // then goes looking for and does not find.
       role="group"
       aria-label={label}
+      // Focusable but not a tab stop: somewhere for focus to land when the
+      // panel holds no control, and when a press hits its padding.
+      tabIndex={-1}
       // The pane's own right-click handler used to catch presses on the menu
       // because the menu was inside it. Portalled out, nothing suppresses the
       // browser's native menu, which would otherwise open on top of this one.
@@ -158,6 +200,7 @@ export function Floating({ at, onClose, anchorRef, label, className, children }:
       className={cn(
         'fixed z-50 max-h-[calc(100vh-16px)] overflow-y-auto overscroll-contain',
         'rounded-md border border-border bg-[hsl(var(--popover))] p-2 shadow-lg',
+        'outline-none',
         className,
       )}
       // Set here so the first paint lands near the pointer rather than in the

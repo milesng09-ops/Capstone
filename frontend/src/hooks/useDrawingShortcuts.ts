@@ -91,7 +91,10 @@ export function useDrawingShortcuts(): void {
         return
       }
 
-      if (event.key === 'Escape') {
+      // An Escape something else already acted on -- leaving focus mode,
+      // closing a menu -- has been used. Acting on it again here made one
+      // press do two things.
+      if (event.key === 'Escape' && !event.defaultPrevented) {
         if (state.tool !== 'cursor') state.setTool('cursor')
         else if (state.selectedDrawingId) state.selectDrawing(null)
       }

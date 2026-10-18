@@ -91,18 +91,21 @@ test.describe('the drawing overlay', () => {
 
 test.describe('every drawing tool', () => {
   // The three the user named, then the rest of the rail. Each is a drag well
-  // clear of the old dead corner.
+  // clear of the old dead corner -- and starts inside the candle area. In the
+  // test window the primary's candles end about 200px down, with the time
+  // axis below them; three of these began on the axis, which is not a point
+  // on the chart and no longer starts a shape.
   const tools: [string, string, { x: number; y: number }, { x: number; y: number }][] = [
     ['Trend line', 'trendline', { x: 440, y: 160 }, { x: 740, y: 100 }],
-    ['Arrow', 'arrow', { x: 380, y: 210 }, { x: 620, y: 140 }],
+    ['Arrow', 'arrow', { x: 380, y: 180 }, { x: 620, y: 110 }],
     ['Zone', 'rectangle', { x: 340, y: 90 }, { x: 600, y: 200 }],
     ['Ray', 'ray', { x: 460, y: 190 }, { x: 780, y: 130 }],
     ['Level', 'horizontal', { x: 480, y: 120 }, { x: 720, y: 120 }],
     ['Level from here', 'horizontal_ray', { x: 500, y: 150 }, { x: 760, y: 150 }],
     ['Time marker', 'vertical', { x: 560, y: 80 }, { x: 560, y: 220 }],
-    ['Fibonacci retracement', 'fib', { x: 410, y: 220 }, { x: 660, y: 80 }],
+    ['Fibonacci retracement', 'fib', { x: 410, y: 185 }, { x: 660, y: 60 }],
     ['Freehand', 'brush', { x: 360, y: 110 }, { x: 660, y: 190 }],
-    ['Long position', 'long', { x: 420, y: 200 }, { x: 680, y: 110 }],
+    ['Long position', 'long', { x: 420, y: 180 }, { x: 680, y: 100 }],
     ['Short position', 'short', { x: 430, y: 95 }, { x: 690, y: 210 }],
     ['Note', 'text', { x: 520, y: 170 }, { x: 520, y: 170 }],
   ]

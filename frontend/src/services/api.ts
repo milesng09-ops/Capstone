@@ -12,6 +12,7 @@ import type {
   BacktestResult,
   Trade,
 } from '@/types/backtest'
+import { newId } from '@/lib/id'
 import type { IctAnalysis } from '@/types/ict'
 import type {
   BarsResponse,
@@ -26,13 +27,20 @@ export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 ).replace(/\/$/, '')
 
-/** Stable per-tab id so the backend can enforce one backtest at a time. */
+/**
+ * Stable per-tab id so the backend can enforce one backtest at a time.
+ *
+ * Minted with `newId` rather than `crypto.randomUUID`, which does not exist on
+ * a plain-http origin: there the call threw, every such tab fell back to the
+ * shared `anonymous` bucket, and a run in one blocked the run in another.
+ * `anonymous` is now only for a tab that cannot keep session storage at all.
+ */
 export const SESSION_ID = (() => {
   const key = 'mrl.session-id'
   try {
     const existing = sessionStorage.getItem(key)
     if (existing) return existing
-    const created = crypto.randomUUID()
+    const created = newId()
     sessionStorage.setItem(key, created)
     return created
   } catch {
@@ -78,6 +86,43 @@ function parseRetryAfter(response: Response): number | null {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null
 }
 
+/** Where a validation error points, minus the part every one of them shares. */
+const LOCATION_ROOTS = new Set(['body', 'query', 'path', 'header'])
+
+/**
+ * The backend's explanation, in whichever of its two shapes it arrived.
+ *
+ * Errors the routes raise themselves carry a sentence. Errors from request
+ * validation are FastAPI's own, and arrive as a *list* -- one entry per
+ * problem, each with a `msg` and a `loc` -- so reading only a string dropped
+ * every one of them, including the sentences the schema validators were
+ * written to say ("detectors.fib_low must not exceed fib_high"). The user
+ * got "the configuration could not be used as entered" and no idea which
+ * field to change.
+ */
+export function describeErrorDetail(detail: unknown): string | undefined {
+  if (typeof detail === 'string') return detail || undefined
+  if (!Array.isArray(detail)) return undefined
+
+  const lines = detail.flatMap((item) => {
+    if (item == null || typeof item !== 'object') return []
+    const { msg, loc } = item as { msg?: unknown; loc?: unknown }
+    if (typeof msg !== 'string' || msg === '') return []
+
+    // Pydantic prefixes what a validator raised with the exception type,
+    // which says nothing to a reader.
+    const text = msg.replace(/^Value error, /, '')
+    const where = Array.isArray(loc)
+      ? loc.filter((part) => !LOCATION_ROOTS.has(String(part))).join('.')
+      : ''
+    // A validator that names its own field already says where; repeating
+    // it reads as a stutter.
+    return [where && !text.includes(where) ? `${where}: ${text}` : text]
+  })
+
+  return lines.length > 0 ? lines.join('; ') : undefined
+}
+
 const FRIENDLY_STATUS: Record<number, string> = {
   400: 'That request was not valid. Adjust the settings and try again.',
   404: 'The requested data could not be found.',
@@ -113,7 +158,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let detail: string | undefined
     try {
       const body = await response.json()
-      detail = typeof body?.detail === 'string' ? body.detail : undefined
+      detail = describeErrorDetail(body?.detail)
     } catch {
       detail = undefined
     }

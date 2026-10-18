@@ -118,8 +118,11 @@ export function StrategyStart() {
             than a disclaimer: a form filled in by something that cannot say
             why would be the same defect as a win rate quoted without its
             interval, one step earlier in the process.
+
+            `text-muted-foreground`, not `text-muted`: the latter is the muted
+            background token, and drew this at about 1.1:1 against the panel.
           */}
-          <p className="text-[10px] leading-snug text-muted">
+          <p className="text-[10px] leading-snug text-muted-foreground">
             Phrase matching, not a language model. Everything it sets is listed
             below, and so is anything it could not read.
           </p>
@@ -166,7 +169,7 @@ function Account({ read }: { read: Interpretation }) {
               “{clause}”
             </p>
           ))}
-          <p className="pt-1 text-[10px] leading-snug text-muted">
+          <p className="pt-1 text-[10px] leading-snug text-muted-foreground">
             These set nothing. If they matter, set them on the form below.
           </p>
         </div>

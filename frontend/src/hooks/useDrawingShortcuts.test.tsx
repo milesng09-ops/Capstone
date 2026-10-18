@@ -116,3 +116,28 @@ describe('Delete on the chart surface', () => {
     input.remove()
   })
 })
+
+describe('Escape', () => {
+  beforeEach(() => {
+    useWorkspace.setState({ tool: 'trendline', selectedDrawingId: null })
+  })
+
+  it('drops the held tool', () => {
+    render(<Harness />)
+    press('Escape')
+    expect(useWorkspace.getState().tool).toBe('cursor')
+  })
+
+  it('leaves the tool alone when something earlier already used the press', () => {
+    // Leaving focus mode claims the Escape first; one press, one thing undone.
+    render(<Harness />)
+    const claim = (event: KeyboardEvent) => event.preventDefault()
+    window.addEventListener('keydown', claim, { capture: true })
+    try {
+      press('Escape')
+    } finally {
+      window.removeEventListener('keydown', claim, { capture: true })
+    }
+    expect(useWorkspace.getState().tool).toBe('trendline')
+  })
+})

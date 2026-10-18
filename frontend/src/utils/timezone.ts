@@ -31,6 +31,36 @@ export const EXCHANGE_TIME_ZONE = 'exchange'
  */
 export const DEFAULT_EXCHANGE_ZONE = 'America/Chicago'
 
+/**
+ * The hour, on the exchange's own clock, at which a trading day opens.
+ *
+ * CME futures trade from 17:00 Chicago on the evening before the day they are
+ * dated. Keep in step with `SESSION_OPEN_HOUR` in the backend's
+ * `app/providers/trading_hours.py`, which places every daily, weekly and
+ * monthly bucket on it.
+ */
+export const SESSION_OPEN_HOUR = 17
+
+const HOUR_MS = 3_600_000
+
+/**
+ * A moment inside the trading day a daily, weekly or monthly bar stands for.
+ *
+ * Those bars are stamped at the session open -- Monday's daily bar at 17:00
+ * on Sunday, October's monthly bar at 17:00 on 30 September -- so a date read
+ * straight off the stamp names the evening before. Labelled that way a week
+ * of dailies read Sunday to Thursday, and the October candle sat under
+ * "Sep". Moving on by the hours left in that evening lands on midnight of the
+ * day being traded, in either season, because the open is a wall-clock time
+ * in the exchange's zone and no clock change falls between it and midnight.
+ *
+ * Read the date of the result in the exchange's zone, not the viewer's: a
+ * trading day is the exchange's, wherever it is being watched from.
+ */
+export function tradingDayInstant(ms: number): number {
+  return ms + (24 - SESSION_OPEN_HOUR) * HOUR_MS
+}
+
 export const TIME_ZONES: readonly { value: TimeZoneId; label: string }[] = [
   { value: EXCHANGE_TIME_ZONE, label: 'Exchange' },
   { value: LOCAL_TIME_ZONE, label: 'Local' },

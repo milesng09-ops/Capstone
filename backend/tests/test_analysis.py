@@ -206,6 +206,25 @@ class TestSmtDivergence:
         assert divergence.confirmed_time == 6 * HOUR_MS
         assert divergence.confirmed_time > divergence.end_time
 
+    def test_waits_for_the_reference_swing_to_confirm_on_its_own_bars(self):
+        """A reference with no bar at hour 6 confirms its pivot at hour 7.
+
+        The divergence rests on that pivot to be valid, so it is not known
+        before hour 7 however early the primary's own pivot confirmed.
+        """
+
+        primary = series("NQ", self.NQ_HIGHS)
+        reference = [candle for candle in series("ES", self.ES_HIGHS + [10]) if candle.time != 6 * HOUR_MS]
+        found = find_smt_divergences(
+            primary,
+            find_swing_points(primary, strength=1),
+            reference,
+            find_swing_points(reference, strength=1),
+        )
+        divergence = next(item for item in found if item.kind == "high")
+        assert divergence.validity == "swing_pair"
+        assert divergence.confirmed_time == 7 * HOUR_MS
+
     def test_strength_is_scaled_per_symbol(self):
         divergence = next(item for item in self._detect() if item.kind == "high")
         # NQ ran +16.7% off its prior high while ES fell -8.3%: about 25 points

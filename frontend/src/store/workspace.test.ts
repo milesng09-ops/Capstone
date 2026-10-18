@@ -5,24 +5,32 @@
  * about the sequence of edits, and a render adds nothing to that.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { renderHook } from '@testing-library/react'
 
 import {
   canReadBias,
   longestRange,
+  mergeWorkspace,
   migrateWorkspace,
   useSymbolInterval,
   useWorkspace,
 } from '@/store/workspace'
-import type { Drawing } from '@/types/drawing'
+import { DEFAULT_DRAWING_WIDTH, type Drawing, type TextDrawing } from '@/types/drawing'
 import {
+  DEFAULT_CHART_SETTINGS,
   DEFAULT_CHART_SYNC,
   DEFAULT_FAVOURITE_INTERVALS,
   INTERVALS,
   MAX_RANGE_DAYS,
 } from '@/types/market'
+import {
+  DEFAULT_LEARNING_SETTINGS,
+  DEFAULT_SEARCH_CONFIG,
+  DEFAULT_SIZING,
+  DEFAULT_TRADE_RULES,
+} from '@/types/backtest'
 import { setSyncModes, syncModes } from '@/lib/chartSync'
 import type { ChartSync, SymbolKey } from '@/types/market'
 
@@ -322,8 +330,11 @@ describe('the interval link', () => {
 
   it('drops a selection when the primary chart changes interval', () => {
     // A selection names a run of candles at one bar size; it cannot survive
-    // that bar size changing underneath it.
+    // that bar size changing underneath it. Unlinked, because that is the
+    // only time a pane's own interval is the one it is drawn at -- and the
+    // only time the pane's own picker is on screen.
     useWorkspace.setState({
+      chartSync: { ...DEFAULT_CHART_SYNC, interval: false },
       selection: { symbol: 'NQ', start_time: 1, end_time: 2, source_interval: '1h' },
     })
 
@@ -619,5 +630,352 @@ describe('the timeframe a bias is read from', () => {
     expect(migrated.detectors.min_wick_ratio).toBe(DEFAULT_DETECTOR_FILTERS.min_wick_ratio)
     // And the choice that was already there survives.
     expect(migrated.detectors.require_fair_value_gap).toBe(true)
+  })
+})
+
+describe('a workspace saved by an earlier build', () => {
+  /*
+   * Through the real persist path, not `migrateWorkspace` alone: zustand only
+   * calls `migrate` when the stored version differs from the current one, so
+   * the test above passed while every workspace saved at the current version
+   * came back unfilled.
+   */
+  async function reload(state: object, version: number) {
+    localStorage.setItem('mrl.workspace', JSON.stringify({ state, version }))
+    await useWorkspace.persist.rehydrate()
+    return useWorkspace.getState()
+  }
+
+  // `detectors` exactly as the version-4 build wrote it, before the eight
+  // settings that arrived without a version bump.
+  const DETECTORS_AT_VERSION_4 = {
+    require_fair_value_gap: true,
+    gap_past_midpoint: false,
+    require_smt_divergence: false,
+    require_swing_point: false,
+    require_liquidity_sweep: false,
+    within_bars: 10,
+    align_with_direction: true,
+    swing_strength: 2,
+    liquidity_tolerance_percent: 0.03,
+    liquidity_min_touches: 2,
+  }
+
+  const biasOn = { ...DEFAULT_DETECTOR_FILTERS, require_higher_timeframe_bias: true }
+
+  afterEach(() => {
+    localStorage.removeItem('mrl.workspace')
+    useWorkspace.setState(useWorkspace.getInitialState(), true)
+  })
+
+  it('fills the detector settings added after version 4, which crashed it', async () => {
+    const state = await reload({ interval: '1h', detectors: DETECTORS_AT_VERSION_4 }, 4)
+
+    // The Strategy panel reads `sessions.length` on every render.
+    expect(state.detectors.sessions).toEqual([])
+    expect(state.detectors.entry_model).toBe('any')
+    expect(state.detectors.fib_low).toBe(DEFAULT_DETECTOR_FILTERS.fib_low)
+    expect(state.detectors.require_reaction).toBe(false)
+    // And what was already chosen survives.
+    expect(state.detectors.require_fair_value_gap).toBe(true)
+  })
+
+  it('fills a stored object on every load, not only when the version changes', async () => {
+    // Saved at the current version, so `migrate` is never called for it.
+    const state = await reload({ learning: { enabled: true, train_fraction: 0.4 } }, 5)
+
+    expect(state.learning).toEqual({
+      ...DEFAULT_LEARNING_SETTINGS,
+      enabled: true,
+      train_fraction: 0.4,
+    })
+  })
+
+  it('fills every stored object, not just the ones a migration named', async () => {
+    const state = await reload(
+      {
+        rules: { direction: 'short' },
+        search: { lookbackDays: 30 },
+        sizing: { riskPercent: 0.5 },
+        chartSettings: { showGrid: false },
+      },
+      5,
+    )
+
+    expect(state.rules).toEqual({ ...DEFAULT_TRADE_RULES, direction: 'short' })
+    expect(state.search).toEqual({ ...DEFAULT_SEARCH_CONFIG, lookbackDays: 30 })
+    expect(state.sizing).toEqual({ ...DEFAULT_SIZING, riskPercent: 0.5 })
+    expect(state.chartSettings).toEqual({ ...DEFAULT_CHART_SETTINGS, showGrid: false })
+  })
+
+  it('gives a drawing saved before stroke widths existed the default one', async () => {
+    const old = {
+      id: 'old',
+      kind: 'horizontal',
+      symbol: 'NQ',
+      color: '#818cf8',
+      price: 1,
+      createdAt: 0,
+    }
+    const state = await reload({ drawings: [old, { ...old, id: 'thick', width: 4 }] }, 4)
+    const widths = state.drawings.map((drawing) => drawing.width)
+
+    expect(widths).toEqual([DEFAULT_DRAWING_WIDTH, 4])
+  })
+
+  it('repairs a bias timeframe the stored interval cannot be built into', async () => {
+    // Legal before the whole-bar rule; the panel kept reading "90m" while
+    // every run quietly used 4h.
+    const state = await reload({ interval: '1h', higherTimeframe: '90m' }, 4)
+
+    expect(state.higherTimeframe).toBe('4h')
+  })
+
+  it('turns the bias off where there is nothing above the interval to read', async () => {
+    const state = await reload({ interval: '1w', detectors: biasOn }, 4)
+
+    expect(state.detectors.require_higher_timeframe_bias).toBe(false)
+  })
+
+  it('repairs the bias against the primary pane when the link is off', async () => {
+    const state = await reload(
+      {
+        primarySymbol: 'NQ',
+        interval: '1h',
+        chartSync: { interval: false, crosshair: false, time: false },
+        intervalOverrides: { NQ: '1mo' },
+        detectors: biasOn,
+      },
+      5,
+    )
+
+    expect(state.detectors.require_higher_timeframe_bias).toBe(false)
+  })
+
+  it('clamps a stored range the interval cannot carry', async () => {
+    const state = await reload({ interval: '5m', rangeDays: 180 }, 4)
+
+    expect(state.rangeDays).toBe(longestRange('5m'))
+  })
+
+  it('falls back from an interval the list no longer has', async () => {
+    const state = await reload({ interval: '2h', rangeDays: 30 }, 5)
+
+    expect(INTERVALS).toContain(state.interval)
+    expect(state.rangeDays).toBe(30)
+  })
+
+  it('leaves a fresh install exactly as it starts', () => {
+    const initial = useWorkspace.getInitialState()
+
+    expect(mergeWorkspace(undefined, initial)).toBe(initial)
+  })
+})
+
+describe('the primary pane interval and the setup drawn on it', () => {
+  const setup = { symbol: 'NQ', start_time: 1, end_time: 2, source_interval: '5m' as const }
+  const state = () => useWorkspace.getState()
+  const biasOn = { ...DEFAULT_DETECTOR_FILTERS, require_higher_timeframe_bias: true }
+
+  beforeEach(() => {
+    // Unlinked, with the primary on its own 5m under a 1h toolbar.
+    useWorkspace.setState({
+      primarySymbol: 'NQ',
+      interval: '1h',
+      higherTimeframe: '4h',
+      chartSync: { ...DEFAULT_CHART_SYNC, interval: false },
+      intervalOverrides: { NQ: '5m' },
+      detectors: DEFAULT_DETECTOR_FILTERS,
+      selection: setup,
+    })
+  })
+
+  it('keeps the setup when the toolbar moves under a primary on its own interval', () => {
+    // The chart the setup was drawn on did not change.
+    state().setInterval('4h')
+
+    expect(state().selection).toEqual(setup)
+  })
+
+  it('drops it when the primary follows the toolbar and the toolbar moves', () => {
+    useWorkspace.setState({ intervalOverrides: {} })
+
+    state().setInterval('4h')
+
+    expect(state().selection).toBeNull()
+  })
+
+  it('drops it when the link is switched and the primary changes bar size with it', () => {
+    // Relinking moves the primary from its own 5m to the shared 1h, which
+    // used to leave a 5m setup drawn over hourly bars.
+    state().updateChartSync({ interval: true })
+
+    expect(state().selection).toBeNull()
+  })
+
+  it('keeps it when the link is switched but the primary stays where it was', () => {
+    useWorkspace.setState({ intervalOverrides: {} })
+
+    state().updateChartSync({ interval: true })
+
+    expect(state().selection).toEqual(setup)
+  })
+
+  it('keeps it when the primary setting changes while the link overrides it', () => {
+    useWorkspace.setState({ chartSync: DEFAULT_CHART_SYNC })
+
+    state().setSymbolInterval('NQ', '15m')
+
+    expect(state().selection).toEqual(setup)
+  })
+
+  it('reads a bias timeframe against the primary pane, not the toolbar', () => {
+    // 15m is made of whole 5m bars; against the 1h toolbar it was "corrected"
+    // to 4h.
+    state().setHigherTimeframe('15m')
+
+    expect(state().higherTimeframe).toBe('15m')
+  })
+
+  it('carries the bias timeframe up when the primary pane moves past it', () => {
+    useWorkspace.setState({ higherTimeframe: '15m' })
+
+    state().setSymbolInterval('NQ', '1h')
+
+    expect(state().higherTimeframe).toBe('4h')
+  })
+
+  it('turns the bias off when the primary moves to where nothing is above it', () => {
+    useWorkspace.setState({ detectors: biasOn })
+
+    state().setSymbolInterval('NQ', '1w')
+
+    expect(state().detectors.require_higher_timeframe_bias).toBe(false)
+  })
+
+  it('leaves the bias on when only the toolbar goes weekly', () => {
+    useWorkspace.setState({ detectors: biasOn })
+
+    state().setInterval('1w')
+
+    expect(state().detectors.require_higher_timeframe_bias).toBe(true)
+  })
+})
+
+describe('pressing what is already selected', () => {
+  const setup = { symbol: 'NQ', start_time: 1, end_time: 2, source_interval: '1h' as const }
+
+  beforeEach(() => {
+    useWorkspace.setState({
+      primarySymbol: 'NQ',
+      interval: '1h',
+      chartSync: DEFAULT_CHART_SYNC,
+      selection: setup,
+      selectedTradeId: 'trade-1',
+    })
+  })
+
+  it('keeps the setup when the active interval is pressed again', () => {
+    useWorkspace.getState().setInterval('1h')
+
+    expect(useWorkspace.getState().selection).toEqual(setup)
+  })
+
+  it('keeps the setup and the picked trade when the active market is pressed again', () => {
+    useWorkspace.getState().setPrimarySymbol('NQ')
+
+    expect(useWorkspace.getState().selection).toEqual(setup)
+    expect(useWorkspace.getState().selectedTradeId).toBe('trade-1')
+  })
+})
+
+describe('typing into a note', () => {
+  function note(id: string): Drawing {
+    return { id, kind: 'text', symbol: 'NQ', color: '#818cf8', width: 2, createdAt: 0,
+      at: { time: 1, price: 1 }, text: 'Note' }
+  }
+
+  /** One `updateDrawing` per keystroke, which is what the note's input sends. */
+  function type(id: string, text: string) {
+    for (let index = 1; index <= text.length; index += 1) {
+      const patch = { text: text.slice(0, index) } as Partial<Drawing>
+      useWorkspace.getState().updateDrawing(id, patch)
+    }
+  }
+
+  const textOf = (id: string) => {
+    const drawing = useWorkspace.getState().drawings.find((item) => item.id === id)
+    return (drawing as TextDrawing | undefined)?.text
+  }
+  const undo = () => useWorkspace.getState().undoDrawings()
+  const sentence = 'Bias is bullish while price holds above the London low'
+
+  beforeEach(() => {
+    useWorkspace.setState({
+      drawings: [],
+      past: [],
+      future: [],
+      selectedDrawingId: null,
+      historyGroup: null,
+    })
+  })
+
+  it('is one undo step however long the note is', () => {
+    useWorkspace.getState().addDrawing(note('n'))
+    const before = useWorkspace.getState().past.length
+
+    type('n', sentence)
+
+    expect(useWorkspace.getState().past).toHaveLength(before + 1)
+    undo()
+    expect(textOf('n')).toBe('Note')
+  })
+
+  it('no longer pushes an earlier step out of the history', () => {
+    // Fifty-four characters used to be fifty-four steps against a cap of
+    // fifty: a level deleted just before could not be got back.
+    useWorkspace.getState().addDrawing(level('a'))
+    useWorkspace.getState().addDrawing(note('n'))
+    useWorkspace.getState().removeDrawing('a')
+
+    type('n', sentence)
+    undo()
+    undo()
+
+    expect(ids()).toEqual(['a', 'n'])
+  })
+
+  it('redoes the typing as one step too', () => {
+    useWorkspace.getState().addDrawing(note('n'))
+    type('n', 'Asia high swept')
+
+    undo()
+    useWorkspace.getState().redoDrawings()
+
+    expect(textOf('n')).toBe('Asia high swept')
+  })
+
+  it('starts a new step once anything else has been done to the note', () => {
+    useWorkspace.getState().addDrawing(note('n'))
+    type('n', 'Bias')
+    useWorkspace.getState().updateDrawing('n', { color: '#f43f5e' })
+    type('n', 'Bias long')
+
+    undo()
+    expect(textOf('n')).toBe('Bias')
+    undo()
+    expect(useWorkspace.getState().drawings[0].color).toBe('#818cf8')
+  })
+
+  it('starts a new step when the note is picked again later', () => {
+    useWorkspace.getState().addDrawing(note('n'))
+    type('n', 'Bias')
+    useWorkspace.getState().selectDrawing(null)
+    useWorkspace.getState().selectDrawing('n')
+    type('n', 'Bias long')
+
+    undo()
+
+    expect(textOf('n')).toBe('Bias')
   })
 })

@@ -31,6 +31,7 @@ import { TopBar } from '@/components/layout/TopBar'
 import { AnalysisPanel } from '@/components/panels/AnalysisPanel'
 import { ResultsPanel } from '@/components/panels/ResultsPanel'
 import { StrategyPanel } from '@/components/panels/StrategyPanel'
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Button } from '@/components/ui/primitives'
 import { CRAMPED_QUERY, NARROW_QUERY, useMediaQuery } from '@/hooks/useMediaQuery'
 import { useBacktestResult } from '@/hooks/useBacktest'
@@ -93,6 +94,9 @@ export function Workspace() {
         event.preventDefault()
         toggleFocusMode()
       } else if (event.key === 'Escape' && useWorkspace.getState().focusMode) {
+        // Handled: one Escape, one thing undone. The drawing shortcuts run
+        // after this listener and would otherwise drop the held tool as well.
+        event.preventDefault()
         toggleFocusMode()
       }
     }
@@ -136,8 +140,25 @@ export function Workspace() {
   const sheetPanel = sheetTab != null && narrow
 
   // One pair of rail buttons drives whichever of the two exists.
-  const activePanel = narrow ? sheetTab : tab
-  const pickPanel = narrow ? setSheetTab : setTab
+  //
+  // In focus mode the panels are hidden, not closed, so their controls were
+  // live and did nothing visible: a rail button lit up, a second press wrote
+  // the panel away for good, and the results strip opened nothing. Asking for
+  // a panel now means leaving focus mode to see it, and nothing reads as
+  // pressed while nothing is showing.
+  const leaveFocus = () => {
+    if (useWorkspace.getState().focusMode) toggleFocusMode()
+  }
+  const activePanel = narrow ? sheetTab : focusMode ? null : tab
+  const pickPanel = (next: SidePanel | null) => {
+    leaveFocus()
+    if (narrow) setSheetTab(next)
+    else setTab(next)
+  }
+  const openResults = () => {
+    leaveFocus()
+    setResultsOpen(true)
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
@@ -201,7 +222,7 @@ export function Workspace() {
                 </section>
               </>
             ) : (
-              <CollapsedResults onOpen={() => setResultsOpen(true)} />
+              <CollapsedResults onOpen={openResults} />
             )}
           </main>
 
@@ -223,27 +244,41 @@ export function Workspace() {
                * and the rail beside it is how you close it.
                */}
               <aside
-                className="panel relative min-h-0 w-full min-w-[15rem] overflow-hidden"
+                className="panel flex min-h-0 w-full min-w-[15rem] flex-col overflow-hidden"
                 style={{ flex: `${1 - sidebarRatio} 1 0%` }}
+                aria-label={tab === 'analysis' ? 'Analysis' : 'Strategy'}
               >
                 {/*
                   The column could always be dismissed by pressing its own lit
-                  rail icon, which is not an affordance anyone finds. The
-                  results pane has had a chevron on it all along; this is the
-                  same control in the same place, so "give the chart the whole
-                  width" is one visible click on either.
+                  rail icon, which is not an affordance anyone finds, so it has
+                  a collapse button -- in a header row of its own, as the sheet
+                  has. Floated over the panel instead, it covered the first row
+                  of whatever was there: the end of "Start from", and the knob
+                  of the "Run detectors" switch, which collapsed the panel when
+                  pressed.
                 */}
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="absolute right-1.5 top-1.5 z-20 h-6 w-6"
-                  onClick={() => setTab(null)}
-                  title="Collapse the panel"
-                  aria-label="Collapse the panel"
-                >
-                  <PanelRightClose size={14} />
-                </Button>
-                {tab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
+                <div className="flex h-7 shrink-0 items-center justify-between border-b border-border pl-3 pr-1.5">
+                  <span className="label-caps">
+                    {tab === 'analysis' ? 'Analysis' : 'Strategy'}
+                  </span>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-6 w-6"
+                    onClick={() => setTab(null)}
+                    title="Collapse the panel"
+                    aria-label="Collapse the panel"
+                  >
+                    <PanelRightClose size={14} />
+                  </Button>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <ErrorBoundary
+                    label={tab === 'analysis' ? 'The analysis panel' : 'The strategy panel'}
+                  >
+                    {tab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
+                  </ErrorBoundary>
+                </div>
               </aside>
             </>
           )}
@@ -277,7 +312,11 @@ export function Workspace() {
               </Button>
             </div>
             <div className="min-h-0 flex-1">
-              {sheetTab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
+              <ErrorBoundary
+                label={sheetTab === 'analysis' ? 'The analysis panel' : 'The strategy panel'}
+              >
+                {sheetTab === 'analysis' ? <AnalysisPanel /> : <StrategyPanel />}
+              </ErrorBoundary>
             </div>
           </aside>
         )}

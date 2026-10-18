@@ -211,6 +211,18 @@ interface WorkspaceState {
   /** Drawing snapshots either side of the present. Never persisted. */
   past: Drawing[][]
   future: Drawing[][]
+  /**
+   * The edit the newest undo step is still taking keystrokes for, if any.
+   *
+   * Typing into a note calls `updateDrawing` once per character, and each
+   * call used to be its own step -- so a sentence of fifty-odd characters
+   * pushed everything before it out of the fifty-step history, and undo
+   * took the note back one letter at a time. While this names the note
+   * being typed into, further keystrokes revise that one step instead.
+   * Anything else that touches the history, or the selection, ends it.
+   * Never persisted.
+   */
+  historyGroup: string | null
 
   // ---- backtest input -------------------------------------------------
   selection: SelectionRange | null
@@ -237,6 +249,15 @@ interface WorkspaceState {
   /** Which stored run the results panel is showing. Server state, so it is
    *  held by id and refetched rather than persisted. */
   activeBacktestId: string | null
+  /**
+   * Why the most recent run failed, or `null`. Not persisted.
+   *
+   * Held here rather than read off the mutation: that result belongs to the
+   * component that started the run, and the Strategy panel is unmounted by
+   * focus mode, by the Analysis tab and by collapsing the column -- any of
+   * which, during a run that then failed, used to lose the message.
+   */
+  runError: string | null
   /** Paint the simulated trades over the candles they were taken on. */
   showTrades: boolean
   /** The trade the chart is highlighting, and whose evidence it may show. */
@@ -287,6 +308,7 @@ interface WorkspaceState {
   updateSizing: (patch: Partial<SizingConfig>) => void
   resetStrategy: () => void
   setActiveBacktestId: (id: string | null) => void
+  setRunError: (message: string | null) => void
   setShowTrades: (show: boolean) => void
   selectTrade: (id: string | null) => void
 }
@@ -301,18 +323,87 @@ interface WorkspaceState {
 function commitDrawings(
   state: Pick<WorkspaceState, 'drawings' | 'past'>,
   drawings: Drawing[],
-): Pick<WorkspaceState, 'drawings' | 'past' | 'future'> {
+): Pick<WorkspaceState, 'drawings' | 'past' | 'future' | 'historyGroup'> {
   return {
     drawings,
     past: [...state.past, state.drawings].slice(-HISTORY_LIMIT),
     // Any new edit abandons the branch that redo would have gone down.
     future: [],
+    // And ends a run of keystrokes: typing after it is a new step.
+    historyGroup: null,
   }
+}
+
+/**
+ * The run of edits a patch continues, or `null` for one that stands alone.
+ *
+ * Only the text of a note: it is the one field changed a character at a
+ * time. A colour, a width or a drag is a single decision and keeps its own
+ * step.
+ */
+function editGroup(id: string, patch: Partial<Drawing>): string | null {
+  const keys = Object.keys(patch)
+  return keys.length === 1 && keys[0] === 'text' ? `text:${id}` : null
 }
 
 /** Keep the selection only if the drawing still exists in the restored set. */
 function keepSelection(drawings: Drawing[], selectedId: string | null): string | null {
   return drawings.some((drawing) => drawing.id === selectedId) ? selectedId : null
+}
+
+type IntervalState = Pick<
+  WorkspaceState,
+  'interval' | 'chartSync' | 'intervalOverrides' | 'primarySymbol'
+>
+
+/**
+ * The bar size one pane is drawn at: the shared interval while the link is
+ * live, otherwise the pane's own, falling back to the shared one for a pane
+ * never set individually. The rule `useSymbolInterval` answers with.
+ */
+export function paneIntervalOf(state: IntervalState, symbol: SymbolKey): Interval {
+  return state.chartSync.interval
+    ? state.interval
+    : (state.intervalOverrides[symbol] ?? state.interval)
+}
+
+/**
+ * The bar size of the primary pane -- the one a setup is selected on and a
+ * backtest runs at, which is not the toolbar's interval once the link is off.
+ */
+export function primaryIntervalOf(state: IntervalState): Interval {
+  return paneIntervalOf(state, state.primarySymbol)
+}
+
+/**
+ * Apply a change, and bring along what hangs off the primary pane's interval
+ * if the change moved it.
+ *
+ * Three things do: the selection, which names a run of candles at one bar
+ * size and is meaningless at another; the bias timeframe, which has to be
+ * made of whole primary bars; and the bias switch, which cannot stay on
+ * where nothing above the interval exists. The primary's interval moves when
+ * the shared interval changes while it follows that, when its own changes
+ * while the link is off, when the link is switched, and when another market
+ * becomes primary. A change that leaves it where it was touches none of the
+ * three -- so moving the shared interval while the primary keeps its own no
+ * longer throws away a setup drawn on a chart that did not change.
+ */
+function followPrimaryInterval(
+  state: WorkspaceState,
+  next: Partial<WorkspaceState>,
+): Partial<WorkspaceState> {
+  const after = primaryIntervalOf({ ...state, ...next })
+  if (after === primaryIntervalOf(state)) return next
+  const detectors = next.detectors ?? state.detectors
+  return {
+    ...next,
+    higherTimeframe: coarserOf(next.higherTimeframe ?? state.higherTimeframe, after),
+    detectors: canReadBias(after)
+      ? detectors
+      : { ...detectors, require_higher_timeframe_bias: false },
+    selection: null,
+  }
 }
 
 /**
@@ -407,6 +498,73 @@ export function migrateWorkspace(persisted: unknown, version: number) {
   }
 }
 
+/**
+ * Lay a stored workspace over the defaults, on every load.
+ *
+ * `migrate` only runs when the stored version differs from the current one,
+ * and a stored object replaces its default whole. So a field added without a
+ * version bump never reached anyone who had saved before it: the eight
+ * detector settings that arrived after version 4 came back `undefined` for
+ * every workspace saved by the version-4 build, and the Strategy panel threw
+ * on the first of them (`detectors.sessions.length`) and took the whole app
+ * down -- on every load, since nothing could then write the object back.
+ * `learning` had never been filled at all, and drawings from before stroke
+ * widths existed had none. Running here instead of in `migrate` makes the
+ * fill unconditional, so the next field added cannot repeat it.
+ *
+ * Settings that only make sense together are repaired too, because a stored
+ * pair outlives the rule between them: an interval and the history it can
+ * carry, an interval and a bias timeframe made of whole bars of it -- a 90m
+ * bias saved against 1h before that rule existed read "90m" in the panel
+ * while every run quietly used 4h -- and a bias switch left on where there
+ * is no higher timeframe to read.
+ *
+ * Exported so it can be tested directly.
+ */
+export function mergeWorkspace(
+  persisted: unknown,
+  current: WorkspaceState,
+): WorkspaceState {
+  if (persisted == null || typeof persisted !== 'object') return current
+  const saved = persisted as Partial<WorkspaceState>
+
+  const merged: WorkspaceState = {
+    ...current,
+    ...saved,
+    // An interval the list no longer has would reach every range and cap
+    // lookup as `undefined`.
+    interval: INTERVALS.includes(saved.interval as Interval)
+      ? (saved.interval as Interval)
+      : current.interval,
+    ict: { ...DEFAULT_ICT_SETTINGS, ...saved.ict },
+    detectors: { ...DEFAULT_DETECTOR_FILTERS, ...saved.detectors },
+    rules: { ...DEFAULT_TRADE_RULES, ...saved.rules },
+    search: { ...DEFAULT_SEARCH_CONFIG, ...saved.search },
+    learning: { ...DEFAULT_LEARNING_SETTINGS, ...saved.learning },
+    sizing: { ...DEFAULT_SIZING, ...saved.sizing },
+    chartSettings: { ...DEFAULT_CHART_SETTINGS, ...saved.chartSettings },
+    chartSync: { ...DEFAULT_CHART_SYNC, ...saved.chartSync },
+    drawings: Array.isArray(saved.drawings)
+      ? saved.drawings.map((drawing) => ({
+          ...drawing,
+          // A canvas handed `NaN` for a line width ignores it and strokes
+          // with whatever the previous shape left behind.
+          width: Number.isFinite(drawing.width) ? drawing.width : DEFAULT_DRAWING_WIDTH,
+        }))
+      : current.drawings,
+  }
+
+  const primary = primaryIntervalOf(merged)
+  return {
+    ...merged,
+    rangeDays: Math.min(merged.rangeDays, longestRange(merged.interval)) as RangeDays,
+    higherTimeframe: coarserOf(merged.higherTimeframe, primary),
+    detectors: canReadBias(primary)
+      ? merged.detectors
+      : { ...merged.detectors, require_higher_timeframe_bias: false },
+  }
+}
+
 export const useWorkspace = create<WorkspaceState>()(
   persist(
     (set) => ({
@@ -440,6 +598,7 @@ export const useWorkspace = create<WorkspaceState>()(
       snapToSwings: true,
       past: [],
       future: [],
+      historyGroup: null,
 
       selection: null,
       testWindow: null,
@@ -451,21 +610,29 @@ export const useWorkspace = create<WorkspaceState>()(
       gxt: DEFAULT_GXT_SETTINGS,
       sizing: DEFAULT_SIZING,
       activeBacktestId: null,
+      runError: null,
       showTrades: true,
       selectedTradeId: null,
 
       setPrimarySymbol: (symbol) =>
-        set((state) => ({
-          primarySymbol: symbol,
-          // Keep the new primary out of the comparison row so it is not
-          // charted twice, and never compare a symbol against itself.
-          compareSymbols: state.compareSymbols.filter((item) => item !== symbol),
-          // A selection is a range of candles on one instrument; carrying it
-          // across to a different instrument would silently retarget the test.
-          selection: null,
-          // The results on screen were computed for the old instrument.
-          selectedTradeId: null,
-        })),
+        set((state) => {
+          // Pressing the market that is already primary changes nothing, so
+          // it must not cost the setup drawn on it either.
+          if (symbol === state.primarySymbol) return state
+          return {
+            ...followPrimaryInterval(state, {
+              primarySymbol: symbol,
+              // Keep the new primary out of the comparison row so it is not
+              // charted twice, and never compare a symbol against itself.
+              compareSymbols: state.compareSymbols.filter((item) => item !== symbol),
+            }),
+            // A selection is a range of candles on one instrument; carrying it
+            // across to a different instrument would silently retarget the test.
+            selection: null,
+            // The results on screen were computed for the old instrument.
+            selectedTradeId: null,
+          }
+        }),
 
       toggleCompareSymbol: (symbol) =>
         set((state) => {
@@ -484,33 +651,41 @@ export const useWorkspace = create<WorkspaceState>()(
        * same structure consulted twice. Nudged up rather than refused here:
        * dropping to the daily should not make you go and fix a second
        * setting before the button works again.
+       *
+       * The entry interval is the primary pane's, which is the one a run is
+       * made at. Measured against the toolbar's instead, a 15m bias for a 5m
+       * primary under a 1h toolbar was "corrected" to 4h.
        */
       setHigherTimeframe: (higherTimeframe) =>
         set((state) => ({
-          higherTimeframe: coarserOf(higherTimeframe, state.interval),
+          higherTimeframe: coarserOf(higherTimeframe, primaryIntervalOf(state)),
         })),
 
       setInterval: (interval) =>
-        set((state) => ({
-          interval,
-          // Carried up with the entry interval when it would otherwise be
-          // left at or below it. Moving to the daily must not silently leave
-          // a 4-hour "higher" timeframe behind it.
-          higherTimeframe: coarserOf(state.higherTimeframe, interval),
-          detectors: canReadBias(interval) ? state.detectors : {
-            ...state.detectors, require_higher_timeframe_bias: false,
-          },
-          // A finer interval cannot hold as much history, so the range comes
-          // down with it rather than being left somewhere the backend will
-          // refuse. Visibly: the preset that ends up selected is the one that
-          // loaded, never a silent substitution for the one that was pressed.
-          rangeDays: Math.min(state.rangeDays, longestRange(interval)) as RangeDays,
-          // The same wall-clock range means a different number of candles on a
-          // different interval, so the pattern would no longer be the one the
-          // user picked. The test window is wall-clock either way, so it
-          // survives: "test August" means the same thing at any resolution.
-          selection: null,
-        })),
+        set((state) => {
+          // Pressing the interval already selected changes nothing, so it
+          // must not throw away the setup drawn on it either.
+          if (interval === state.interval) return state
+          /*
+           * The bias timeframe is carried up with the entry interval when it
+           * would otherwise be left at or below it, and the selection is
+           * dropped -- the same wall-clock range is a different number of
+           * candles on a different interval, so the pattern would no longer
+           * be the one picked. Both only when the primary pane is the one
+           * that moved: with the link off and the primary on its own
+           * interval, its setup is untouched. The test window is wall-clock
+           * either way, so it survives: "test August" means the same thing
+           * at any resolution.
+           */
+          return followPrimaryInterval(state, {
+            interval,
+            // A finer interval cannot hold as much history, so the range comes
+            // down with it rather than being left somewhere the backend will
+            // refuse. Visibly: the preset that ends up selected is the one that
+            // loaded, never a silent substitution for the one that was pressed.
+            rangeDays: Math.min(state.rangeDays, longestRange(interval)) as RangeDays,
+          })
+        }),
 
       /**
        * Pin or unpin an interval, keeping the row in the canonical order.
@@ -540,16 +715,22 @@ export const useWorkspace = create<WorkspaceState>()(
           // it has to move in the same breath as the state -- the same
           // arrangement, and the same reason, as the time zone below.
           setSyncModes(chartSync)
-          return { chartSync }
+          // Switching the interval link moves the primary pane between the
+          // shared interval and its own, which redraws its setup on bars it
+          // was not drawn on unless the setup goes with it.
+          return followPrimaryInterval(state, { chartSync })
         }),
 
       setSymbolInterval: (symbol, interval) =>
-        set((state) => ({
-          intervalOverrides: { ...state.intervalOverrides, [symbol]: interval },
+        set((state) =>
           // A selection names a run of candles on one interval, so it cannot
-          // survive that interval changing under the primary chart.
-          selection: symbol === state.primarySymbol ? null : state.selection,
-        })),
+          // survive that interval changing under the primary chart -- and only
+          // that: a comparison pane, or the primary's own setting while the
+          // link holds every pane to the shared interval, leaves it alone.
+          followPrimaryInterval(state, {
+            intervalOverrides: { ...state.intervalOverrides, [symbol]: interval },
+          }),
+        ),
 
       setRangeDays: (rangeDays) =>
         set((state) => ({
@@ -591,6 +772,7 @@ export const useWorkspace = create<WorkspaceState>()(
           // to the cursor keeps it -- and what is selected then is usually
           // the shape just drawn, which is exactly what you want to adjust.
           selectedDrawingId: tool === 'cursor' ? state.selectedDrawingId : null,
+          historyGroup: null,
         })),
       setDrawingColor: (drawingColor) => set({ drawingColor }),
       setDrawingWidth: (drawingWidth) => set({ drawingWidth }),
@@ -606,14 +788,20 @@ export const useWorkspace = create<WorkspaceState>()(
         })),
 
       updateDrawing: (id, patch) =>
-        set((state) =>
-          commitDrawings(
-            state,
-            state.drawings.map((drawing) =>
-              drawing.id === id ? ({ ...drawing, ...patch } as Drawing) : drawing,
-            ),
-          ),
-        ),
+        set((state) => {
+          const drawings = state.drawings.map((drawing) =>
+            drawing.id === id ? ({ ...drawing, ...patch } as Drawing) : drawing,
+          )
+          const group = editGroup(id, patch)
+          // A further keystroke in the note already being typed: the step on
+          // the stack is the one from before its first character, which is
+          // where undo should go back to, so revise the present instead of
+          // stacking another.
+          if (group != null && group === state.historyGroup) {
+            return { drawings, future: [] }
+          }
+          return { ...commitDrawings(state, drawings), historyGroup: group }
+        }),
 
       removeDrawing: (id) =>
         set((state) => ({
@@ -634,7 +822,10 @@ export const useWorkspace = create<WorkspaceState>()(
           selectedDrawingId: null,
         })),
 
-      selectDrawing: (selectedDrawingId) => set({ selectedDrawingId }),
+      // Picking a drawing, even the same one again, starts a new edit: coming
+      // back to a note later and typing is a second decision, with a step of
+      // its own.
+      selectDrawing: (selectedDrawingId) => set({ selectedDrawingId, historyGroup: null }),
       setSnapToSwings: (snapToSwings) => set({ snapToSwings }),
 
       undoDrawings: () =>
@@ -646,6 +837,7 @@ export const useWorkspace = create<WorkspaceState>()(
             past: state.past.slice(0, -1),
             future: [state.drawings, ...state.future].slice(0, HISTORY_LIMIT),
             selectedDrawingId: keepSelection(previous, state.selectedDrawingId),
+            historyGroup: null,
           }
         }),
 
@@ -658,6 +850,7 @@ export const useWorkspace = create<WorkspaceState>()(
             past: [...state.past, state.drawings].slice(-HISTORY_LIMIT),
             future: state.future.slice(1),
             selectedDrawingId: keepSelection(next, state.selectedDrawingId),
+            historyGroup: null,
           }
         }),
 
@@ -701,13 +894,14 @@ export const useWorkspace = create<WorkspaceState>()(
         // A trade id belongs to the run it came from, so it cannot survive a
         // change of run.
         set({ activeBacktestId, selectedTradeId: null }),
+      setRunError: (runError) => set({ runError }),
 
       setShowTrades: (showTrades) => set({ showTrades }),
       selectTrade: (selectedTradeId) => set({ selectedTradeId }),
     }),
     {
       name: 'mrl.workspace',
-      version: 4,
+      version: 5,
       /**
        * Version 2 turns the ICT overlays off.
        *
@@ -731,8 +925,15 @@ export const useWorkspace = create<WorkspaceState>()(
        * objects above in being backfilled, for the same reason they are: it
        * is restored whole, so one saved before a switch existed comes back
        * without it.
+       *
+       * Version 5 repeats that backfill, for every stored object, in `merge`,
+       * which runs on every load rather than only on a change of version --
+       * see `mergeWorkspace` for the crash that came from relying on this
+       * alone. Nothing about the stored shape changed; the bump only marks
+       * where that began.
        */
       migrate: migrateWorkspace,
+      merge: mergeWorkspace,
       // The transient bits of a session: which tool is held, what is selected,
       // the pending range, and the undo stack. Restoring these would be
       // confusing on reload -- undoing into a shape from yesterday most of
@@ -815,10 +1016,7 @@ export function useTimeZone(): string {
  * falling back to the shared interval for any pane never set individually.
  */
 export function useSymbolInterval(symbol: SymbolKey): Interval {
-  const shared = useWorkspace((state) => state.interval)
-  const linked = useWorkspace((state) => state.chartSync.interval)
-  const override = useWorkspace((state) => state.intervalOverrides[symbol])
-  return linked ? shared : (override ?? shared)
+  return useWorkspace((state) => paneIntervalOf(state, symbol))
 }
 
 /** Every symbol the workspace currently charts, primary first. */

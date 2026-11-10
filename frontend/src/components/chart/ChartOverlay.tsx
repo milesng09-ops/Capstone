@@ -127,6 +127,27 @@ const SNAP_RADIUS = 14
  */
 const MAGNET_RADIUS_PX = 12
 
+/** Radius of the grips painted on a selected drawing. */
+const GRIP_RADIUS_PX = 5
+
+/**
+ * Hand the keyboard back to the chart when it is pressed.
+ *
+ * The press is suppressed so the chart does not pan under a drag, which also
+ * stops the browser taking focus out of a text box the way a click normally
+ * would. After editing a note's words and then dragging the note, Ctrl+Z went
+ * to the box -- undoing the words, not the move.
+ */
+function releaseTypingFocus(): void {
+  const active = document.activeElement
+  if (
+    active instanceof HTMLElement &&
+    (active.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName))
+  ) {
+    active.blur()
+  }
+}
+
 /** Minimum drag distance before a gesture counts as a shape, not a stray click. */
 const MIN_DRAG_PX = 4
 
@@ -594,7 +615,7 @@ export function ChartOverlay({
     // Veiled last among the background layers, so it dims the detections too:
     // everything under it is out of scope, not just the candles.
     if (testWindow) {
-      paintTestWindow(ctx, testWindow, xOf, width, height, palette)
+      paintTestWindow(ctx, testWindow, xOf, width, height, chipTop - 6, palette)
     }
 
     if (selection) {
@@ -805,6 +826,7 @@ export function ChartOverlay({
     strategyLabel,
     gxtEvidence,
     candles,
+    chipTop,
     drawingColor,
     drawingWidth,
     drawings,
@@ -889,6 +911,12 @@ export function ChartOverlay({
       const plot = handle.plotSize?.()
       const x = plot ? Math.min(Math.max(clientX - rect.left, 0), plot.width) : clientX - rect.left
       const y = plot ? Math.min(Math.max(clientY - rect.top, 0), plot.height) : clientY - rect.top
+      // Every snap below is refused when it would carry the point back out of
+      // the plot: zoomed in, the nearest bar to a press at the edge can be the
+      // one just off screen, and a point there was never seen again.
+      const within = (px: number | null, py: number | null) =>
+        plot == null ||
+        (px != null && py != null && px >= -0.5 && px <= plot.width + 0.5 && py >= -0.5 && py <= plot.height + 0.5)
 
       // `xToTime` is null everywhere past the last bar, which used to abort
       // the gesture before it started. The free conversion stays defined.
@@ -899,6 +927,7 @@ export function ChartOverlay({
       // Snap only where there is a bar to snap to; keep the free timestamp
       // outside the data so the point stays under the cursor.
       let time = snapWithinBars(candles, rawTime) ?? rawTime
+      if (!within(handle.timeToXFree(time), y)) time = rawTime
       let price = rawPrice
 
       // The magnet: pull the price onto the nearest of the bar's own four
@@ -915,7 +944,12 @@ export function ChartOverlay({
       if (magnet) {
         const level = magnetPrice(candles, time, price)
         const levelY = level == null ? null : handle.priceToY(level)
-        if (level != null && levelY != null && Math.abs(levelY - y) <= MAGNET_RADIUS_PX) {
+        if (
+          level != null &&
+          levelY != null &&
+          Math.abs(levelY - y) <= MAGNET_RADIUS_PX &&
+          within(x, levelY)
+        ) {
           price = level
         }
       }
@@ -928,7 +962,7 @@ export function ChartOverlay({
       // see -- indistinguishable from the tool being inaccurate.
       if (useSwingSnap && ictSettings.showSwings && ict?.swing_points.length) {
         const snapped = findSnapTarget(ict.swing_points, x, y, xOf, handle.priceToY)
-        if (snapped) {
+        if (snapped && within(xOf(snapped.time), handle.priceToY(snapped.price))) {
           time = snapped.time
           price = snapped.price
         }
@@ -942,6 +976,35 @@ export function ChartOverlay({
       }
     },
     [candles, handle, ict, ictSettings.showSwings, magnet, xOf],
+  )
+
+  /**
+   * A note's anchor moved so its whole plate fits inside the plot.
+   *
+   * The plate runs right and up from the anchor, so an anchor kept inside the
+   * plot was not enough: at the right edge only the "N" of "Note" showed, and
+   * at the top the words were cut through.
+   */
+  const fitNote = useCallback(
+    (at: DrawingPoint, text: string): DrawingPoint => {
+      const plot = handle.plotSize?.()
+      const x = handle.timeToXFree(at.time)
+      const y = handle.priceToY(at.price)
+      if (!plot || x == null || y == null) return at
+
+      const plate = Math.max(1, text.length) * TEXT_CHAR_PX + 8
+      const maxX = plot.width - plate - 2
+      const minY = TEXT_LINE_PX + 2
+      const fitX = Math.max(6, Math.min(maxX, x))
+      const fitY = Math.max(minY, Math.min(plot.height - 6, y))
+      if (fitX === x && fitY === y) return at
+
+      return {
+        time: fitX === x ? at.time : (handle.xToTimeFree(fitX) ?? at.time),
+        price: fitY === y ? at.price : (handle.yToPrice(fitY) ?? at.price),
+      }
+    },
+    [handle],
   )
 
   /**
@@ -1025,6 +1088,7 @@ export function ChartOverlay({
       ) {
         return
       }
+      releaseTypingFocus()
 
       // A range tab is tested before anything else on the surface. It is
       // small, deliberately placed, and the only way to take a band off the
@@ -1145,7 +1209,9 @@ export function ChartOverlay({
       // Moving the whole shape follows the raw pointer, so it does not jump
       // between bars under the hand. A grabbed endpoint snaps, because that
       // is the case where landing exactly on a high is the entire point.
-      const preview =
+      // The move is counted in bars, not milliseconds, so a point across a
+      // session gap travels as far on screen as the one under the pointer.
+      const moved =
         active.hit.part === 'body'
           ? translateDrawing(
               active.original,
@@ -1158,6 +1224,8 @@ export function ChartOverlay({
               resolved.point,
               barSpacing(candlesRef.current, intervalRef.current),
             )
+      const preview =
+        moved.kind === 'text' ? { ...moved, at: fitNote(moved.at, moved.text) } : moved
 
       updateDrag({
         ...active,
@@ -1205,7 +1273,7 @@ export function ChartOverlay({
       window.removeEventListener('pointerup', finish)
       window.removeEventListener('pointercancel', abandon)
     }
-  }, [onUpdateDrawing, pointAt, snapToSwings, updateDrag])
+  }, [candles, fitNote, onUpdateDrawing, pointAt, snapToSwings, updateDrag])
 
   /*
    * A drag holds a copy of the drawing as it was when grabbed, and writes the
@@ -1251,6 +1319,7 @@ export function ChartOverlay({
 
     // Not yet: the bars on screen are still the last interval's.
     if (isRangeTool(tool) && !rangesReady) return
+    releaseTypingFocus()
 
     // A range is made of bars, not of shapes, so it never snaps to a swing
     // point -- that would move the window off the candles it names.
@@ -1384,7 +1453,7 @@ export function ChartOverlay({
         symbol,
         color: drawingColor,
         width: drawingWidth,
-        at: gesture.current,
+        at: fitNote(gesture.current, DEFAULT_NOTE),
         text: DEFAULT_NOTE,
       })
     } else if (isRangeTool(tool)) {
@@ -1695,6 +1764,7 @@ function paintTestWindow(
   xOf: XConverter,
   width: number,
   height: number,
+  labelTop: number,
   palette: ChartPalette,
 ) {
   const left = xOf(window.start_time)
@@ -1726,7 +1796,7 @@ function paintTestWindow(
   ctx.fillStyle = palette.text
   ctx.font = '9px ui-monospace, monospace'
   ctx.textBaseline = 'top'
-  ctx.fillText('test window', start + 4, 4)
+  ctx.fillText('test window', start + 4, labelTop + 4)
   ctx.restore()
 }
 
@@ -2266,10 +2336,10 @@ function paintDrawing(
     ctx.globalAlpha = 1
     for (const { x, y } of handlePositions(projected)) {
       ctx.beginPath()
-      ctx.arc(x, y, 4, 0, Math.PI * 2)
+      ctx.arc(x, y, GRIP_RADIUS_PX, 0, Math.PI * 2)
       ctx.fillStyle = background
       ctx.fill()
-      ctx.lineWidth = 1.6
+      ctx.lineWidth = 2
       ctx.strokeStyle = drawing.color
       ctx.stroke()
     }

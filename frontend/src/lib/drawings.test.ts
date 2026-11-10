@@ -12,10 +12,13 @@ import {
   hitKey,
   hitTestDrawing,
   hitTestDrawings,
+  paintedFootprint,
+  placeToolbar,
   projectDrawing,
   resizeDrawing,
   translateDrawing,
   type DrawingHit,
+  type Footprint,
   type ProjectedDrawing,
 } from '@/lib/drawings'
 import { fibLevels, positionDraft, positionFromDrag } from '@/types/drawing'
@@ -701,5 +704,67 @@ describe('positionDraft', () => {
 
   it('has nothing to place until the drag sets some risk', () => {
     expect(positionDraft('long', { time: 1_000, price: 100 }, { time: 4_000, price: 100 }, 60)).toBeNull()
+  })
+})
+
+describe('keeping the toolbar off the drawing it belongs to', () => {
+  const plot = { left: 0, top: 0, right: 1000, bottom: 300 }
+  const pane = { width: 1060, height: 330 }
+  const size = { width: 460, height: 30 }
+
+  it('runs a ray on past its second point to the edge of the plot', () => {
+    // The hit test stops at the second point; the paint does not, and it is
+    // the paint a toolbar would hide.
+    const ray: ProjectedDrawing = { id: 'r', kind: 'ray', x1: 100, y1: 280, x2: 160, y2: 260 }
+    const [segment] = paintedFootprint(ray, plot) as Extract<Footprint, { kind: 'segment' }>[]
+
+    expect(segment.x2).toBeGreaterThan(plot.right)
+    expect(segment.y2).toBeLessThan(plot.top)
+  })
+
+  it('stays where it was going when nothing is under it', () => {
+    const line: ProjectedDrawing = { id: 'l', kind: 'trendline', x1: 600, y1: 200, x2: 900, y2: 150 }
+    const placed = placeToolbar({ x: 520, y: 112 }, size, pane, paintedFootprint(line, plot))
+    expect(placed).toEqual({ x: 520, y: 112 })
+  })
+
+  it('moves off a ray that runs through where it was going', () => {
+    // The report: a ray drawn low on the chart, its toolbar hung above the
+    // two handles -- squarely on the part of the line still to be read.
+    const ray: ProjectedDrawing = { id: 'r', kind: 'ray', x1: 150, y1: 290, x2: 210, y2: 272 }
+    const avoid = paintedFootprint(ray, plot)
+    const placed = placeToolbar({ x: 4, y: 232 }, size, pane, avoid)
+
+    const box = { left: placed.x, top: placed.y, right: placed.x + size.width, bottom: placed.y + size.height }
+    const [segment] = avoid as Extract<Footprint, { kind: 'segment' }>[]
+    // Sample the painted line: no point of it may fall inside the toolbar.
+    for (let t = 0; t <= 1; t += 0.001) {
+      const x = segment.x1 + (segment.x2 - segment.x1) * t
+      const y = segment.y1 + (segment.y2 - segment.y1) * t
+      const inside = x >= box.left && x <= box.right && y >= box.top && y <= box.bottom
+      expect(inside).toBe(false)
+    }
+    // And it is still on screen.
+    expect(box.left).toBeGreaterThanOrEqual(0)
+    expect(box.right).toBeLessThanOrEqual(pane.width)
+    expect(box.bottom).toBeLessThanOrEqual(pane.height)
+  })
+
+  it('keeps off anything else it is told to, such as the legend', () => {
+    const legend: Footprint = { kind: 'rect', left: 0, top: 0, right: 360, bottom: 42 }
+    const placed = placeToolbar({ x: 4, y: 4 }, size, pane, [legend])
+    expect(placed.y).toBeGreaterThan(42)
+  })
+})
+
+describe('keeping the toolbar off a drawing\'s labels', () => {
+  const plot = { left: 0, top: 0, right: 1000, bottom: 300 }
+
+  it('counts the price printed above a level from here', () => {
+    // The line was avoided but its price label was not, so the bar sat on it.
+    const ray: ProjectedDrawing = { id: 'h', kind: 'horizontal_ray', x: 400, y: 150 }
+    const placed = placeToolbar({ x: 380, y: 112 }, { width: 200, height: 30 }, { width: 1060, height: 330 }, paintedFootprint(ray, plot))
+    const clearOfLabel = placed.y + 30 < 150 - 13 || placed.y > 150 || placed.x > 460 || placed.x + 200 < 400
+    expect(clearOfLabel).toBe(true)
   })
 })

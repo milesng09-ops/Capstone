@@ -13,6 +13,7 @@ import { Floating } from '@/components/ui/Floating'
 import { Badge, Button, Spinner } from '@/components/ui/primitives'
 import { useBacktestResult } from '@/hooks/useBacktest'
 import { useChartRange } from '@/hooks/useChartRange'
+import { CHIP_HEIGHT_PX, type Footprint } from '@/lib/drawings'
 import { newId } from '@/lib/id'
 import { sessionChange } from '@/lib/marketHours'
 import {
@@ -185,19 +186,43 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
    * be painted at a fixed spot in the same corner, under the symbol and the
    * OHLC row -- and with the interval link off, under the pane's interval
    * button, which took the click meant for the tab. Measured, because the
-   * legend wraps onto more lines in a narrow pane.
+   * legend wraps onto more lines in a narrow pane. Its right edge is kept
+   * too, for the drawing toolbar to stay off it.
    */
   const legendRef = useRef<HTMLDivElement | null>(null)
-  const [legendBottom, setLegendBottom] = useState(0)
+  const [legendBox, setLegendBox] = useState({ right: 0, bottom: 0 })
   useEffect(() => {
     const legend = legendRef.current
     if (!legend) return
-    const measure = () => setLegendBottom(legend.offsetTop + legend.offsetHeight)
+    const measure = () => {
+      const right = legend.offsetLeft + legend.offsetWidth
+      const bottom = legend.offsetTop + legend.offsetHeight
+      setLegendBox((current) =>
+        current.right === right && current.bottom === bottom ? current : { right, bottom },
+      )
+    }
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(legend)
     return () => observer.disconnect()
   }, [])
+
+  // The corner a drawing's toolbar must leave alone: the legend, and the
+  // tabs that take a setup or a test window off the chart beneath it.
+  const rangeTabs =
+    (isPrimary && selection?.symbol === symbol ? 1 : 0) + (isPrimary && testWindow ? 1 : 0)
+  const keepClear = useMemo<Footprint[]>(
+    () => [
+      {
+        kind: 'rect',
+        left: 0,
+        top: 0,
+        right: legendBox.right,
+        bottom: legendBox.bottom + (rangeTabs ? 6 + rangeTabs * (CHIP_HEIGHT_PX + 4) : 0),
+      },
+    ],
+    [legendBox, rangeTabs],
+  )
 
   const last = candles.at(-1)
   const change = useMemo(() => sessionChange(candles, interval), [candles, interval])
@@ -377,7 +402,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
           // would be tested on.
           rangesReady={(barsQuery.data?.interval ?? interval) === interval}
           precision={precision}
-          chipTop={legendBottom + 6}
+          chipTop={legendBox.bottom + 6}
           onCreateDrawing={handleCreate}
           onUpdateDrawing={updateDrawing}
           onSelectDrawing={selectDrawing}
@@ -389,7 +414,12 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
       )}
 
       {ready && candles.length > 0 && (
-        <DrawingActions symbol={symbol} handle={handle} drawings={drawings} />
+        <DrawingActions
+          symbol={symbol}
+          handle={handle}
+          drawings={drawings}
+          keepClear={keepClear}
+        />
       )}
 
       {barsQuery.isLoading && (

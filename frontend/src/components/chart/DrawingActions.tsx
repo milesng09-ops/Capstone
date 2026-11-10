@@ -17,6 +17,12 @@ import { SeparatorHorizontal, Trash2 } from 'lucide-react'
 
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import { Button } from '@/components/ui/primitives'
+import {
+  paintedFootprint,
+  placeToolbar,
+  projectDrawing,
+  type Footprint,
+} from '@/lib/drawings'
 import { useWorkspace } from '@/store/workspace'
 import {
   DRAWING_COLORS,
@@ -43,6 +49,8 @@ interface Props {
   handle: ChartHandle
   /** Only this pane's drawings; a selection on another chart is not ours. */
   drawings: Drawing[]
+  /** Anything else in the pane the bar must not cover, such as the legend. */
+  keepClear?: Footprint[]
 }
 
 interface Anchor {
@@ -50,7 +58,7 @@ interface Anchor {
   y: number
 }
 
-export function DrawingActions({ handle, drawings }: Props) {
+export function DrawingActions({ handle, drawings, keepClear }: Props) {
   const selectedId = useWorkspace((state) => state.selectedDrawingId)
   const removeDrawing = useWorkspace((state) => state.removeDrawing)
   const updateDrawing = useWorkspace((state) => state.updateDrawing)
@@ -113,15 +121,29 @@ export function DrawingActions({ handle, drawings }: Props) {
 
       const width = pane.clientWidth
       const height = pane.clientHeight
-      const next = {
-        x: clamp(point.x - size.width / 2, 4, Math.max(4, width - size.width - 4)),
-        // Above the shape by default; below it when the shape is near the top
-        // of the pane and there is no room above.
-        y:
-          point.y - size.height - 8 < 4
-            ? clamp(point.y + 10, 4, Math.max(4, height - size.height - 4))
-            : clamp(point.y - size.height - 8, 4, Math.max(4, height - size.height - 4)),
-      }
+      const area = handle.plotSize?.()
+      const plot =
+        area && area.width > 0 && area.height > 0
+          ? { left: 0, top: 0, right: area.width, bottom: area.height }
+          : { left: 0, top: 0, right: width, bottom: height }
+
+      // Everything the bar must not hide: the drawing as it is painted -- a
+      // ray all the way to the edge, not just between its handles -- and
+      // whatever else the pane asked to keep clear.
+      const projected = projectDrawing(drawing, handle.timeToXFree, handle.priceToY)
+      const avoid = [...(projected ? paintedFootprint(projected, plot) : []), ...(keepClear ?? [])]
+
+      const next = placeToolbar(
+        {
+          x: point.x - size.width / 2,
+          // Above the shape by default; below it when the shape is near the
+          // top of the pane and there is no room above.
+          y: point.y - size.height - 8 < 4 ? point.y + 10 : point.y - size.height - 8,
+        },
+        size,
+        { width, height },
+        avoid,
+      )
       // The chart notifies on every repaint of its scales, most of which
       // leave the shape where it was: only a move is worth a render.
       setAnchor((current) =>
@@ -133,7 +155,7 @@ export function DrawingActions({ handle, drawings }: Props) {
     // The chart notifies imperatively on pan, zoom and resize, which is what
     // keeps the bar attached without re-rendering the tree on every frame.
     return handle.subscribe(place)
-  }, [drawing, handle, pane, size])
+  }, [drawing, handle, keepClear, pane, size])
 
   if (!drawing) return null
 
@@ -331,8 +353,4 @@ function anchorFor(drawing: Drawing, handle: ChartHandle): Anchor | null {
   if (x1 == null || x2 == null || y1 == null || y2 == null) return null
 
   return { x: (x1 + x2) / 2, y: Math.min(y1, y2) }
-}
-
-function clamp(value: number, low: number, high: number): number {
-  return Math.min(high, Math.max(low, value))
 }

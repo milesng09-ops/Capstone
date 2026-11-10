@@ -137,6 +137,199 @@ test.describe('every drawing tool', () => {
   }
 })
 
+/**
+ * What the overlay has actually painted on the primary pane, read back from
+ * its pixels. The overlay holds nothing but drawings and markers -- the
+ * candles are on the chart's own canvases -- so every opaque pixel is ours.
+ */
+async function paintedPixels(page: Page) {
+  return page.evaluate((selector) => {
+    const canvas = document.querySelector<HTMLCanvasElement>(selector)!
+    const panel = canvas.parentElement!
+    // The chart's plot is the middle cell of its first row; the cells either
+    // side and the row beneath are the price and time scales.
+    const plot = panel.querySelector('table tr:first-child td:nth-child(2)')!
+    const plotBox = plot.getBoundingClientRect()
+    const box = canvas.getBoundingClientRect()
+    const ratio = canvas.width / box.width
+    const data = canvas
+      .getContext('2d', { willReadFrequently: true })!
+      .getImageData(0, 0, canvas.width, canvas.height).data
+
+    const right = (plotBox.right - box.left) * ratio
+    const bottom = (plotBox.bottom - box.top) * ratio
+    let inside = 0
+    let outside = 0
+    const columns = new Map<number, number[]>()
+    for (let y = 0; y < canvas.height; y += 1) {
+      for (let x = 0; x < canvas.width; x += 1) {
+        if (data[(y * canvas.width + x) * 4 + 3] <= 60) continue
+        if (x < right && y < bottom) inside += 1
+        else outside += 1
+        const column = columns.get(x) ?? []
+        column.push(y)
+        columns.set(x, column)
+      }
+    }
+
+    // The two ends of a single line: its outermost columns, in page pixels.
+    const xs = [...columns.keys()].sort((a, b) => a - b)
+    const end = (x: number) => {
+      const ys = columns.get(x)!
+      return {
+        x: box.left + x / ratio,
+        y: box.top + ys.reduce((sum, y) => sum + y, 0) / ys.length / ratio,
+      }
+    }
+    return {
+      backing: { width: canvas.width, height: canvas.height },
+      css: { width: box.width, height: box.height },
+      inside,
+      outside,
+      ends: xs.length ? { left: end(xs[0]), right: end(xs[xs.length - 1]) } : null,
+    }
+  }, OVERLAY)
+}
+
+test.describe('what the overlay paints', () => {
+  /**
+   * Under `npm run dev` -- StrictMode, which is what these specs run against
+   * -- the overlay painted nothing at all. Every tool still created its shape
+   * and the size checks above all passed, because the element was the right
+   * size; its *contents* were never drawn. Only reading the pixels sees that.
+   */
+  test('paints a shape once it is drawn', async ({ page }) => {
+    await page.getByRole('button', { name: 'Zone', exact: true }).click()
+    await drag(page, 0, { x: 420, y: 90 }, { x: 640, y: 200 })
+
+    await expect.poll(async () => (await paintedPixels(page)).inside).toBeGreaterThan(0)
+
+    const painted = await paintedPixels(page)
+    // The backing store follows the element, not the 300x150 a canvas starts at.
+    expect(painted.backing.width).toBeGreaterThan(OLD_OVERLAY.width)
+    expect(Math.abs(painted.backing.width / painted.css.width - painted.backing.height / painted.css.height))
+      .toBeLessThan(0.01)
+  })
+
+  test('paints nothing over the price or the time scale', async ({ page }) => {
+    // A level runs the full width and a ray runs off to the right, so both
+    // reach the price scale if nothing stops them; a steep ray reaches the
+    // time scale as well.
+    await page.getByRole('button', { name: 'Level', exact: true }).click()
+    await drag(page, 0, { x: 500, y: 140 }, { x: 500, y: 140 })
+    await page.getByRole('button', { name: 'Ray', exact: true }).click()
+    await drag(page, 0, { x: 420, y: 100 }, { x: 520, y: 200 })
+
+    await expect.poll(async () => (await paintedPixels(page)).inside).toBeGreaterThan(0)
+    expect((await paintedPixels(page)).outside).toBe(0)
+  })
+
+  test('puts a line where the pointer put it, with the magnet on', async ({ page }) => {
+    // The magnet is on by default. It used to pull each end onto the bar's
+    // nearest open, high, low or close from any distance -- 20 and 38px off
+    // the pointer in the report that found it. Within its reach it may still
+    // snap, so that is the tolerance; anything further is the old bug.
+    await expect(page.getByRole('button', { name: 'Magnet' })).toHaveAttribute('aria-pressed', 'true')
+
+    const box = (await page.locator(PANE).first().boundingBox())!
+    const from = { x: 420, y: 150 }
+    const to = { x: 720, y: 90 }
+    await page.getByRole('button', { name: 'Trend line', exact: true }).click()
+    await drag(page, 0, from, to)
+    // Deselect with a click well away from it, so neither the handles nor the
+    // hover highlight are in the reading.
+    await page.keyboard.press('Escape')
+    await page.mouse.click(box.x + 60, box.y + box.height - 60)
+
+    await expect.poll(async () => (await paintedPixels(page)).ends).not.toBeNull()
+    const { ends } = await paintedPixels(page)
+    const reach = 8
+    // Horizontally an end sits on its bar, at most half a bar from the pointer.
+    expect(Math.abs(ends!.left.x - (box.x + from.x))).toBeLessThanOrEqual(3)
+    expect(Math.abs(ends!.right.x - (box.x + to.x))).toBeLessThanOrEqual(3)
+    expect(Math.abs(ends!.left.y - (box.y + from.y))).toBeLessThanOrEqual(reach)
+    expect(Math.abs(ends!.right.y - (box.y + to.y))).toBeLessThanOrEqual(reach)
+  })
+})
+
+test.describe('drawing near the edge', () => {
+  test('stops an arrow released past the edge at the edge of the plot', async ({ page }) => {
+    // Released over the price scale and below the chart, the arrow's head
+    // used to land where the plot is clipped: the end that says where it
+    // points was the end nobody could see. It now stops at the plot's edge.
+    const box = (await page.locator(PANE).first().boundingBox())!
+    await page.getByRole('button', { name: 'Arrow', exact: true }).click()
+    await drag(page, 0, { x: 500, y: 120 }, { x: box.width + 60, y: box.height + 80 })
+    await page.keyboard.press('Escape')
+    await page.mouse.click(box.x + 60, box.y + 60)
+
+    await expect.poll(async () => (await paintedPixels(page)).ends).not.toBeNull()
+    const painted = await paintedPixels(page)
+    expect(painted.outside).toBe(0)
+
+    const plot = (await page
+      .locator(PANE)
+      .first()
+      .locator('table tr:first-child td:nth-child(2)')
+      .boundingBox())!
+    // The tip is at the edge of the plot, not out past it under the scales.
+    expect(painted.ends!.right.x).toBeLessThanOrEqual(plot.x + plot.width + 1)
+    expect(painted.ends!.right.y).toBeLessThanOrEqual(plot.y + plot.height + 1)
+    expect(painted.ends!.right.x).toBeGreaterThan(plot.x + plot.width - 12)
+  })
+
+  test('runs a ray drawn right to left on to the left edge', async ({ page }) => {
+    // Only a ray drawn left to right was extended; drawn the other way it
+    // stopped at its handles and was just a segment.
+    await page.getByRole('button', { name: 'Magnet' }).click()
+    await page.getByRole('button', { name: 'Ray', exact: true }).click()
+    await drag(page, 0, { x: 640, y: 150 }, { x: 520, y: 120 })
+    const box = (await page.locator(PANE).first().boundingBox())!
+    await page.keyboard.press('Escape')
+    await page.mouse.click(box.x + box.width - 120, box.y + box.height - 60)
+
+    await expect.poll(async () => (await paintedPixels(page)).ends).not.toBeNull()
+    const { ends } = await paintedPixels(page)
+    // Painted well past the second handle, toward the left of the plot.
+    expect(ends!.left.x).toBeLessThan(box.x + 200)
+    expect(ends!.right.x).toBeLessThan(box.x + 660)
+  })
+
+  test('hangs the toolbar clear of the line it edits', async ({ page }) => {
+    // The report: a ray drawn low on the chart and rising to the right. Its
+    // toolbar hung over the two handles, on the part of the line still to be
+    // read. Nothing the overlay paints may be under the toolbar.
+    const box = (await page.locator(PANE).first().boundingBox())!
+    await page.getByRole('button', { name: 'Ray', exact: true }).click()
+    await drag(page, 0, { x: 150, y: box.height - 45 }, { x: 205, y: box.height - 60 })
+
+    const toolbar = page.getByRole('toolbar', { name: 'Ray actions' })
+    await expect(toolbar).toBeVisible()
+    const bar = (await toolbar.boundingBox())!
+
+    const covered = await page.evaluate(
+      ({ selector, rect }) => {
+        const canvas = document.querySelector<HTMLCanvasElement>(selector)!
+        const origin = canvas.getBoundingClientRect()
+        const ratio = canvas.width / origin.width
+        const data = canvas
+          .getContext('2d', { willReadFrequently: true })!
+          .getImageData(0, 0, canvas.width, canvas.height).data
+        let count = 0
+        for (let y = Math.floor((rect.y - origin.top) * ratio); y < (rect.y + rect.height - origin.top) * ratio; y += 1) {
+          for (let x = Math.floor((rect.x - origin.left) * ratio); x < (rect.x + rect.width - origin.left) * ratio; x += 1) {
+            if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) continue
+            if (data[(y * canvas.width + x) * 4 + 3] > 60) count += 1
+          }
+        }
+        return count
+      },
+      { selector: OVERLAY, rect: bar },
+    )
+    expect(covered).toBe(0)
+  })
+})
+
 test.describe('the reference pane', () => {
   test('draws on itself rather than on the primary', async ({ page }) => {
     // The overlay is per pane, so the sizing bug could return on one of them

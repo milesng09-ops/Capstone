@@ -781,3 +781,224 @@ export function hitTestChips(chips: RangeChip[], x: number, y: number): RangeChi
   }
   return null
 }
+
+// --------------------------------------------------------------------------
+// What a drawing covers on screen, for anything that must not sit on it
+// --------------------------------------------------------------------------
+
+export interface ScreenRect {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+export type Footprint =
+  | { kind: 'segment'; x1: number; y1: number; x2: number; y2: number }
+  | ({ kind: 'rect' } & ScreenRect)
+
+/**
+ * Everything a drawing paints, in pixels.
+ *
+ * Wider than the hit test on purpose. A ray is grabbed only between its two
+ * points but is painted on to the edge of the plot, and a fib's levels run
+ * forward from the move; a toolbar placed over either still hides the line.
+ */
+export function paintedFootprint(item: ProjectedDrawing, plot: ScreenRect): Footprint[] {
+  if (item.kind === 'horizontal') {
+    return [
+      { kind: 'segment', x1: plot.left, y1: item.y, x2: plot.right, y2: item.y },
+      // Its price, printed above the line at the left.
+      { kind: 'rect', left: plot.left, top: item.y - LABEL_HEIGHT_PX, right: plot.left + PRICE_LABEL_PX, bottom: item.y },
+    ]
+  }
+  if (item.kind === 'vertical') {
+    return [{ kind: 'segment', x1: item.x, y1: plot.top, x2: item.x, y2: plot.bottom }]
+  }
+  if (item.kind === 'horizontal_ray') {
+    return [
+      { kind: 'segment', x1: item.x, y1: item.y, x2: plot.right, y2: item.y },
+      // Its price, printed above the line just after the origin.
+      { kind: 'rect', left: item.x, top: item.y - LABEL_HEIGHT_PX, right: item.x + PRICE_LABEL_PX, bottom: item.y },
+    ]
+  }
+  if (item.kind === 'text') {
+    return [
+      {
+        kind: 'rect',
+        left: item.x - 4,
+        top: item.y - TEXT_LINE_PX,
+        right: item.x + item.chars * TEXT_CHAR_PX + 8,
+        bottom: item.y + 4,
+      },
+    ]
+  }
+  if (item.kind === 'brush') {
+    if (item.points.length === 1) {
+      const [only] = item.points
+      return [{ kind: 'segment', x1: only.x, y1: only.y, x2: only.x, y2: only.y }]
+    }
+    return item.points.slice(1).map((point, index) => ({
+      kind: 'segment' as const,
+      x1: item.points[index].x,
+      y1: item.points[index].y,
+      x2: point.x,
+      y2: point.y,
+    }))
+  }
+  if (isProjectedPosition(item)) {
+    return [
+      {
+        kind: 'rect',
+        left: Math.min(item.x1, item.x2),
+        // The outcome label sits just above the box.
+        top: Math.min(item.yStop, item.yTarget) - TEXT_LINE_PX,
+        right: Math.max(item.x1, item.x2),
+        bottom: Math.max(item.yStop, item.yTarget),
+      },
+    ]
+  }
+  if (item.kind === 'rectangle') {
+    return [
+      {
+        kind: 'rect',
+        left: Math.min(item.x1, item.x2),
+        top: Math.min(item.y1, item.y2),
+        right: Math.max(item.x1, item.x2),
+        bottom: Math.max(item.y1, item.y2),
+      },
+    ]
+  }
+  if (item.kind === 'fib') {
+    return [
+      {
+        kind: 'rect',
+        left: Math.min(item.x1, item.x2),
+        // Each level's ratio and price sit just above its line.
+        top: Math.min(item.y1, item.y2) - LABEL_HEIGHT_PX,
+        right: plot.right,
+        bottom: Math.max(item.y1, item.y2),
+      },
+    ]
+  }
+  if (item.kind === 'ray') {
+    // On past the second point, far enough to leave the plot whatever the
+    // angle; anything beyond the edge is clipped away when painted.
+    const dx = item.x2 - item.x1
+    const dy = item.y2 - item.y1
+    const length = Math.hypot(dx, dy)
+    const reach = Math.hypot(plot.right - plot.left, plot.bottom - plot.top)
+    const scale = length > 0 ? reach / length : 0
+    return [
+      {
+        kind: 'segment',
+        x1: item.x1,
+        y1: item.y1,
+        x2: item.x2 + dx * scale,
+        y2: item.y2 + dy * scale,
+      },
+    ]
+  }
+  return [{ kind: 'segment', x1: item.x1, y1: item.y1, x2: item.x2, y2: item.y2 }]
+}
+
+/** Height of the 9px labels painted above a level, and a price label's width. */
+const LABEL_HEIGHT_PX = 13
+const PRICE_LABEL_PX = 60
+
+/** Does any part of a footprint fall inside the rectangle? */
+function overlaps(rect: ScreenRect, shape: Footprint): boolean {
+  if (shape.kind === 'rect') {
+    return (
+      shape.left <= rect.right &&
+      shape.right >= rect.left &&
+      shape.top <= rect.bottom &&
+      shape.bottom >= rect.top
+    )
+  }
+
+  // Liang-Barsky: clip the segment to the rectangle and see if anything is left.
+  const dx = shape.x2 - shape.x1
+  const dy = shape.y2 - shape.y1
+  let enter = 0
+  let exit = 1
+  const sides: [number, number][] = [
+    [-dx, shape.x1 - rect.left],
+    [dx, rect.right - shape.x1],
+    [-dy, shape.y1 - rect.top],
+    [dy, rect.bottom - shape.y1],
+  ]
+  for (const [direction, distance] of sides) {
+    if (direction === 0) {
+      if (distance < 0) return false
+      continue
+    }
+    const t = distance / direction
+    if (direction < 0) {
+      if (t > exit) return false
+      enter = Math.max(enter, t)
+    } else {
+      if (t < enter) return false
+      exit = Math.min(exit, t)
+    }
+  }
+  return true
+}
+
+/** Space kept between a toolbar and whatever it is told to avoid. */
+const TOOLBAR_CLEARANCE_PX = 6
+/** Space kept between a toolbar and the edge of its pane. */
+const TOOLBAR_INSET_PX = 4
+
+/**
+ * Where a toolbar's top-left corner goes so that it covers none of `avoid`.
+ *
+ * The preferred spot wins whenever it is clear, kept on screen. Otherwise the
+ * nearest clear spot in the pane does. A toolbar hung over the line it edits
+ * hid the very thing being recoloured or deleted. With nowhere clear at all --
+ * a zone filling the pane -- it falls back to the preferred spot.
+ */
+export function placeToolbar(
+  preferred: { x: number; y: number },
+  size: { width: number; height: number },
+  pane: { width: number; height: number },
+  avoid: Footprint[],
+): { x: number; y: number } {
+  const maxX = Math.max(TOOLBAR_INSET_PX, pane.width - size.width - TOOLBAR_INSET_PX)
+  const maxY = Math.max(TOOLBAR_INSET_PX, pane.height - size.height - TOOLBAR_INSET_PX)
+  const clampTo = (value: number, high: number) => Math.min(high, Math.max(TOOLBAR_INSET_PX, value))
+
+  const clear = (x: number, y: number) => {
+    const box = {
+      left: x - TOOLBAR_CLEARANCE_PX,
+      top: y - TOOLBAR_CLEARANCE_PX,
+      right: x + size.width + TOOLBAR_CLEARANCE_PX,
+      bottom: y + size.height + TOOLBAR_CLEARANCE_PX,
+    }
+    return !avoid.some((shape) => overlaps(box, shape))
+  }
+
+  const start = { x: clampTo(preferred.x, maxX), y: clampTo(preferred.y, maxY) }
+  if (clear(start.x, start.y)) return start
+
+  // A coarse grid over the pane, nearest first. Its last row and column sit
+  // exactly on the far edges, so a pane with room only there still finds it.
+  const xs: number[] = []
+  for (let x = TOOLBAR_INSET_PX; x < maxX; x += 12) xs.push(x)
+  xs.push(maxX)
+  const ys: number[] = []
+  for (let y = TOOLBAR_INSET_PX; y < maxY; y += 6) ys.push(y)
+  ys.push(maxY)
+
+  const spots: { x: number; y: number; distance: number }[] = []
+  for (const y of ys) {
+    for (const x of xs) {
+      spots.push({ x, y, distance: (x - start.x) ** 2 + (y - start.y) ** 2 })
+    }
+  }
+  spots.sort((a, b) => a.distance - b.distance)
+  for (const spot of spots) {
+    if (clear(spot.x, spot.y)) return { x: spot.x, y: spot.y }
+  }
+  return start
+}

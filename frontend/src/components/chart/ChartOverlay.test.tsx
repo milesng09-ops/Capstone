@@ -16,7 +16,7 @@ import { ChartOverlay } from '@/components/chart/ChartOverlay'
 import type { ChartHandle } from '@/components/chart/useChartInstance'
 import { DEFAULT_ICT_SETTINGS } from '@/types/ict'
 import type { Trade } from '@/types/backtest'
-import type { Drawing } from '@/types/drawing'
+import { TEXT_CHAR_PX, TEXT_LINE_PX, type Drawing } from '@/types/drawing'
 import type { Candle } from '@/types/market'
 
 // Far away from the pointer coordinates below, so nothing snaps to a bar and
@@ -71,7 +71,10 @@ const level: Drawing = {
   price: 150,
 }
 
-function setup(overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {}) {
+function setup(
+  overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {},
+  options: { wrapper?: typeof StrictMode } = {},
+) {
   const props = {
     symbol: 'NQ',
     handle,
@@ -102,7 +105,7 @@ function setup(overrides: Partial<Parameters<typeof ChartOverlay>[0]> = {}) {
     ...overrides,
   }
 
-  const { container, rerender } = render(<ChartOverlay {...props} />)
+  const { container, rerender } = render(<ChartOverlay {...props} />, options)
   const canvas = container.querySelector('canvas') as HTMLCanvasElement
   return { ...props, canvas, container, rerender }
 }
@@ -169,6 +172,42 @@ describe('placing a level', () => {
 
     expect(onCreateDrawing).not.toHaveBeenCalled()
     expect(onGestureComplete).toHaveBeenCalled()
+  })
+})
+
+describe('the magnet', () => {
+  // `nearbyBars` print 0.5 to 2, and the handle's y is the price, so a press
+  // at y=150 is 148px from the nearest level the bar has.
+  it('leaves a point where it is put when no level of the bar is near it', () => {
+    // Pulled onto the bar from any distance, a line started 140px below the
+    // pointer -- which is what "not accurate" looked like from the outside.
+    const { canvas, onCreateDrawing } = setup({
+      tool: 'horizontal',
+      candles: nearbyBars,
+      magnet: true,
+    })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 150))
+    fireEvent(canvas, pointer('pointerup', 100, 150))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'horizontal', price: 150 }),
+    )
+  })
+
+  it('pulls a point onto a level of the bar within reach', () => {
+    const { canvas, onCreateDrawing } = setup({
+      tool: 'horizontal',
+      candles: nearbyBars,
+      magnet: true,
+    })
+
+    fireEvent(canvas, pointer('pointerdown', 100, 6))
+    fireEvent(canvas, pointer('pointerup', 100, 6))
+
+    expect(onCreateDrawing).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'horizontal', price: 2 }),
+    )
   })
 })
 
@@ -409,6 +448,46 @@ describe('editing an existing drawing', () => {
     )
   })
 
+  it('keeps a line its own length when it is carried across a gap in the bars', () => {
+    // A session break or a weekend is one bar wide on screen however long it
+    // lasted. Shifting both ends by the milliseconds the pointer crossed moved
+    // them by different distances on screen, so the line was reshaped as well
+    // as moved.
+    const gapped: Candle[] = [0, 100, 200, 10_000, 10_100, 10_200].map((time) => ({
+      symbol: 'NQ',
+      time,
+      open: 1,
+      high: 2,
+      low: 0.5,
+      close: 1.5,
+      volume: 1,
+    }))
+    const span: Drawing = {
+      id: 'span',
+      kind: 'trendline',
+      symbol: 'NQ',
+      color: '#818cf8',
+      width: 2,
+      createdAt: 0,
+      from: { time: 0, price: 100 },
+      to: { time: 200, price: 100 },
+    }
+    const { container, onUpdateDrawing } = setup({ candles: gapped, drawings: [span] })
+
+    // Grab the middle and carry it one bar to the right.
+    fireEvent(container, pointer('pointerdown', 100, 100))
+    fireEvent(window, pointer('pointermove', 200, 100))
+    fireEvent(window, pointer('pointerup', 200, 100))
+
+    expect(onUpdateDrawing).toHaveBeenCalledWith(
+      'span',
+      expect.objectContaining({
+        from: { time: 100, price: 100 },
+        to: { time: 10_000, price: 100 },
+      }),
+    )
+  })
+
   it('writes nothing when the press never moved, so a click costs no undo step', () => {
     const { container, onUpdateDrawing } = setup({ drawings: [level] })
 
@@ -564,6 +643,44 @@ describe('repainting keeps up with the pointer', () => {
     expect(raf).toHaveBeenCalledTimes(2)
 
     raf.mockRestore()
+  })
+
+  it('still paints after StrictMode unmounts and remounts it', () => {
+    // `main.tsx` mounts the app in StrictMode, which in development runs every
+    // effect, its cleanup, and the effect again. The cleanup cancelled the
+    // first paint but left its id behind, so the scheduler took the frame as
+    // still pending and declined every paint after it: under `npm run dev` no
+    // drawing, setup, test window or trade box ever reached the screen.
+    const frames = new Map<number, FrameRequestCallback>()
+    let nextId = 0
+    const raf = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb) => {
+        nextId += 1
+        frames.set(nextId, cb)
+        return nextId
+      })
+    const caf = vi
+      .spyOn(window, 'cancelAnimationFrame')
+      .mockImplementation((id) => {
+        frames.delete(id)
+      })
+
+    setup({ tool: 'cursor' }, { wrapper: StrictMode })
+
+    // A paint survives the remount...
+    expect(frames.size).toBeGreaterThan(0)
+
+    // ...and once it has run, the chart moving asks for the next one.
+    for (const [id, frame] of [...frames]) {
+      frames.delete(id)
+      frame(0)
+    }
+    for (const listener of notifyListeners) listener()
+    expect(frames.size).toBe(1)
+
+    raf.mockRestore()
+    caf.mockRestore()
   })
 })
 
@@ -1395,5 +1512,56 @@ describe('while the price is live', () => {
     fireEvent(canvas, pointer('pointerup', 300, 200))
 
     expect(created(props.onCreateDrawing).from).toEqual({ time: 100, price: 100 })
+  })
+})
+
+describe('staying on screen', () => {
+  // A 300x200 plot with the identity handle: x is the time, y is the price.
+  const plotted: ChartHandle = { ...handle, plotSize: () => ({ width: 300, height: 200 }) }
+
+  it('does not snap a point onto a bar that is off the plot', () => {
+    // Zoomed in, the nearest bar to a press at the edge can be the one just
+    // past it. Snapping there saved a time marker nobody could see.
+    const bars: Candle[] = [-10, 100].map((time) => ({
+      symbol: 'NQ', time, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1,
+    }))
+    const onCreateDrawing = vi.fn()
+    const { canvas } = setup({ tool: 'vertical', handle: plotted, candles: bars, onCreateDrawing })
+
+    fireEvent(canvas, pointer('pointerdown', 2, 100))
+    fireEvent(canvas, pointer('pointerup', 2, 100))
+
+    const [marker] = onCreateDrawing.mock.calls[0]
+    expect(marker.time).toBeGreaterThanOrEqual(0)
+    expect(marker.time).toBeLessThan(20)
+  })
+
+  it('keeps the whole of a note on the plot, not just its anchor', () => {
+    // The plate runs right and up from the anchor: placed at the corner, only
+    // the "N" of "Note" was left showing.
+    const onCreateDrawing = vi.fn()
+    const { canvas } = setup({ tool: 'text', handle: plotted, onCreateDrawing })
+
+    fireEvent(canvas, pointer('pointerdown', 299, 1))
+    fireEvent(canvas, pointer('pointerup', 299, 1))
+
+    const [note] = onCreateDrawing.mock.calls[0]
+    const plate = note.text.length * TEXT_CHAR_PX + 8
+    expect(note.at.time + plate).toBeLessThanOrEqual(300)
+    expect(note.at.price - TEXT_LINE_PX).toBeGreaterThanOrEqual(0)
+  })
+
+  it('takes the keyboard back from a text box when the chart is pressed', () => {
+    // Otherwise Ctrl+Z after dragging a note went to the note's text box.
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    expect(document.activeElement).toBe(input)
+
+    const { container } = setup({ drawings: [level] })
+    fireEvent(container, pointer('pointerdown', 100, 150))
+
+    expect(document.activeElement).not.toBe(input)
+    input.remove()
   })
 })

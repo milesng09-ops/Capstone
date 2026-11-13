@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react'
 
 import { SegmentedControl } from '@/components/ui/fields'
+import { ErrorLogButton } from '@/components/layout/ErrorLog'
 import { useSymbols } from '@/hooks/useMarketData'
 import {
   longestRange,
@@ -157,6 +158,7 @@ export function StatusBar() {
         <span className="hidden xl:inline">{DISCLAIMER}</span>
       </p>
 
+      <ErrorLogButton />
       <Clock />
     </footer>
   )

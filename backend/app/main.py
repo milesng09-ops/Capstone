@@ -6,11 +6,15 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
 from app.api.routes import api_router
@@ -24,6 +28,7 @@ from app.database.repository import (
 from app.database.session import init_database, session_scope
 from app.providers.instruments import list_instruments
 from app.services.candle_service import shutdown_candle_service
+from app.utils.error_logging import configure_error_log, redact
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +39,7 @@ def configure_logging() -> None:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
     )
+    configure_error_log(settings.log_file)
     # yfinance is noisy about individual ticker failures we already handle.
     logging.getLogger("yfinance").setLevel(logging.ERROR)
     logging.getLogger("peewee").setLevel(logging.ERROR)
@@ -138,9 +144,47 @@ def create_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
     )
 
+    @app.middleware('http')
+    async def request_diagnostics(request: Request, call_next):
+        request_id = uuid.uuid4().hex
+        request.state.request_id = request_id
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception('Request failed reference=%s method=%s path=%s',
+                             request_id, request.method, request.url.path)
+            response = JSONResponse(status_code=500, content={
+                'detail': 'Something went wrong on the server. Please try again.',
+            })
+        else:
+            if response.status_code >= 400:
+                logger.warning('Request rejected reference=%s method=%s path=%s status=%s',
+                               request_id, request.method, request.url.path, response.status_code)
+        response.headers['X-Request-ID'] = request_id
+        return response
+
     app.include_router(api_router)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handled_error(request: Request, exc: StarletteHTTPException):
+        if isinstance(exc.detail, str):
+            exc.detail = redact(exc.detail)
+        logger.warning('Request error reference=%s method=%s path=%s status=%s detail=%s',
+                       getattr(request.state, 'request_id', 'startup'), request.method,
+                       request.url.path, exc.status_code, exc.detail)
+        return await http_exception_handler(request, exc)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        # Keep the rejected input and body out of the diagnostics file.
+        details = '; '.join(f'{error["loc"]}: {error["msg"]}' for error in exc.errors())
+        logger.warning('Validation error reference=%s method=%s path=%s detail=%s',
+                       getattr(request.state, 'request_id', 'startup'), request.method,
+                       request.url.path, details)
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:

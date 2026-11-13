@@ -1,11 +1,20 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import App from '@/App'
+import { ErrorLog, WorkspaceErrorBoundary } from '@/components/layout/ErrorLog'
+import { installErrorListeners, reportError } from '@/lib/errorLog'
+import { ApiError } from '@/services/api'
 import '@/index.css'
 
 const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: error => {
+    if (!(error instanceof ApiError)) reportError(error, 'Data loading')
+  } }),
+  mutationCache: new MutationCache({ onError: error => {
+    if (!(error instanceof ApiError)) reportError(error, 'Requested operation')
+  } }),
   defaultOptions: {
     queries: {
       // Market data is fetched through a server-side cache already, so the
@@ -22,6 +31,8 @@ const queryClient = new QueryClient({
     },
   },
 })
+const removeErrorListeners = installErrorListeners()
+if (import.meta.hot) import.meta.hot.dispose(removeErrorListeners)
 
 const container = document.getElementById('root')
 if (!container) {
@@ -31,7 +42,8 @@ if (!container) {
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      <WorkspaceErrorBoundary><App /></WorkspaceErrorBoundary>
+      <ErrorLog />
     </QueryClientProvider>
   </StrictMode>,
 )

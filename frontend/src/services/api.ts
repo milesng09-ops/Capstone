@@ -21,6 +21,7 @@ import type {
   Interval,
   ProviderStatusResponse,
 } from '@/types/market'
+import { redact, reportError } from '@/lib/errorLog'
 
 export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ?? ''
@@ -101,11 +102,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     })
   } catch (error) {
     if ((error as Error)?.name === 'AbortError') throw error
-    throw new ApiError(
+    const failure = new ApiError(
       'Cannot reach the Market Replay Lab backend. Check that it is running.',
       0,
       true,
     )
+    reportError(failure, `${init?.method ?? 'GET'} ${path}`, 0)
+    throw failure
   }
 
   if (!response.ok) {
@@ -125,16 +128,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       detail = undefined
     }
-    throw new ApiError(
-      detail ?? FRIENDLY_STATUS[response.status] ?? 'Something went wrong.',
+    const failure = new ApiError(
+      redact(detail ?? FRIENDLY_STATUS[response.status] ?? 'Something went wrong.'),
       response.status,
       false,
       parseRetryAfter(response),
     )
+    reportError(failure, `${init?.method ?? 'GET'} ${path}`, response.status, response.headers.get('X-Request-ID') ?? undefined)
+    throw failure
   }
 
   if (response.status === 204) return undefined as T
-  return (await response.json()) as T
+  try {
+    return (await response.json()) as T
+  } catch (error) {
+    if ((error as Error)?.name === 'AbortError') throw error
+    const failure = new ApiError('The backend returned an unreadable response. Please retry.', response.status)
+    reportError(failure, `${init?.method ?? 'GET'} ${path}`, response.status, response.headers.get('X-Request-ID') ?? undefined)
+    throw failure
+  }
 }
 
 export const api = {

@@ -2,6 +2,17 @@
 
 ## Source-linked C2 continuation (v2)
 
+### Massive quota fallback
+
+When Massive's local budget is full or the provider reports a quota rejection,
+GXT switches immediately to **cached Massive CME Group candles only** for the
+whole comparison group. It does not wait for a new request slot, call Yahoo,
+generate prices, fill missing bars or force a trading signal. The run records
+`summary.gxt.cached_only = true` and the results display a cache badge. Cache
+coverage may be incomplete; existing complete-profile and synchronized-data
+requirements still apply, and insufficient cached history is an explicit error.
+The policy is local to the GXT request; ordinary chart pacing is unchanged.
+
 The default UI variant is **4H continuation / 1H C2 (lesson subset)**. The API
 continues to interpret requests without `gxt.sequence_model` as legacy v1, so
 saved configurations do not silently change meaning. Select `legacy_gap` to

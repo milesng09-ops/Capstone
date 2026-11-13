@@ -42,6 +42,7 @@ from app.providers.base import (
 from app.providers.futures_calendar import ContractMonth, contract_segments
 from app.providers.trading_hours import empty_response_indicts_provider
 from app.providers.instruments import get_instrument, list_instruments
+from app.providers.quota_policy import cached_massive_on_limit
 from app.services.normalization import clip_to_range, normalize_candles
 from app.utils.timeutils import to_ms
 
@@ -120,6 +121,10 @@ class MassiveProvider(MarketDataProvider):
 
     async def is_configured(self) -> bool:
         return bool(self._api_key)
+
+    def quota_exhausted(self) -> bool:
+        used, maximum = self._limiter.snapshot()
+        return used >= maximum
 
     async def _get_client(self) -> httpx.AsyncClient:
         async with self._client_lock:
@@ -298,7 +303,7 @@ class MassiveProvider(MarketDataProvider):
             # that way, so a retry storm has to come out of the same budget as
             # the request that provoked it.
             try:
-                waited = await self._limiter.acquire(self._max_throttle_wait)
+                waited = await self._limiter.acquire(0 if cached_massive_on_limit.get() else self._max_throttle_wait)
             except RateLimitExceeded as exc:
                 raise ProviderThrottledError(
                     "Local Massive request budget is spent "
@@ -333,6 +338,8 @@ class MassiveProvider(MarketDataProvider):
                         provider=self.name,
                         retry_after_seconds=wait,
                     )
+                    if cached_massive_on_limit.get():
+                        raise last_error
                     delay = wait
                 elif response.status_code >= 500:
                     last_error = ProviderUnavailableError(

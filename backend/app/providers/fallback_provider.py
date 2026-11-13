@@ -40,6 +40,7 @@ from app.providers.demo_provider import DemoProvider
 from app.providers.health import ProviderHealthRegistry, get_health_registry
 from app.providers.massive_provider import MassiveProvider
 from app.providers.yahoo_provider import YahooProvider
+from app.providers.quota_policy import cached_massive_on_limit
 from app.utils.intervals import resolve_fetch_interval
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,15 @@ class AutomaticFallbackProvider(MarketDataProvider):
             # is the normal "just cloned the repo" path, not an error.
             names = [name for name in names if name != "massive"]
         return [name for name in names if name in self._providers]
+
+    def massive_quota_exhausted(self) -> bool:
+        if 'massive' not in self.chain():
+            return False
+        entry = self._registry.entry('massive')
+        if entry.rate_limited and entry.cooldown_until_ms and entry.cooldown_until_ms > int(datetime.now().timestamp()*1000):
+            return True
+        check = getattr(self._providers.get('massive'), 'quota_exhausted', None)
+        return bool(check and check())
 
     async def close(self) -> None:
         for provider in self._providers.values():
@@ -208,6 +218,8 @@ class AutomaticFallbackProvider(MarketDataProvider):
                     self._registry.mark_failure(
                         name, str(exc), permanent=exc.permanent, rate_limited=is_rate_limit
                     )
+                if name == 'massive' and is_rate_limit and cached_massive_on_limit.get():
+                    raise  # GXT must use Massive cache rather than query Yahoo.
                 if position + 1 < len(chain):
                     next_provider = self._providers[chain[position + 1]]
                     self._registry.record_fallback(name, chain[position + 1], str(exc))

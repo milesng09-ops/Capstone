@@ -454,6 +454,7 @@ class GxtEvidence(BaseModel):
 
 
 class GxtRunDetails(BaseModel):
+    cached_only: bool = False
     version: str = "gxt-research-v1"
     status: str = "experimental_unverified"
     trained: bool = False

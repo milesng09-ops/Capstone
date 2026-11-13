@@ -73,6 +73,11 @@ class SlidingWindowRateLimiter:
         # otherwise be told a short wait and then serve a long one.
         deadline = self._now() + max_wait
         waited = self._lock.locked()
+        if max_wait <= 0 and waited:
+            # A cache-only caller must not queue behind another request that
+            # is sleeping with this lock held until the quota window resets.
+            retry = self._calls[0] + self._per - self._now() if self._calls else 0.01
+            raise RateLimitExceeded(max(0.01, retry))
 
         # The lock is held across the sleep on purpose.  Waiters that checked
         # concurrently would each see the same free slot and all take it; the

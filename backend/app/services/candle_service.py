@@ -44,6 +44,7 @@ from app.models.domain import BarsResult, Candle
 from app.providers.base import ProviderRateLimitError
 from app.providers.fallback_provider import AutomaticFallbackProvider
 from app.providers.instruments import get_instrument
+from app.providers.quota_policy import cached_massive_on_limit
 from app.providers.trading_hours import (
     empty_response_indicts_provider,
     has_trading_session,
@@ -168,6 +169,32 @@ class CandleService:
 
     async def close(self) -> None:
         await self._provider.close()
+
+    def massive_quota_exhausted(self) -> bool:
+        return self._provider.massive_quota_exhausted()
+
+    async def get_cached_series_for_analysis(self, symbol: str, interval: str, start: int, end: int) -> BarsResult:
+        """Read Massive prices only; never fetch, fill, or mutate coverage."""
+        instrument = get_instrument(symbol)
+        get_interval(interval)
+        if end <= start:
+            raise ValueError('Cached history end must be after start.')
+        store = storage_interval(interval)
+        padding = edge_padding_ms(interval)
+
+        def load():
+            with session_scope() as session:
+                return load_candles(session, instrument.symbol, store, start-padding, end+padding, provider='massive')
+
+        bars = await anyio.to_thread.run_sync(load)
+        if interval != store:
+            bars = aggregate_candles(bars, interval, timezone=instrument.timezone)
+        step = interval_ms(interval)
+        bars = [bar for bar in bars if start <= bar.time and bar.time+step <= end]
+        return BarsResult(symbol=instrument.symbol, interval=interval, provider='massive',
+            cached=True, quality='partial', fallback_active=True, rate_limited=True,
+            fallback_reason='Massive quota reached: using cached Massive candles only. Missing history was not fetched or filled.',
+            bars=bars)
 
     # ------------------------------------------------------------------
     def validate_request(self, symbol: str, interval: str, start: int, end: int) -> TimeRange:
@@ -412,6 +439,8 @@ class CandleService:
                     )
                 fallback_reason = fallback_reason or str(exc)
                 failed_gaps += 1
+                if cached_massive_on_limit.get():
+                    break
                 continue
             except Exception as exc:  # noqa: BLE001 - degrade to whatever is cached
                 logger.warning(
@@ -699,6 +728,8 @@ class CandleService:
             for candle in result.bars:
                 collected[candle.time] = candle
             chunks.append(result)
+            if result.rate_limited and cached_massive_on_limit.get():
+                break
             if chunk_end >= end:
                 break
             cursor = chunk_end

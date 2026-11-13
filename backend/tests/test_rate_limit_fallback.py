@@ -91,6 +91,19 @@ def build(providers: dict[str, MarketDataProvider]) -> AutomaticFallbackProvider
 # --------------------------------------------------------------------------
 class TestChains:
     @pytest.mark.asyncio
+    async def test_gxt_quota_does_not_call_yahoo_even_in_auto_mode(self):
+        from app.providers.quota_policy import cached_massive_on_limit
+        massive = StubProvider('massive', error=ProviderRateLimitError('limit', provider='massive'))
+        yahoo = StubProvider('yahoo')
+        token = cached_massive_on_limit.set(True)
+        try:
+            with pytest.raises(ProviderRateLimitError):
+                await build({'massive': massive, 'yahoo': yahoo}).fetch('ES', '1h', START, END)
+        finally:
+            cached_massive_on_limit.reset(token)
+        assert yahoo.calls == 0
+
+    @pytest.mark.asyncio
     async def test_explicit_massive_never_falls_back_to_yahoo(self, monkeypatch):
         from app.config import reset_settings_cache
         monkeypatch.setenv("DATA_PROVIDER", "massive")

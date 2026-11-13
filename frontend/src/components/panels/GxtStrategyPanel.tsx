@@ -43,6 +43,7 @@ export function GxtStrategyPanel() {
           the 4H-open / 1H-C2 sequence from Garrett’s public lessons. Gap selection,
           full narrative, PSP and Strength Switch still require reviewed definitions.
         </p>
+        <p className="text-2xs text-muted-foreground">If Massive reaches its limit, this backtest runs on cached Massive CME Group candles only. Missing history is excluded; trades still require a valid setup.</p>
         <SelectField label="Sequence variant" value={sequenceModel}
           options={[{ value: 'c2_continuation', label: '4H continuation / 1H C2 (lesson subset)' },
             { value: 'legacy_gap', label: 'Legacy 4H reversal + new gap hypothesis' }]}

@@ -273,6 +273,7 @@ export interface GxtEvidence {
 }
 
 export interface GxtRunDetails {
+  cached_only?: boolean
   version: string
   status: string
   trained: boolean

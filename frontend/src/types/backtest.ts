@@ -235,6 +235,8 @@ export interface LearnedWeightsSummary {
 export type StrategyKind = 'pattern' | 'gxt_research'
 
 export interface GxtSettings {
+  sequence_model?: 'legacy_gap' | 'c2_continuation'
+  entry_interval?: '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h' | null
   direction: 'both' | 'long' | 'short'
   require_cross_asset: boolean
   confirmation_bars: number
@@ -251,6 +253,8 @@ export const DEFAULT_GXT_SETTINGS: GxtSettings = {
 }
 
 export interface GxtEvidence {
+  sequence_model?: string
+  source_links?: string[]
   direction: 'long' | 'short'
   profile: string
   context_start: number
@@ -260,8 +264,8 @@ export interface GxtEvidence {
   swept_level: number
   stop_price: number
   target_price: number
-  gap_bottom: number
-  gap_top: number
+  gap_bottom: number | null
+  gap_top: number | null
   reference_symbols: string[]
   opposed_close_symbols: string[]
   entry_session_ny: string

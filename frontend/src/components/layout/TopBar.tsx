@@ -140,7 +140,7 @@ export function TopBar() {
                 <optgroup key={group.key} label={group.title}>
                   {group.runs.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {item.win_rate != null
+                      {item.trades_executed === 0 ? 'N/A · no trades' : item.win_rate != null
                         ? `${formatNumber(item.win_rate, 0)}%`
                         : item.status}
                       {' · '}

@@ -62,12 +62,20 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
-  webServer: {
+  webServer: [{
     command: `npm run dev -- --port ${PORT} --strictPort`,
     url: HOST,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     stdout: 'ignore',
     stderr: 'pipe',
-  },
+  }, {
+    command: '.venv/bin/python -m uvicorn e2e_app:app --app-dir tests --host 127.0.0.1 --port 8199',
+    cwd: '../backend',
+    url: 'http://127.0.0.1:8199/test/market',
+    reuseExistingServer: false,
+    timeout: 30_000,
+    stdout: 'ignore',
+    stderr: 'pipe',
+  }],
 })

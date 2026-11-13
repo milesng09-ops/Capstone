@@ -15,10 +15,10 @@
 import { ArrowDownRight, ArrowUpRight } from 'lucide-react'
 
 import { Badge } from '@/components/ui/primitives'
-import { useChartRange } from '@/hooks/useChartRange'
+import { tradeChartRange } from '@/lib/tradeRange'
 import { useIct } from '@/hooks/useMarketData'
 import { collectEvidence, evidenceWindow, hasEvidence } from '@/lib/trades'
-import { useChartedSymbols, useTimeZone, useWorkspace } from '@/store/workspace'
+import { useChartedSymbols, useSymbolInterval, useTimeZone, useWorkspace } from '@/store/workspace'
 import {
   EXIT_REASON_LABELS,
   type PatternMatch,
@@ -41,12 +41,14 @@ export function TradeEvidence({
   match: PatternMatch | null
   rules: TradeRules
 }) {
-  const range = useChartRange()
   // Timestamps below are drawn in the zone chosen in the status bar;
   // reading it here is what re-renders them when that changes.
   useTimeZone()
 
-  const interval = useWorkspace((state) => state.interval)
+  const primary = useWorkspace((state) => state.primarySymbol)
+  const chartInterval = useSymbolInterval(primary)
+  const interval = match?.interval ?? chartInterval
+  const range = tradeChartRange(trade, match, interval)
   const settings = useWorkspace((state) => state.ict)
   const charted = useChartedSymbols()
 

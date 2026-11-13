@@ -423,6 +423,8 @@ class GxtSettings(BaseModel):
     """Explicit research hypothesis, pending validation against Garrett's lessons."""
 
     direction: Literal["both", "long", "short"] = "both"
+    entry_interval: Literal["1m", "2m", "3m", "5m", "15m", "30m", "1h"] | None = None
+    sequence_model: Literal["legacy_gap", "c2_continuation"] = "legacy_gap"
     require_cross_asset: bool = True
     confirmation_bars: int = Field(12, ge=3, le=240)
     minimum_body_fraction: float = Field(0.5, ge=0.0, le=1.0)
@@ -432,6 +434,8 @@ class GxtSettings(BaseModel):
 
 
 class GxtEvidence(BaseModel):
+    sequence_model: str = "legacy_gap"
+    source_links: list[str] = Field(default_factory=list)
     direction: Literal["long", "short"]
     profile: str
     context_start: int
@@ -441,8 +445,8 @@ class GxtEvidence(BaseModel):
     swept_level: float
     stop_price: float
     target_price: float
-    gap_bottom: float
-    gap_top: float
+    gap_bottom: float | None = None
+    gap_top: float | None = None
     reference_symbols: list[str]
     opposed_close_symbols: list[str]
     entry_session_ny: str

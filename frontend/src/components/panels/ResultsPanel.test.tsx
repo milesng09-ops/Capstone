@@ -105,6 +105,24 @@ beforeEach(() => {
   useWorkspace.getState().setActiveBacktestId('bt-1')
 })
 
+it('does not present an empty run as a zero percent win rate', () => {
+  show({ ...SUMMARY, trades_executed: 0, wins: 0, losses: 0, win_rate: 0 })
+  expect(screen.getByText('Win rate').parentElement).toHaveTextContent('N/A')
+  expect(screen.getByText(/No trades executed — win rate is undefined/)).toBeInTheDocument()
+  expect(screen.queryByText(/at 95%/)).not.toBeInTheDocument()
+})
+
+it('shows GXT rejection counts and entry failures without opening Notes', () => {
+  show({ ...SUMMARY, trades_executed: 0, gxt: {
+    version: 'gxt-research-v1', status: 'experimental_unverified', trained: false,
+    evidence: {}, diagnostics: { complete_4h_profiles: 20, cross_asset_rejected: 4 },
+    skipped: { signal: 'The next-open reward/risk is below the configured minimum.' },
+  } })
+  expect(screen.getByText('Why this GXT run has no trades')).toBeInTheDocument()
+  expect(screen.getByText('cross asset rejected: 4')).toBeInTheDocument()
+  expect(screen.getByText(/next-open reward\/risk/)).toBeInTheDocument()
+})
+
 it('shows an undefined achieved ratio when no trade lost', () => {
   show({ ...SUMMARY, losses: 0, average_loser: 0, risk_reward_achieved: 0 })
   expect(screen.getByText('Achieved R:R').parentElement).toHaveTextContent('--')

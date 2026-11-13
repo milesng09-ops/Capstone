@@ -21,12 +21,13 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { StrategyPanel } from '@/components/panels/StrategyPanel'
 import { useWorkspace } from '@/store/workspace'
+import { api } from '@/services/api'
 import { DEFAULT_DETECTOR_FILTERS, SESSION_KEYS, SESSION_LABELS } from '@/types/backtest'
 
 // Real bars would mean a real fetch to a backend that is not running here.
@@ -61,6 +62,45 @@ beforeEach(() => {
     higherTimeframe: '4h',
     selection: null,
     detectors: DEFAULT_DETECTOR_FILTERS,
+    primarySymbol: 'NQ', strategy: 'pattern',
+    chartSync: { ...useWorkspace.getState().chartSync, interval: true }, intervalOverrides: {},
+  })
+})
+
+describe('running the setup shown on the primary chart', () => {
+  const bars = Array.from({ length: 5 }, (_, i) => ({
+    symbol: 'NQ', time: 1_780_000_000_000 + i * 300_000,
+    open: 100, high: 102, low: 99, close: 101, volume: 10,
+  }))
+  function setup() {
+    useWorkspace.setState({
+      chartSync: { ...useWorkspace.getState().chartSync, interval: false },
+      intervalOverrides: { NQ: '5m' },
+      selection: { symbol: 'NQ', source_interval: '5m', start_time: bars[0].time, end_time: bars[4].time },
+      resultsOpen: false, showTrades: false,
+    })
+    useBars.mockReturnValue({ data: { bars }, isPlaceholderData: false })
+  }
+
+  it('submits the unlinked pane interval and reveals successful results', async () => {
+    setup()
+    const create = vi.spyOn(api, 'createBacktest').mockResolvedValue({ id: 'new-run' } as never)
+    try {
+      renderPanel()
+      fireEvent.click(screen.getByRole('button', { name: 'Test strategy' }))
+      await waitFor(() => expect(create).toHaveBeenCalled())
+      expect(create.mock.calls[0][0].interval).toBe('5m')
+      await waitFor(() => expect(useWorkspace.getState().activeBacktestId).toBe('new-run'))
+      expect(useWorkspace.getState().resultsOpen).toBe(true)
+      expect(useWorkspace.getState().showTrades).toBe(true)
+    } finally { create.mockRestore() }
+  })
+
+  it('does not run against previous-timeframe placeholder bars', () => {
+    setup()
+    useBars.mockReturnValue({ data: { bars }, isPlaceholderData: true })
+    renderPanel()
+    expect(screen.getByRole('button', { name: 'Test strategy' })).toBeDisabled()
   })
 })
 

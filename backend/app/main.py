@@ -18,6 +18,7 @@ from app.config import get_settings
 from app.database.repository import (
     repair_mixed_real_series,
     repair_mixed_series,
+    retain_provider_cache,
     upsert_instruments,
 )
 from app.database.session import init_database, session_scope
@@ -43,6 +44,11 @@ async def lifespan(_app: FastAPI):
     configure_logging()
     settings = get_settings()
     init_database()
+    if settings.data_provider == "massive":
+        with session_scope() as session:
+            removed = retain_provider_cache(session, "massive")
+        if removed:
+            logger.info("Massive-only mode: invalidated %d cached candles from other sources.", removed)
 
     with session_scope() as session:
         upsert_instruments(
@@ -99,10 +105,12 @@ async def lifespan(_app: FastAPI):
         settings.data_provider,
         "set" if settings.massive_api_key_configured else "not set",
     )
-    if not settings.massive_api_key_configured and settings.data_provider in {"auto", "massive"}:
+    if not settings.massive_api_key_configured and settings.data_provider == "massive":
+        logger.warning("Massive-only mode requires MASSIVE_API_KEY. No fallback source is enabled.")
+    elif not settings.massive_api_key_configured and settings.data_provider == "auto":
         logger.info(
             "MASSIVE_API_KEY is not configured. Falling back to Yahoo Finance, "
-            "then to bundled demo data."
+            "with no synthetic fallback."
         )
 
     try:

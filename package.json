@@ -1,0 +1,7 @@
+{
+  "name": "market-replay-lab",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/run-app.mjs"
+  }
+}

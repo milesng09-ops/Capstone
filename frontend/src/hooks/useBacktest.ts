@@ -37,13 +37,14 @@ export function buildGxtRequest(params: {
   const symbols = Array.from(new Set([params.primarySymbol, ...params.symbols]))
   return {
     strategy: 'gxt_research', gxt: params.gxt, symbols,
-    primary_symbol: params.primarySymbol, interval: params.interval,
+    primary_symbol: params.primarySymbol, interval: params.gxt.entry_interval ?? params.interval,
     higher_timeframe: null, // GXT builds its own complete 4H context.
     // Stored for compatibility/history grouping. GXT has no example selection.
     selection: { start_time: start, end_time: end },
     trade: { ...params.rules, entry_type: 'next_open' },
     search: {
-      lookback_start: start, lookback_end: end, maximum_matches: params.search.maximumMatches,
+      lookback_start: start, lookback_end: end,
+      maximum_matches: Math.min(MAX_PATTERN_MATCHES, Math.max(1, Math.round(params.search.maximumMatches))),
       minimum_similarity: 0, pattern_length: null, minimum_separation_bars: null,
       search_symbols: [params.primarySymbol],
     },

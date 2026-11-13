@@ -28,6 +28,7 @@ import { buildBacktestRequest, useRunBacktest } from '@/hooks/useBacktest'
 import {
   canReadBias,
   useChartedSymbols,
+  useSymbolInterval,
   useTimeZone,
   useWorkspace,
 } from '@/store/workspace'
@@ -101,11 +102,11 @@ function PatternStrategyPanel() {
   // reading it here is what re-renders them when that changes.
   useTimeZone()
 
-  const range = useChartRange()
-  const interval = useWorkspace((state) => state.interval)
+  const primary = useWorkspace((state) => state.primarySymbol)
+  const interval = useSymbolInterval(primary)
+  const range = useChartRange(interval)
   const higherTimeframe = useWorkspace((state) => state.higherTimeframe)
   const setHigherTimeframe = useWorkspace((state) => state.setHigherTimeframe)
-  const primary = useWorkspace((state) => state.primarySymbol)
   const selection = useWorkspace((state) => state.selection)
   const testWindow = useWorkspace((state) => state.testWindow)
   const rules = useWorkspace((state) => state.rules)
@@ -133,7 +134,8 @@ function PatternStrategyPanel() {
   const candles = barsQuery.data?.bars ?? []
 
   const summary = useMemo(() => {
-    if (!selection || candles.length === 0) return null
+    if (!selection || selection.symbol !== primary || selection.source_interval !== interval
+      || barsQuery.isPlaceholderData || candles.length === 0) return null
     const startIndex = indexOfBar(candles, selection.start_time)
     const endIndex = indexOfBar(candles, selection.end_time)
     if (startIndex < 0 || endIndex < 0 || endIndex < startIndex) return null
@@ -156,7 +158,7 @@ function PatternStrategyPanel() {
       highest: Math.max(...slice.map((candle) => candle.high)),
       lowest: Math.min(...slice.map((candle) => candle.low)),
     }
-  }, [candles, selection])
+  }, [candles, selection, primary, interval, barsQuery.isPlaceholderData])
 
   /**
    * What the setup is, in the few words the header has room for once the
@@ -186,7 +188,7 @@ function PatternStrategyPanel() {
   const canRun = Boolean(selection && summary && !tooShort && !runBacktest.isPending)
 
   const handleRun = () => {
-    if (!selection) return
+    if (!selection || !canRun) return
     const request = buildBacktestRequest({
       selection,
       primarySymbol: primary,
@@ -201,7 +203,11 @@ function PatternStrategyPanel() {
       higherTimeframe,
     })
     runBacktest.mutate(request, {
-      onSuccess: (result) => setActiveBacktestId(result.id),
+      onSuccess: (result) => {
+        setActiveBacktestId(result.id)
+        useWorkspace.getState().setShowTrades(true)
+        useWorkspace.getState().setResultsOpen(true)
+      },
     })
   }
 

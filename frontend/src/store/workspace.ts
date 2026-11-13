@@ -703,7 +703,7 @@ export const useWorkspace = create<WorkspaceState>()(
         set({ activeBacktestId, selectedTradeId: null }),
 
       setShowTrades: (showTrades) => set({ showTrades }),
-      selectTrade: (selectedTradeId) => set({ selectedTradeId }),
+      selectTrade: (selectedTradeId) => set({ selectedTradeId, ...(selectedTradeId ? { showTrades: true } : {}) }),
     }),
     {
       name: 'mrl.workspace',

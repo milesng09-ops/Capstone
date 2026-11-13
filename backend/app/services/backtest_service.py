@@ -416,6 +416,9 @@ class BacktestService:
         backtest_id = str(uuid.uuid4())
         provider_name = usable[0].provider
         trade_returns = {trade.pattern_match_id: trade for trade in all_trades}
+        output_trades = [_trade_out(number, trade) for number, trade in enumerate(all_trades, start=1)]
+        for trade in output_trades:
+            trade.id = str(uuid.uuid4())
 
         def _persist() -> None:
             with session_scope() as session:
@@ -454,7 +457,7 @@ class BacktestService:
                 for number, trade in enumerate(all_trades, start=1):
                     session.add(
                         TradeRow(
-                            id=str(uuid.uuid4()),
+                            id=output_trades[number - 1].id,
                             backtest_id=backtest_id,
                             pattern_match_id=trade.pattern_match_id,
                             trade_number=number,
@@ -516,7 +519,7 @@ class BacktestService:
             configuration=request,
             summary=summary,
             matches=matches_out,
-            trades=[_trade_out(index, trade) for index, trade in enumerate(all_trades, start=1)],
+            trades=output_trades,
         )
 
     # ------------------------------------------------------------------
@@ -533,12 +536,9 @@ class BacktestService:
             # Overlap is allowed (the selection is excluded explicitly), but a
             # lookback that starts after the selection ends is a mistake.
             pass
-        span = request.selection.end_time - request.selection.start_time
-        if span < interval_ms(request.interval) * settings.min_pattern_length:
-            raise BacktestValidationError(
-                "The selected period is too short for the chosen interval. "
-                "Select a wider range or switch to a smaller interval."
-            )
+        # Selection endpoints are inclusive bar opens. Validate the actual
+        # fetched candle count in _run, not elapsed time (which also includes
+        # session breaks and calendar-sized bars).
 
     @staticmethod
     def _data_quality_notes(

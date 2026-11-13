@@ -69,7 +69,7 @@ MASSIVE_INTERVAL_MAP: dict[str, str] = {
     "15m": "15 min",
     "30m": "30 min",
     "1h": "1 hour",
-    "1d": "1 day",
+    "1d": "1 session",
 }
 
 #: Nanoseconds per millisecond.  Massive timestamps every bar in nanoseconds.

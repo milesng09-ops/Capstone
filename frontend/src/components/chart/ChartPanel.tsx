@@ -14,6 +14,7 @@ import { Badge, Button, Spinner } from '@/components/ui/primitives'
 import { useBacktestResult } from '@/hooks/useBacktest'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars, useIct } from '@/hooks/useMarketData'
+import { tradeChartRange } from '@/lib/tradeRange'
 import {
   collectEvidence,
   evidenceWindow,
@@ -47,7 +48,7 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   const interval = useSymbolInterval(symbol)
   // Held to what this pane's own interval can carry: 180 days of 1-minute
   // bars is a request the backend refuses outright.
-  const range = useChartRange(interval)
+  const liveRange = useChartRange(interval)
   const intervalLinked = useWorkspace((state) => state.chartSync.interval)
   const setSymbolInterval = useWorkspace((state) => state.setSymbolInterval)
   const ictSettings = useWorkspace((state) => state.ict)
@@ -71,6 +72,11 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
   const setTestWindow = useWorkspace((state) => state.setTestWindow)
   const selectTrade = useWorkspace((state) => state.selectTrade)
   const setTool = useWorkspace((state) => state.setTool)
+  const backtestQuery = useBacktestResult(activeBacktestId)
+  const focusedTrade = findTrade(backtestQuery.data?.trades ?? [], selectedTradeId)
+  const range = focusedTrade
+    ? tradeChartRange(focusedTrade, findMatch(backtestQuery.data?.matches ?? [], focusedTrade), interval)
+    : liveRange
 
   const charted = useChartedSymbols()
   const references = useMemo(
@@ -91,7 +97,6 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
 
   // The run on screen, if any. Cached by id, so every pane reads the same
   // response rather than fetching one each.
-  const backtestQuery = useBacktestResult(activeBacktestId)
   const symbolTrades = useMemo(() => {
     if (!backtestQuery.data) return []
     return tradesForSymbol(backtestQuery.data.trades, symbol)
@@ -133,6 +138,15 @@ export function ChartPanel({ symbol, isPrimary, precision = 2, className }: Prop
     onHoverBar: setHovered,
     settings: chartSettings,
   })
+  const fittedWindow = useRef<string | null>(null)
+  useEffect(() => {
+    if (!ready || barsQuery.isPlaceholderData || !candles.length) return
+    const key = selectedTradeId ? `${selectedTradeId}:${range.from}:${range.to}:${interval}` : 'live'
+    if (fittedWindow.current !== key) {
+      fittedWindow.current = key
+      resetView()
+    }
+  }, [ready, barsQuery.isPlaceholderData, candles, selectedTradeId, range.from, range.to, interval, resetView])
 
   const handleCreate = useCallback(
     (drawing: DrawingDraft) => {

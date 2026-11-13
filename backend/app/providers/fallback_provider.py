@@ -7,7 +7,7 @@ Priority is fixed: **Massive -> Yahoo Finance**, filtered by the
 ``DATA_PROVIDER``    Chain
 ===================  =========================================================
 ``auto``             massive (if a key exists) -> yahoo
-``massive``          massive -> yahoo
+``massive``          massive only (strict source selection)
 ``yahoo``            yahoo
 ``demo``             demo only
 ===================  =========================================================
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 #: handed it without being told.
 CHAINS: dict[str, list[str]] = {
     "auto": ["massive", "yahoo"],
-    "massive": ["massive", "yahoo"],
+    "massive": ["massive"],
     "yahoo": ["yahoo"],
     "demo": ["demo"],
 }

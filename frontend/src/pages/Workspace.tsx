@@ -329,7 +329,7 @@ function CollapsedResults({ onOpen }: { onOpen: () => void }) {
       {summary && (
         <>
           <span className="numeric text-2xs font-semibold text-foreground">
-            {formatNumber(summary.win_rate, 1)}%
+            {summary.trades_executed > 0 ? `${formatNumber(summary.win_rate, 1)}%` : 'N/A'}
           </span>
           <span className="numeric text-2xs text-muted-foreground">
             {formatInteger(summary.trades_executed)} trades

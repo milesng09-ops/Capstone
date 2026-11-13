@@ -31,6 +31,39 @@ def reference(bars):
     return [Candle(symbol="ES", time=b.time, open=200, high=210, low=190, close=199) for b in bars]
 
 
+def continuation_market(short=False):
+    rows = [(110, 140, 100, 115), (115, 120, 105, 115),
+            (105, 110, 100, 104), (101, 109, 98, 106),
+            (106, 112, 105, 110), (110, 141, 109, 140)]
+    if short:
+        rows = [(200-o, 200-l, 200-h, 200-c) for o,h,l,c in rows]
+    return [Candle(symbol='NQ', time=BASE+i*HOUR_MS, open=o, high=h, low=l, close=c)
+            for i,(o,h,l,c) in enumerate(rows)]
+
+
+@pytest.mark.parametrize('short', [False, True])
+def test_source_linked_continuation_is_known_at_new_4h_open(short):
+    bars = continuation_market(short)
+    found = signals(bars, sequence_model='c2_continuation')
+    assert len(found) == 1
+    e = found[0].evidence
+    assert e.confirmed_at == BASE+4*HOUR_MS
+    assert e.direction == ('short' if short else 'long')
+    assert e.gap_bottom is None and e.gap_top is None
+    assert e.source_links
+    assert signals(bars[:5], sequence_model='c2_continuation') == found
+    changed = bars[:4]+[b.model_copy(update={'high': 500, 'low': 1}) for b in bars[4:]]
+    assert signals(changed, sequence_model='c2_continuation') == found
+
+
+def test_continuation_requires_actual_1h_c2_sweep_and_matched_data():
+    bars = continuation_market()
+    assert signals(bars, {'ES': reference(bars)[1:]}, sequence_model='c2_continuation')
+    assert not signals(bars, {'ES': reference(bars)[:3]}, sequence_model='c2_continuation')
+    bars[3] = bars[3].model_copy(update={'low': 100})
+    assert not signals(bars, sequence_model='c2_continuation')
+
+
 def signals(bars, refs=None, **settings):
     return find_gxt_signals(
         bars, {"ES": reference(bars)} if refs is None else refs, interval="1h",
@@ -104,6 +137,28 @@ def test_duplicate_timestamps_rejected():
         signals([bars[0], *bars])
 
 
+@pytest.mark.parametrize("start_hour, expected", [(9, 1), (11, 1), (12, 0)])
+def test_warmup_profile_can_confirm_inside_window_but_never_before_it(start_hour, expected):
+    bars = market()
+    found, _ = find_gxt_signals(
+        bars, {"ES": reference(bars)}, interval="1h", settings=GxtSettings(),
+        tick_size=0.25, start=BASE + start_hour * HOUR_MS, end=BASE + 14 * HOUR_MS,
+    )
+    assert len(found) == expected
+    assert all(s.evidence.confirmed_at >= BASE + start_hour * HOUR_MS for s in found)
+
+
+def test_invalidation_during_warmup_still_blocks_entry():
+    bars = market()
+    bars[8] = bars[8].model_copy(update={"low": 90})
+    found, stats = find_gxt_signals(
+        bars, {"ES": reference(bars)}, interval="1h", settings=GxtSettings(),
+        tick_size=0.25, start=BASE + 10 * HOUR_MS, end=BASE + 14 * HOUR_MS,
+    )
+    assert not found
+    assert stats["invalidated_before_confirmation"] == 1
+
+
 class FakeFeed:
     def __init__(self, bars=None, mixed=False, empty_reference=False):
         self.bars = bars or market()
@@ -159,6 +214,32 @@ async def test_run_reload_trade_levels_and_saved_evidence(isolated_db):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('short', [False, True])
+async def test_continuation_simulates_and_reloads_real_trade(short, isolated_db):
+    service = BacktestService(FakeFeed(continuation_market(short)))
+    req = request(sequence_model='c2_continuation', entry_interval='1h')
+    result = await service.run(req, 'continuation')
+    assert len(result.trades) == 1
+    assert result.trades[0].entry_time == BASE+4*HOUR_MS
+    assert result.trades[0].exit_reason == 'take_profit'
+    assert result.summary.gxt.version == 'gxt-c2-continuation-v2'
+    assert (await service.load(result.id)).trades == result.trades
+
+
+@pytest.mark.asyncio
+async def test_explicit_execution_interval_overrides_display_chart(isolated_db):
+    class CheckingFeed(FakeFeed):
+        async def get_series_for_analysis(self, symbol, interval, start, end):
+            assert interval == '1h'
+            return await super().get_series_for_analysis(symbol, interval, start, end)
+    req = request(sequence_model='c2_continuation', entry_interval='1h')
+    req.interval = '4h'
+    result = await BacktestService(CheckingFeed(continuation_market())).run(req, 'entry-timeframe')
+    assert result.interval == result.configuration.interval == '1h'
+    assert result.trades
+
+
+@pytest.mark.asyncio
 async def test_gap_open_reward_risk_skips_without_retargeting(isolated_db):
     bars = market()
     bars[11] = bars[11].model_copy(update={"open": 135, "high": 138, "low": 130, "close": 134})
@@ -166,6 +247,38 @@ async def test_gap_open_reward_risk_skips_without_retargeting(isolated_db):
     assert result.trades == []
     assert result.summary.skipped_matches == 1
     assert "reward/risk" in next(iter(result.summary.gxt.skipped.values()))
+    assert "reward/risk" in result.summary.sample_size_warning
+
+
+@pytest.mark.asyncio
+async def test_incomplete_profiles_report_missing_history_instead_of_completed_zero_trades():
+    with pytest.raises(BacktestValidationError, match="Insufficient GXT history"):
+        await BacktestService(FakeFeed(market()[:7])).run(request(), "incomplete")
+
+
+@pytest.mark.asyncio
+async def test_unmatched_timestamps_report_coverage_error():
+    class MisalignedFeed(FakeFeed):
+        async def get_series_for_analysis(self, symbol, interval, start, end):
+            result = await super().get_series_for_analysis(symbol, interval, start, end)
+            if symbol == "ES":
+                result.bars = [b.model_copy(update={"time": b.time + 60_000}) for b in result.bars]
+            return result
+    with pytest.raises(BacktestValidationError, match="not synchronized"):
+        await BacktestService(MisalignedFeed()).run(request(), "misaligned")
+
+
+@pytest.mark.asyncio
+async def test_valid_zero_trade_run_explains_cross_asset_rejections(isolated_db):
+    class SameSweepFeed(FakeFeed):
+        async def get_series_for_analysis(self, symbol, interval, start, end):
+            result = await super().get_series_for_analysis(symbol, interval, start, end)
+            result.bars = [b.model_copy(update={"symbol": symbol}) for b in market()]
+            return result
+    result = await BacktestService(SameSweepFeed()).run(request(), "same-sweep")
+    assert result.trades == []
+    assert result.summary.gxt.diagnostics["no_cross_asset_divergence"] == 1
+    assert "Every sweep/reclaim profile failed" in result.summary.sample_size_warning
 
 
 @pytest.mark.asyncio

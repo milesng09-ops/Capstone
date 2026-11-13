@@ -326,6 +326,9 @@ export function ChartOverlay({
   useEffect(
     () => () => {
       if (frameRef.current) window.cancelAnimationFrame(frameRef.current)
+      // StrictMode replays effects with the same refs. A cancelled frame
+      // must not leave the scheduler permanently believing a paint is queued.
+      frameRef.current = 0
     },
     [],
   )
@@ -572,7 +575,7 @@ export function ChartOverlay({
     // with: entry in the middle, risk one side, reward the other, running the
     // length of the hold.
     const projected: ProjectedPosition[] = []
-    if (gxtEvidence) {
+    if (gxtEvidence && gxtEvidence.gap_bottom != null && gxtEvidence.gap_top != null) {
       // The gap becomes actionable only at confirmation. Never draw it as
       // available throughout the earlier 4H context.
       const left = xOfDrawing(gxtEvidence.confirmed_at)

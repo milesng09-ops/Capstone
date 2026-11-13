@@ -23,7 +23,7 @@ import type {
 } from '@/types/market'
 
 export const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+  import.meta.env.VITE_API_BASE_URL ?? ''
 ).replace(/\/$/, '')
 
 /** Stable per-tab id so the backend can enforce one backtest at a time. */
@@ -114,6 +114,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       const body = await response.json()
       detail = typeof body?.detail === 'string' ? body.detail : undefined
+      if (!detail && response.status === 422 && Array.isArray(body?.detail)) {
+        detail = body.detail
+          .filter((item: { msg?: unknown }) => typeof item?.msg === 'string')
+          .map((item: { loc?: unknown[]; msg: string }) => {
+            const field = Array.isArray(item.loc) ? item.loc.filter(part => part !== 'body').join('.') : ''
+            return field ? `${field}: ${item.msg}` : item.msg
+          }).join('; ') || undefined
+      }
     } catch {
       detail = undefined
     }

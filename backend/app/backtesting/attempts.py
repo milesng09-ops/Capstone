@@ -113,7 +113,9 @@ def describe_configuration(payload: dict) -> str:
     """
 
     if payload.get("strategy") == "gxt_research":
-        return "GXT research v1 · experimental · " + str((payload.get("gxt") or {}).get("direction", "both"))
+        gxt = payload.get('gxt') or {}
+        name = 'GXT C2 continuation v2' if gxt.get('sequence_model') == 'c2_continuation' else 'GXT research v1'
+        return name + ' · experimental · ' + str(gxt.get('direction', 'both'))
     trade = payload.get("trade") or {}
     parts: list[str] = []
 

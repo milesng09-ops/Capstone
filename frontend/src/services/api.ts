@@ -23,7 +23,7 @@ import type {
   Interval,
   ProviderStatusResponse,
 } from '@/types/market'
-import { redact, reportError } from '@/lib/errorLog'
+import { noteBackendReachable, redact, reportError } from '@/lib/errorLog'
 
 export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ?? ''
@@ -187,6 +187,9 @@ async function request<T>(path: string, init?: RequestInit, quiet: number[] = []
     throw failure
   }
 
+  // A good answer means the server is up. (Not any answer: with the backend
+  // down, the dev proxy itself replies 500.)
+  noteBackendReachable()
   if (response.status === 204) return undefined as T
   try {
     return (await response.json()) as T

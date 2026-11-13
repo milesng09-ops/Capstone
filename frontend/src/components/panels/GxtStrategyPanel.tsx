@@ -51,6 +51,13 @@ export function GxtStrategyPanel() {
           the 4H-open / 1H-C2 sequence from Garrett’s public lessons. Gap selection,
           full narrative, PSP and Strength Switch still require reviewed definitions.
         </p>
+        <ToggleField label="Use cached data only (fast)" checked={Boolean(gxt.use_cached_data_only)}
+          onChange={(use_cached_data_only) => state.updateGxt({ use_cached_data_only })} />
+        <p className="text-2xs text-muted-foreground">
+          {gxt.use_cached_data_only
+            ? 'Scans only the Massive CME candles already stored here: no requests and no waiting, but only history the chart has loaded.'
+            : "Fetches any missing history from Massive at its free-tier pace (5 requests a minute), so a long window can take minutes. If Massive refuses further requests, the run continues on the stored candles."}
+        </p>
         <SelectField label="Sequence variant" value={sequenceModel}
           options={[{ value: 'c2_continuation', label: '4H continuation / 1H C2 (lesson subset)' },
             { value: 'legacy_gap', label: 'Legacy 4H reversal + new gap hypothesis' }]}

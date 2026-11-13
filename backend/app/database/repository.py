@@ -127,7 +127,8 @@ def save_candles(
 
 
 def load_candles(
-    session: Session, symbol: str, interval: str, start: int, end: int
+    session: Session, symbol: str, interval: str, start: int, end: int,
+    *, provider: str | None = None,
 ) -> list[Candle]:
     rows = session.scalars(
         select(CandleRow)
@@ -136,6 +137,7 @@ def load_candles(
             CandleRow.interval == interval,
             CandleRow.timestamp >= start,
             CandleRow.timestamp <= end,
+            CandleRow.provider == provider if provider is not None else True,
         )
         .order_by(CandleRow.timestamp.asc())
     )

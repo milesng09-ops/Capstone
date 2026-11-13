@@ -30,6 +30,7 @@ export function ErrorLog() {
   return <aside className="pointer-events-none fixed bottom-8 right-3 z-[100] w-[min(32rem,calc(100vw-1.5rem))] text-xs" aria-label="Application errors">
     {latest && !open && <div role="alert" className="pointer-events-auto mb-2 rounded-md border border-bear bg-background p-3 shadow-xl">
       <p className="font-semibold">An error occurred · {latest.context}</p>
+      <p className="text-2xs text-muted-foreground">{ago(latest.time)}{latest.count > 1 ? ` · ${latest.count} times` : ''}</p>
       <p className="mt-1 break-words">{latest.message}</p>
       {latest.requestId && <p className="mt-1 text-muted-foreground">Reference: {latest.requestId}</p>}
       <div className="mt-2 flex gap-2">
@@ -59,4 +60,13 @@ export function ErrorLog() {
 export function ErrorLogButton() {
   const { entries, open, setOpen } = useErrorLog()
   return <Button size="sm" variant="toolbar" onClick={() => setOpen(!open)} aria-expanded={open}>Error log ({entries.length})</Button>
+}
+
+/** "just now", "3 min ago": an old error should look old. */
+function ago(iso: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))
+  if (!Number.isFinite(seconds) || seconds < 45) return 'just now'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} min ago`
+  return new Date(iso).toLocaleTimeString()
 }

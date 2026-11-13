@@ -7,6 +7,13 @@ from app.main import create_app
 from app.utils.error_logging import SafeFormatter, configure_error_log
 
 
+def test_test_suite_uses_a_separate_diagnostic_file(isolated_test_log):
+    from app.config import BACKEND_DIR, get_settings
+    from pathlib import Path
+    assert Path(get_settings().log_file) == isolated_test_log
+    assert Path(get_settings().log_file) != BACKEND_DIR / 'var/logs/backend.log'
+
+
 def test_server_error_is_visible_and_has_a_matching_private_trace(tmp_path):
     path = tmp_path/'backend.log'
     root = logging.getLogger()

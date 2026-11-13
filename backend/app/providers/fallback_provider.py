@@ -42,6 +42,7 @@ from app.providers.demo_provider import DemoProvider
 from app.providers.health import ProviderHealthRegistry, get_health_registry
 from app.providers.massive_provider import MassiveProvider
 from app.providers.yahoo_provider import YahooProvider
+from app.providers.quota_policy import cached_massive_on_limit
 from app.utils.intervals import resolve_fetch_interval
 from app.utils.timeutils import now_ms, to_ms
 
@@ -131,6 +132,24 @@ class AutomaticFallbackProvider(MarketDataProvider):
             # is the normal "just cloned the repo" path, not an error.
             names = [name for name in names if name != "massive"]
         return [name for name in names if name in self._providers]
+
+    def massive_quota_exhausted(self) -> bool:
+        """Massive itself refused us recently (HTTP 429) and its cool-off is still running.
+
+        Only the vendor's verdict counts. Our own five-a-minute pacing is
+        *not* exhaustion: a long run is simply paced, and waits for the next
+        slot while the page shows the wait. Treating a full pacing window as
+        an exhausted quota sent every GXT run larger than five requests -- any
+        run over a few weeks of 1-minute data -- straight to the cache.
+        """
+        if 'massive' not in self.chain():
+            return False
+        entry = self._registry.entry('massive')
+        return bool(
+            entry.rate_limited
+            and entry.cooldown_until_ms
+            and entry.cooldown_until_ms > int(datetime.now().timestamp() * 1000)
+        )
 
     async def close(self) -> None:
         for provider in self._providers.values():
@@ -282,6 +301,11 @@ class AutomaticFallbackProvider(MarketDataProvider):
                                 exc.retry_after_seconds if is_rate_limit else None
                             ),
                         )
+                    if name == "massive" and is_rate_limit and cached_massive_on_limit.get():
+                        # A GXT run reads Massive's own stored candles instead
+                        # of switching providers: Yahoo's prices are not the
+                        # CME series it compares against.
+                        raise
                     if position + 1 < len(chain):
                         next_provider = self._providers[chain[position + 1]]
                         self._registry.record_fallback(name, chain[position + 1], str(exc))

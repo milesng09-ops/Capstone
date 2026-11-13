@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import logging
 
 import anyio
 
@@ -16,11 +17,23 @@ from app.models.db_models import BacktestRow, PatternMatchRow, TradeRow
 from app.models.schemas import BacktestRequest, BacktestResponse, GxtRunDetails, PatternMatchOut
 from app.providers.instruments import get_instrument
 from app.services import progress
+from app.providers.base import ProviderRateLimitError
+from app.providers.quota_policy import cached_massive_on_limit
 from app.utils.intervals import DAY_MS, interval_ms
 from app.utils.timeutils import now_ms
 
+logger = logging.getLogger(__name__)
+
 
 async def run_gxt_backtest(request: BacktestRequest, candle_service) -> BacktestResponse:
+    token = cached_massive_on_limit.set(True)
+    try:
+        return await _run_gxt_backtest(request, candle_service)
+    finally:
+        cached_massive_on_limit.reset(token)
+
+
+async def _run_gxt_backtest(request: BacktestRequest, candle_service) -> BacktestResponse:
     # Local import keeps ordinary backtest loading independent of this scanner.
     from app.services.backtest_service import BacktestValidationError, _trade_out
 
@@ -51,8 +64,48 @@ async def run_gxt_backtest(request: BacktestRequest, candle_service) -> Backtest
         raise BacktestValidationError("The GXT test window must contain historical candles.")
     step = interval_ms(request.interval)
     series = {}
-    for symbol in symbols:
-        result = await candle_service.get_series_for_analysis(symbol, request.interval, start - 3 * DAY_MS, end)
+    quota_check = getattr(candle_service, 'massive_quota_exhausted', None)
+    cached_loader = getattr(candle_service, 'get_cached_series_for_analysis', None)
+    chosen = request.gxt.use_cached_data_only
+    # Cache-only is the user's choice, or Massive's own refusal (HTTP 429)
+    # mid-run. Our five-a-minute pacing is neither: a long fetch is paced and
+    # the job's progress shows the wait.
+    cached_only = chosen or bool(quota_check and quota_check())
+    if not cached_only:
+        for symbol in symbols:
+            # Another chart may spend the remaining slot during this run.
+            if quota_check and quota_check():
+                cached_only = True
+                break
+            try:
+                result = await candle_service.get_series_for_analysis(symbol, request.interval, start - 3 * DAY_MS, end)
+            except ProviderRateLimitError:
+                cached_only = True
+                break
+            if result.rate_limited:
+                cached_only = True
+                break
+            series[symbol] = result
+    if cached_only:
+        if cached_loader is None:
+            raise BacktestValidationError('Massive quota reached and no cache reader is available for this GXT run.')
+        if chosen:
+            logger.info('GXT reading stored Massive candles only, as asked: %s %s', primary, request.interval)
+        else:
+            logger.warning('GXT using cached Massive candles only after quota limit: %s %s', primary, request.interval)
+        progress.report('Reading stored Massive candles')
+        # Reload the whole group through one provenance policy; do not combine
+        # a fetched/fallback symbol with a different cached price series.
+        series = {symbol: await cached_loader(symbol, request.interval, start-3*DAY_MS, end) for symbol in symbols}
+        if any(result.provider != 'massive' or result.quality == 'demo' for result in series.values()):
+            raise BacktestValidationError('Cached-only GXT requires Massive CME Group candles for every market.')
+        if not series[primary].bars or (request.gxt.require_cross_asset and any(not r.bars for r in series.values())):
+            raise BacktestValidationError(
+                ('Cached data only: ' if chosen else 'Massive quota reached. ')
+                + 'The local CME cache lacks candles for the primary or comparison market in this window. '
+                'Load that history on the chart (or run without "cached data only") first; no trades were fabricated.'
+            )
+    for symbol, result in series.items():
         # A provider may include the forming last bar. Never simulate on it.
         series[symbol] = result.model_copy(update={
             "bars": [b for b in result.bars if start - 3 * DAY_MS <= b.time and b.time + step <= end]
@@ -88,7 +141,7 @@ async def run_gxt_backtest(request: BacktestRequest, candle_service) -> Backtest
         diagnostics["signals_beyond_limit"] = max(0, len(signals) - request.search.maximum_matches)
         signals = signals[:request.search.maximum_matches]
         continuation = request.gxt.sequence_model == 'c2_continuation'
-        details = GxtRunDetails(version='gxt-c2-continuation-v2' if continuation else 'gxt-research-v1', diagnostics=diagnostics)
+        details = GxtRunDetails(version='gxt-c2-continuation-v2' if continuation else 'gxt-research-v1', diagnostics=diagnostics, cached_only=cached_only)
         trades, matches = [], []
         previous_exit = -1
         for rank, signal in enumerate(signals, start=1):
@@ -150,6 +203,12 @@ async def run_gxt_backtest(request: BacktestRequest, candle_service) -> Backtest
         details.diagnostics = diagnostics
         quality = [f"{s}: {r.provider}, {r.quality}, {len(r.bars)} completed {request.interval} candles." for s, r in series.items()]
         quality.extend(f"{s}: {r.fallback_reason}" for s, r in series.items() if r.fallback_reason)
+        if cached_only:
+            quality.append(
+                ('CACHED-ONLY GXT (chosen): ' if chosen else 'CACHED-ONLY GXT: Massive refused further requests (HTTP 429). ')
+                + 'Only locally stored Massive CME Group prices were scanned; coverage may be incomplete. '
+                'No Yahoo, demo, interpolation or extra provider requests were used.'
+            )
         if any(r.quality == "demo" for r in series.values()):
             quality.append("Synthetic demo data: this is not evidence of market performance.")
         quality.append("Missing or shortened 4H buckets are excluded. Open trades stop at missing data and report end_of_data.")

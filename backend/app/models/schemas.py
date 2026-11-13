@@ -426,6 +426,9 @@ class GxtSettings(BaseModel):
     entry_interval: Literal["1m", "2m", "3m", "5m", "15m", "30m", "1h"] | None = None
     sequence_model: Literal["legacy_gap", "c2_continuation"] = "legacy_gap"
     require_cross_asset: bool = True
+    #: Scan only the Massive candles already stored here: no requests, so no
+    #: waiting on the five-a-minute pace. Coverage is whatever has been loaded.
+    use_cached_data_only: bool = False
     confirmation_bars: int = Field(12, ge=3, le=240)
     minimum_body_fraction: float = Field(0.5, ge=0.0, le=1.0)
     stop_buffer_ticks: int = Field(1, ge=1, le=100)
@@ -454,6 +457,7 @@ class GxtEvidence(BaseModel):
 
 
 class GxtRunDetails(BaseModel):
+    cached_only: bool = False
     version: str = "gxt-research-v1"
     status: str = "experimental_unverified"
     trained: bool = False

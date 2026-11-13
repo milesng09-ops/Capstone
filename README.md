@@ -21,6 +21,8 @@ Backend warnings, failed requests and exception traces are saved to
 override the path. Match an on-screen reference ID to the backend log when
 investigating a failure. Logged messages redact common credential fields;
 request bodies, headers and query strings are excluded from request diagnostics.
+Backend tests use a temporary diagnostic log, so intentionally simulated
+provider outages, rate limits and crashes do not appear as application failures.
 
 Two processes: a FastAPI backend on port 8000 and a Vite frontend on 5173.
 

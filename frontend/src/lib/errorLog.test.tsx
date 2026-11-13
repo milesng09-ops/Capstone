@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ErrorLog, ErrorLogButton, WorkspaceErrorBoundary } from '@/components/layout/ErrorLog'
 import { installErrorListeners, reportError, useErrorLog } from './errorLog'
 
@@ -50,4 +50,29 @@ it('keeps a visible recovery screen and error log when rendering fails', () => {
   render(<><WorkspaceErrorBoundary><Broken /></WorkspaceErrorBoundary><ErrorLog /></>)
   expect(screen.getByRole('button', { name: 'Reload workspace' })).toBeInTheDocument()
   expect(screen.getByText('Render failed')).toBeInTheDocument()
+})
+
+describe('stale notices', () => {
+  it('withdraws a "cannot reach" notice once the backend answers, but keeps it in the log', async () => {
+    const { noteBackendReachable } = await import('@/lib/errorLog')
+    useErrorLog.getState().clear()
+    reportError(new Error('Cannot reach the Market Replay Lab backend.'), 'GET /api/health', 0)
+    reportError(new Error('Insufficient GXT history.'), 'Backtest (GXT)', 422)
+    noteBackendReachable()
+    const entries = useErrorLog.getState().entries
+    expect(entries).toHaveLength(2)
+    expect(entries.find(e => e.status === 0)?.dismissed).toBe(true)
+    expect(entries.find(e => e.status === 422)?.dismissed).toBe(false)
+  })
+
+  it('brings errors back after a refresh as history, not as a new notice', async () => {
+    sessionStorage.setItem('mrl.error-log', JSON.stringify([{
+      id: 'old', time: new Date().toISOString(), context: 'GET /api/health',
+      message: 'Cannot reach the Market Replay Lab backend.', status: 0, count: 9, dismissed: false,
+    }]))
+    vi.resetModules()
+    const fresh = await import('@/lib/errorLog')
+    expect(fresh.useErrorLog.getState().entries).toEqual([expect.objectContaining({ id: 'old', count: 9, dismissed: true })])
+    sessionStorage.removeItem('mrl.error-log')
+  })
 })

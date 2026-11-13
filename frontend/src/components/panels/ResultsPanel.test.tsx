@@ -123,6 +123,14 @@ it('shows GXT rejection counts and entry failures without opening Notes', () => 
   expect(screen.getByText(/next-open reward\/risk/)).toBeInTheDocument()
 })
 
+it('clearly identifies a GXT run using quota-limited cached CME data', () => {
+  show({ ...SUMMARY, gxt: {
+    version: 'gxt-c2-continuation-v2', status: 'experimental_unverified', trained: false,
+    evidence: {}, diagnostics: {}, skipped: {}, cached_only: true,
+  } })
+  expect(screen.getByText('Cached CME data only')).toBeInTheDocument()
+})
+
 it('shows an undefined achieved ratio when no trade lost', () => {
   show({ ...SUMMARY, losses: 0, average_loser: 0, risk_reward_achieved: 0 })
   expect(screen.getByText('Achieved R:R').parentElement).toHaveTextContent('--')

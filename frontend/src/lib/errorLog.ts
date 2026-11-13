@@ -21,6 +21,11 @@ export function redact(value: string): string {
     .slice(0, 2000)
 }
 
+/*
+ * Restored entries come back dismissed: they stay in the log but never pop up
+ * again. An error from before the refresh is history, and showing it as news is
+ * how a backend that was back up still read "Cannot reach" after a reload.
+ */
 function restore(): ErrorEntry[] {
   try {
     const parsed: unknown = JSON.parse(sessionStorage.getItem(KEY) ?? '[]')
@@ -30,7 +35,7 @@ function restore(): ErrorEntry[] {
       .map(e => ({ id: e.id, time: e.time, context: redact(e.context.split('?')[0]),
         message: redact(e.message), status: typeof e.status === 'number' ? e.status : undefined,
         requestId: typeof e.requestId === 'string' ? redact(e.requestId) : undefined,
-        count: Number.isSafeInteger(e.count) && e.count > 0 ? e.count : 1, dismissed: Boolean(e.dismissed) }))
+        count: Number.isSafeInteger(e.count) && e.count > 0 ? e.count : 1, dismissed: true }))
   } catch { return [] }
 }
 function persist(entries: ErrorEntry[]) {
@@ -70,6 +75,21 @@ export function reportError(error: unknown, context: string, status?: number, re
   persist(next)
   useErrorLog.setState({ entries: next })
   if (!previous) console.error('[Market Replay Lab]', entry)
+}
+
+/**
+ * The backend answered: any "cannot reach it" notice still on screen is over.
+ *
+ * Those entries (status 0) stay in the log as a record, but the notification
+ * is withdrawn -- otherwise a blip while the server restarted kept saying the
+ * backend was down long after every request was succeeding again.
+ */
+export function noteBackendReachable() {
+  const entries = useErrorLog.getState().entries
+  if (!entries.some(entry => entry.status === 0 && !entry.dismissed)) return
+  const next = entries.map(entry => entry.status === 0 ? { ...entry, dismissed: true } : entry)
+  persist(next)
+  useErrorLog.setState({ entries: next })
 }
 
 export function installErrorListeners(): () => void {

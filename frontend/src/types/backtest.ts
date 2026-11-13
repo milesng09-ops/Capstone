@@ -237,6 +237,8 @@ export type StrategyKind = 'pattern' | 'gxt_research'
 export interface GxtSettings {
   sequence_model?: 'legacy_gap' | 'c2_continuation'
   entry_interval?: '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h' | null
+  /** Scan stored Massive candles only: instant, but limited to what was loaded. */
+  use_cached_data_only?: boolean
   direction: 'both' | 'long' | 'short'
   require_cross_asset: boolean
   confirmation_bars: number
@@ -273,6 +275,7 @@ export interface GxtEvidence {
 }
 
 export interface GxtRunDetails {
+  cached_only?: boolean
   version: string
   status: string
   trained: boolean

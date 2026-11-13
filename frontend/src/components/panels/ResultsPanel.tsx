@@ -108,6 +108,7 @@ export function ResultsPanel() {
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border py-1.5 pl-3 pr-9">
         <span className="label-caps">Results</span>
         {summary.gxt && <Badge tone="warn">GXT research · experimental</Badge>}
+        {summary.gxt?.cached_only && <Badge tone="warn" title="Massive quota reached. Scanned cached Massive CME Group candles only; history may be incomplete.">Cached CME data only</Badge>}
         <Badge tone="accent">{result.primary_symbol}</Badge>
         <Badge>{result.interval}</Badge>
         <span className="numeric text-2xs text-muted-foreground">

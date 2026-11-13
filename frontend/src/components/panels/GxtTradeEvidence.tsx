@@ -13,8 +13,11 @@ export function GxtTradeEvidence({ trade, evidence }: { trade: Trade; evidence?:
         <ol className="list-decimal space-y-1 pl-4 text-muted-foreground">
           {evidence.steps.map((step) => <li key={step}>{step}</li>)}
         </ol>
-        <p>Swept level {formatPrice(evidence.swept_level)}; confirmation gap{' '}
-          {formatPrice(evidence.gap_bottom)}–{formatPrice(evidence.gap_top)}.</p>
+        <p>Swept level {formatPrice(evidence.swept_level)}
+          {evidence.gap_bottom != null && evidence.gap_top != null && <>; confirmation gap{' '}
+            {formatPrice(evidence.gap_bottom)}–{formatPrice(evidence.gap_top)}</>}.</p>
+        {evidence.source_links?.map(link => <a key={link} href={link} target="_blank" rel="noreferrer"
+          className="block text-primary underline">Garrett lesson at the rule timestamp</a>)}
         <p>Entry {formatPrice(trade.entry_price)} · Stop {formatPrice(trade.stop_price)} · Target {formatPrice(trade.target_price)}</p>
         <p>New York entry time: {evidence.entry_session_ny}.</p>
         <p>Opposite candle bodies: {evidence.opposed_close_symbols.join(', ') || 'none'}.

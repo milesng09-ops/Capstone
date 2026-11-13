@@ -29,6 +29,7 @@ import {
   DEFAULT_SEARCH_CONFIG,
   DEFAULT_SIZING,
   DEFAULT_TRADE_RULES,
+  type BacktestJob,
   type SearchConfig,
   type SizingConfig,
   type DetectorFilters,
@@ -262,6 +263,12 @@ interface WorkspaceState {
    * which, during a run that then failed, used to lose the message.
    */
   runError: string | null
+  /**
+   * The background run in progress, as last polled: what it is loading and
+   * whether it is waiting out a provider quota. Not persisted -- a refreshed
+   * page asks the server for it again.
+   */
+  runJob: BacktestJob | null
   /** Paint the simulated trades over the candles they were taken on. */
   showTrades: boolean
   /** The trade the chart is highlighting, and whose evidence it may show. */
@@ -314,6 +321,7 @@ interface WorkspaceState {
   resetStrategy: () => void
   setActiveBacktestId: (id: string | null) => void
   setRunError: (message: string | null) => void
+  setRunJob: (job: BacktestJob | null) => void
   setShowTrades: (show: boolean) => void
   selectTrade: (id: string | null) => void
 }
@@ -656,6 +664,7 @@ export const useWorkspace = create<WorkspaceState>()(
       sizing: DEFAULT_SIZING,
       activeBacktestId: null,
       runError: null,
+      runJob: null,
       showTrades: true,
       selectedTradeId: null,
 
@@ -946,9 +955,10 @@ export const useWorkspace = create<WorkspaceState>()(
         // change of run.
         set({ activeBacktestId, selectedTradeId: null }),
       setRunError: (runError) => set({ runError }),
+      setRunJob: (runJob) => set({ runJob }),
 
       setShowTrades: (showTrades) => set({ showTrades }),
-      selectTrade: (selectedTradeId) => set({ selectedTradeId }),
+      selectTrade: (selectedTradeId) => set({ selectedTradeId, ...(selectedTradeId ? { showTrades: true } : {}) }),
     }),
     {
       name: WORKSPACE_STORAGE_KEY,

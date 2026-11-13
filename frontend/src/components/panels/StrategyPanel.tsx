@@ -22,6 +22,7 @@ import { PositionSizing } from '@/components/panels/PositionSizing'
 import { GxtStrategyPanel } from '@/components/panels/GxtStrategyPanel'
 import { NumberField, SelectField, ToggleField } from '@/components/ui/fields'
 import { Badge, Button, Disclosure, Spinner } from '@/components/ui/primitives'
+import { RunProgress } from '@/components/panels/RunProgress'
 import { StrategyStart } from '@/components/panels/StrategyStart'
 import { useChartRange } from '@/hooks/useChartRange'
 import { useBars } from '@/hooks/useMarketData'
@@ -154,7 +155,8 @@ function PatternStrategyPanel() {
   const candles = barsQuery.data?.bars ?? []
 
   const summary = useMemo(() => {
-    if (!selection || candles.length === 0) return null
+    if (!selection || selection.symbol !== primary || selection.source_interval !== interval
+      || barsQuery.isPlaceholderData || candles.length === 0) return null
     const startIndex = indexOfBar(candles, selection.start_time)
     const endIndex = indexOfBar(candles, selection.end_time)
     if (startIndex < 0 || endIndex < 0 || endIndex < startIndex) return null
@@ -177,7 +179,7 @@ function PatternStrategyPanel() {
       highest: Math.max(...slice.map((candle) => candle.high)),
       lowest: Math.min(...slice.map((candle) => candle.low)),
     }
-  }, [candles, selection])
+  }, [candles, selection, primary, interval, barsQuery.isPlaceholderData])
 
   /**
    * What the setup is, in the few words the header has room for once the
@@ -217,7 +219,7 @@ function PatternStrategyPanel() {
   const canRun = Boolean(selection && summary && !tooShort && !running)
 
   const handleRun = () => {
-    if (!selection) return
+    if (!selection || !canRun) return
     const request = buildBacktestRequest({
       selection,
       primarySymbol: primary,
@@ -892,6 +894,7 @@ function PatternStrategyPanel() {
 
       {/* ---- run: always reachable, whatever is open above ---- */}
       <section className="shrink-0 space-y-2 border-t border-border pt-2.5 mt-3">
+        <RunProgress />
         {runError && !running && (
           <p className="rounded-md border border-bear/30 bg-bear/10 p-2 text-2xs leading-relaxed text-bear">
             {runError}

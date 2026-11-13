@@ -85,15 +85,31 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # The GXT specs run the real scanner against a fixture backend
+      # (backend/tests/e2e_app.py); everything else stubs the API.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
       # Only Chromium: these tests are about this app's layout, not about
       # cross-browser behaviour, and the other two double the download.
       - name: Install Chromium
         working-directory: frontend
         run: npx playwright install --with-deps chromium
 
-      # The API is stubbed in the specs, so no backend and no provider key.
+      # No provider key: the API is stubbed, or served by the fixture backend.
       - name: Run the browser tests
         working-directory: frontend
+        env:
+          E2E_PYTHON: python
         run: npm run test:e2e
 
       - uses: actions/upload-artifact@v4

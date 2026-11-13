@@ -135,9 +135,14 @@ def anyio_backend() -> str:
 
 @pytest.fixture
 def massive_first(monkeypatch):
-    """Massive heads the chain whatever a developer's ``.env`` says."""
+    """Massive heads the chain, with Yahoo behind it, whatever ``.env`` says.
 
-    monkeypatch.setenv("DATA_PROVIDER", "massive")
+    ``massive`` is strict now (Massive only, no fallback), so the chain these
+    tests walk is ``auto`` with a key configured.
+    """
+
+    monkeypatch.setenv("DATA_PROVIDER", "auto")
+    monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
     reset_settings_cache()
     yield
     monkeypatch.undo()

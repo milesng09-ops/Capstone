@@ -39,6 +39,14 @@ const PORT = 5199
  * Playwright waits out its whole timeout probing an address nothing is on.
  */
 const HOST = `http://localhost:${PORT}`
+/*
+ * The GXT specs in backtest.spec.ts run the real scanner against a fixture
+ * backend (backend/tests/e2e_app.py). Its interpreter is the project venv --
+ * laid out differently on Windows -- unless E2E_PYTHON names one, as CI does.
+ */
+const PYTHON =
+  process.env.E2E_PYTHON ??
+  (process.platform === 'win32' ? String.raw`.venv\Scripts\python.exe` : '.venv/bin/python')
 
 export default defineConfig({
   testDir: './e2e',
@@ -62,12 +70,20 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
-  webServer: {
+  webServer: [{
     command: `npm run dev -- --port ${PORT} --strictPort`,
     url: HOST,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     stdout: 'ignore',
     stderr: 'pipe',
-  },
+  }, {
+    command: `${PYTHON} -m uvicorn e2e_app:app --app-dir tests --host 127.0.0.1 --port 8199`,
+    cwd: '../backend',
+    url: 'http://127.0.0.1:8199/test/market',
+    reuseExistingServer: false,
+    timeout: 30_000,
+    stdout: 'ignore',
+    stderr: 'pipe',
+  }],
 })

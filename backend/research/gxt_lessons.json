@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "purpose": "Source material for rule review and future supervised concept labels. Captions are not trade labels.",
+  "lessons": [
+    {
+      "video_id": "BueHY7EFUx0",
+      "title": "The GxT Model | 4H PO3 Made Mechanical",
+      "author": "Garrett",
+      "concepts": ["continuation", "reversal", "aligned_sequence"],
+      "rule_references": [
+        {"start": 86, "end": 180, "interpretation": "A new 4H candle can continue a reversal already confirmed inside the previous 4H candle; the new open falls in lower-timeframe C3."},
+        {"start": 182, "end": 265, "interpretation": "Trading reversal within the current 4H candle requires a lower-timeframe swing and a wick profile supporting expansion; otherwise wait."}
+      ]
+    },
+    {
+      "video_id": "ayW4VPUw2yk",
+      "title": "GxT | 4H Profiling",
+      "author": "Garrett",
+      "concepts": ["c2_closure", "c3_closure", "key_levels", "candle_profiles"],
+      "rule_references": [
+        {"start": 32, "end": 61, "interpretation": "A bullish C2 sweep that fails to close below C1's low confirms a reversal for C3; mirror for bearish."},
+        {"start": 143, "end": 164, "interpretation": "A C3 close above C2's body or high is a separate swing-confirmation case; it is not the C2 continuation implementation."}
+      ]
+    },
+    {
+      "video_id": "oucPinjDdlk",
+      "title": "The GxT Universal Sequence - Structured Approach",
+      "author": "Garrett",
+      "concepts": ["universal_sequence", "gap_selection", "equilibrium", "timeframe_alignment"],
+      "rule_references": [
+        {"start": 752, "end": 840, "interpretation": "Continuation uses refined gaps near higher-timeframe opening prices; the described 4H alignment uses 1H or 30m gaps."},
+        {"start": 930, "end": 968, "interpretation": "Align a lower-timeframe key-level-to-objective model with a higher-timeframe model; equilibrium and selected gaps are part of the framework."}
+      ]
+    }
+  ],
+  "implementation": {
+    "version": "gxt-c2-continuation-v2",
+    "implemented": ["closed_1h_c2_reversal_at_4h_boundary", "next_4h_open_inside_1h_c3", "causal_entry", "saved_source_timestamps"],
+    "research_choices": ["reject_both_sided_sweeps", "optional_matched_1h_sweep_divergence", "stop_beyond_1h_c2", "target_prior_4h_extreme", "minimum_reward_risk", "holding_limit"],
+    "not_implemented": ["complete_universal_sequence", "reviewed_gap_selection", "c3_variants", "small_wick_thresholds", "psp", "strength_switch", "daily_narrative"],
+    "expert_validation": false,
+    "trained_network": false
+  }
+}

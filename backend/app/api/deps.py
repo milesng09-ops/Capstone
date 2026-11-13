@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import Header
 
+from app.services.backtest_jobs import BacktestJobs, get_backtest_jobs
 from app.services.backtest_service import BacktestService, get_backtest_service
 from app.services.candle_service import CandleService, get_candle_service
 from app.services.ict_service import IctService, get_ict_service
@@ -15,6 +16,10 @@ def candle_service() -> CandleService:
 
 def backtest_service() -> BacktestService:
     return get_backtest_service()
+
+
+def backtest_jobs() -> BacktestJobs:
+    return get_backtest_jobs()
 
 
 def ict_service() -> IctService:

@@ -248,6 +248,25 @@ def providers_in_series(session: Session, symbol: str, interval: str) -> set[str
     return {row[0] for row in rows if row[0]}
 
 
+def retain_provider_cache(session: Session, provider: str) -> int:
+    """Explicit source selection must also apply to previously cached data.
+
+    Only refetchable market cache is affected; saved runs remain intact.
+    Coverage on affected series is invalidated because older merged coverage
+    may have been attributed to a different provider than its candles.
+    """
+    foreign = list(session.execute(
+        select(CandleRow.symbol, CandleRow.interval)
+        .where(CandleRow.provider != provider).distinct()
+    ))
+    for symbol, interval in foreign:
+        session.execute(delete(CacheCoverageRow).where(
+            CacheCoverageRow.symbol == symbol, CacheCoverageRow.interval == interval,
+        ))
+    session.execute(delete(CacheCoverageRow).where(CacheCoverageRow.provider != provider))
+    return int(session.execute(delete(CandleRow).where(CandleRow.provider != provider)).rowcount or 0)
+
+
 def drop_provider_candles(
     session: Session, symbol: str, interval: str, provider: str
 ) -> int:

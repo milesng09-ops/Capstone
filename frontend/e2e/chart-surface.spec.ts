@@ -425,6 +425,41 @@ test.describe("the chart's own controls while a tool is held", () => {
     await stillHolding(page, count)
   })
 
+  test('pans with the middle button over the candles, and draws nothing', async ({ page }) => {
+    const pane = await placeThenHoldTrendLine(page, 'Time marker', { x: 560, y: 120 })
+    await expect.poll(() => markerColumn(page, 120)).not.toBeNull()
+    const before = await markerColumn(page, 120)
+    const count = await drawingCount(page)
+
+    await page.mouse.move(pane.x + 500, pane.y + 150)
+    await page.mouse.down({ button: 'middle' })
+    for (let step = 1; step <= 10; step += 1) {
+      await page.mouse.move(pane.x + 500 - 20 * step, pane.y + 150)
+    }
+    await page.mouse.up({ button: 'middle' })
+
+    await expect.poll(() => markerColumn(page, 120)).not.toBe(before)
+    await stillHolding(page, count)
+  })
+
+  test('pans with Space held and a left drag, then the tool draws again', async ({ page }) => {
+    await placeThenHoldTrendLine(page, 'Time marker', { x: 560, y: 120 })
+    await expect.poll(() => markerColumn(page, 120)).not.toBeNull()
+    const before = await markerColumn(page, 120)
+    const count = await drawingCount(page)
+
+    await page.keyboard.down('Space')
+    await drag(page, 0, { x: 500, y: 150 }, { x: 300, y: 150 })
+    await page.keyboard.up('Space')
+
+    await expect.poll(() => markerColumn(page, 120)).not.toBe(before)
+    await stillHolding(page, count)
+
+    // Space released: the same drag is a shape again.
+    await drag(page, 0, { x: 440, y: 160 }, { x: 740, y: 100 })
+    await expect.poll(() => drawingCount(page)).toBe(count + 1)
+  })
+
   test('zooms with the wheel over the candles, and the tool still draws', async ({ page }) => {
     const pane = await placeThenHoldTrendLine(page, 'Time marker', { x: 560, y: 120 })
     await expect.poll(() => markerColumn(page, 120)).not.toBeNull()

@@ -1,6 +1,8 @@
 /** React Query bindings for running and reloading backtests. */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+
 
 import { api } from '@/services/api'
 import { DEFAULT_DETECTOR_FILTERS, DEFAULT_LEARNING_SETTINGS, MAX_PATTERN_MATCHES } from '@/types/backtest'
@@ -41,13 +43,14 @@ export function buildGxtRequest(params: {
   const symbols = Array.from(new Set([params.primarySymbol, ...params.symbols]))
   return {
     strategy: 'gxt_research', gxt: params.gxt, symbols,
-    primary_symbol: params.primarySymbol, interval: params.interval,
+    primary_symbol: params.primarySymbol, interval: params.gxt.entry_interval ?? params.interval,
     higher_timeframe: null, // GXT builds its own complete 4H context.
     // Stored for compatibility/history grouping. GXT has no example selection.
     selection: { start_time: start, end_time: end },
     trade: { ...params.rules, entry_type: 'next_open' },
     search: {
-      lookback_start: start, lookback_end: end, maximum_matches: params.search.maximumMatches,
+      lookback_start: start, lookback_end: end,
+      maximum_matches: Math.min(MAX_PATTERN_MATCHES, Math.max(1, Math.round(params.search.maximumMatches))),
       minimum_similarity: 0, pattern_length: null, minimum_separation_bars: null,
       search_symbols: [params.primarySymbol],
     },
@@ -240,20 +243,66 @@ export function useRunBacktest() {
 
   return useMutation({
     mutationKey: RUN_BACKTEST_MUTATION_KEY,
-    mutationFn: (request: BacktestRequest) => api.createBacktest(request),
+    mutationFn: (request: BacktestRequest) =>
+      api.runBacktest(request, (job) => useWorkspace.getState().setRunJob(job)),
     onMutate: () => {
       useWorkspace.getState().setRunError(null)
     },
-    onSuccess: (result: BacktestResult) => {
-      // Seed the cache so opening the result by id is instant.
-      queryClient.setQueryData(['backtest', result.id], result)
-      void queryClient.invalidateQueries({ queryKey: ['backtests'] })
-      useWorkspace.getState().setActiveBacktestId(result.id)
-    },
+    onSuccess: (result: BacktestResult) => showRun(queryClient, result),
     onError: (error: Error) => {
       useWorkspace.getState().setRunError(error.message || 'The backtest could not be run.')
     },
+    onSettled: () => {
+      useWorkspace.getState().setRunJob(null)
+    },
   })
+}
+
+function showRun(queryClient: QueryClient, result: BacktestResult) {
+  // Seed the cache so opening the result by id is instant.
+  queryClient.setQueryData(['backtest', result.id], result)
+  void queryClient.invalidateQueries({ queryKey: ['backtests'] })
+  // A finished run is put on screen: its trades drawn and the results
+  // panel open, so a run never lands somewhere the user has to go find.
+  const workspace = useWorkspace.getState()
+  workspace.setActiveBacktestId(result.id)
+  workspace.setShowTrades(true)
+  workspace.setResultsOpen(true)
+}
+
+/**
+ * Pick a run back up after a refresh.
+ *
+ * The tab keeps its session id across a reload, and the server kept running
+ * the job; without this the page forgot it, and the next attempt was refused
+ * as "already running" with nothing on screen to say why. Runs once per page
+ * load, through the same mutation key, so every "running" indicator and the
+ * run buttons' disabled state see it.
+ */
+export function useResumeBacktestJob() {
+  const queryClient = useQueryClient()
+  const resume = useMutation({
+    mutationKey: RUN_BACKTEST_MUTATION_KEY,
+    mutationFn: (jobId: string) =>
+      api.followBacktestJob(jobId, (job) => useWorkspace.getState().setRunJob(job)),
+    onSuccess: (result: BacktestResult) => showRun(queryClient, result),
+    onError: (error: Error) => {
+      useWorkspace.getState().setRunError(error.message || 'The backtest could not be run.')
+    },
+    onSettled: () => {
+      useWorkspace.getState().setRunJob(null)
+    },
+  })
+  const started = useRef(false)
+  useEffect(() => {
+    if (started.current) return
+    started.current = true
+    void api.currentBacktestJob().then((job) => {
+      if (job?.status !== 'running') return
+      useWorkspace.getState().setRunJob(job)
+      resume.mutate(job.id)
+    }).catch(() => { /* Unreachable backend: the request layer logged it. */ })
+  }, [resume])
 }
 
 export function useBacktestHistory() {

@@ -115,6 +115,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     environment: Literal["development", "production"] = "development"
     log_level: str = "INFO"
+    log_file: str = str(BACKEND_DIR / 'var/logs/backend.log')
 
     @property
     def resolved_database_url(self) -> str:

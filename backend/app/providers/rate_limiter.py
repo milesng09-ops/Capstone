@@ -34,6 +34,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+from app.services import progress
+
 logger = logging.getLogger(__name__)
 
 
@@ -198,6 +200,7 @@ class SlidingWindowRateLimiter:
                     ready_at - now,
                 )
                 waited = True
+                progress.waiting(self._name.capitalize(), ready_at - now, self._max_calls)
                 await asyncio.sleep(max(0.0, ready_at - now))
 
     def snapshot(self) -> tuple[int, int]:

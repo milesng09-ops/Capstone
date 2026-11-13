@@ -19,10 +19,30 @@ beforeEach(() => {
     primarySymbol: 'NQ', compareSymbols: ['ES'], interval: '1h', selection: null,
     testWindow: null, gxt: { ...DEFAULT_GXT_SETTINGS },
     rules: { ...DEFAULT_TRADE_RULES }, search: { ...DEFAULT_SEARCH_CONFIG },
+    chartSync: { ...useWorkspace.getState().chartSync, interval: true }, intervalOverrides: {},
   })
 })
 
 describe('GXT research workflow', () => {
+  it('selects the source-linked continuation subset and an independent entry timeframe', () => {
+    useWorkspace.setState({ interval: '4h', gxt: { ...DEFAULT_GXT_SETTINGS, entry_interval: '5m' } })
+    render(<GxtStrategyPanel />)
+    expect(screen.getByLabelText('Sequence variant')).toHaveValue('c2_continuation')
+    fireEvent.click(screen.getByRole('button', { name: 'Backtest GXT research' }))
+    const request = mutate.mock.calls[0][0]
+    expect(request.interval).toBe('5m')
+    expect(request.gxt.sequence_model).toBe('c2_continuation')
+  })
+  it('uses the primary pane interval when charts are unlinked', () => {
+    useWorkspace.setState({
+      interval: '4h', intervalOverrides: { NQ: '5m' },
+      chartSync: { ...useWorkspace.getState().chartSync, interval: false },
+    })
+    render(<GxtStrategyPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'Backtest GXT research' }))
+    expect(mutate.mock.calls[0][0].interval).toBe('5m')
+  })
+
   it('can run without a selected example and preserves the research identity', () => {
     render(<GxtStrategyPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Backtest GXT research' }))

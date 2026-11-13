@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -15,6 +16,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import http_exception_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
 from app.api.routes import api_router
@@ -22,11 +25,13 @@ from app.config import get_settings
 from app.database.repository import (
     repair_mixed_real_series,
     repair_mixed_series,
+    retain_provider_cache,
     upsert_instruments,
 )
 from app.database.session import init_database, session_scope
 from app.providers.instruments import list_instruments
 from app.services.candle_service import shutdown_candle_service
+from app.utils.error_logging import configure_error_log, redact
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,7 @@ def configure_logging() -> None:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
     )
+    configure_error_log(settings.log_file)
     # yfinance is noisy about individual ticker failures we already handle.
     logging.getLogger("yfinance").setLevel(logging.ERROR)
     logging.getLogger("peewee").setLevel(logging.ERROR)
@@ -65,6 +71,11 @@ async def lifespan(_app: FastAPI):
     configure_logging()
     settings = get_settings()
     init_database()
+    if settings.data_provider == "massive":
+        with session_scope() as session:
+            removed = retain_provider_cache(session, "massive")
+        if removed:
+            logger.info("Massive-only mode: invalidated %d cached candles from other sources.", removed)
 
     with session_scope() as session:
         upsert_instruments(
@@ -121,10 +132,12 @@ async def lifespan(_app: FastAPI):
         settings.data_provider,
         "set" if settings.massive_api_key_configured else "not set",
     )
-    if not settings.massive_api_key_configured and settings.data_provider in {"auto", "massive"}:
+    if not settings.massive_api_key_configured and settings.data_provider == "massive":
+        logger.warning("Massive-only mode requires MASSIVE_API_KEY. No fallback source is enabled.")
+    elif not settings.massive_api_key_configured and settings.data_provider == "auto":
         logger.info(
             "MASSIVE_API_KEY is not configured. Falling back to Yahoo Finance, "
-            "then to bundled demo data."
+            "with no synthetic fallback."
         )
 
     try:
@@ -152,14 +165,50 @@ def create_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
     )
+
+    @app.middleware('http')
+    async def request_diagnostics(request: Request, call_next):
+        request_id = uuid.uuid4().hex
+        request.state.request_id = request_id
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception('Request failed reference=%s method=%s path=%s',
+                             request_id, request.method, request.url.path)
+            response = JSONResponse(status_code=500, content={
+                'detail': 'Something went wrong on the server. Please try again.',
+            })
+        else:
+            if response.status_code >= 400:
+                logger.warning('Request rejected reference=%s method=%s path=%s status=%s',
+                               request_id, request.method, request.url.path, response.status_code)
+        response.headers['X-Request-ID'] = request_id
+        return response
 
     app.include_router(api_router)
 
+    @app.exception_handler(StarletteHTTPException)
+    async def handled_error(request: Request, exc: StarletteHTTPException):
+        if isinstance(exc.detail, str):
+            exc.detail = redact(exc.detail)
+        logger.warning('Request error reference=%s method=%s path=%s status=%s detail=%s',
+                       getattr(request.state, 'request_id', 'startup'), request.method,
+                       request.url.path, exc.status_code, exc.detail)
+        return await http_exception_handler(request, exc)
+
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
-        _request: Request, exc: RequestValidationError
+        request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        # Logged without the rejected input or body: those can carry keys.
+        details = "; ".join(f'{error["loc"]}: {error["msg"]}' for error in exc.errors())
+        logger.warning(
+            "Validation error reference=%s method=%s path=%s detail=%s",
+            getattr(request.state, "request_id", "startup"), request.method,
+            request.url.path, details,
+        )
         # FastAPI's own handler, made safe for inputs JSON cannot carry.
         return JSONResponse(
             status_code=422,

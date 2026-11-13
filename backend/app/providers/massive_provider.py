@@ -45,6 +45,7 @@ from app.providers.futures_calendar import ContractMonth, contract_segments
 from app.providers.trading_hours import empty_response_indicts_provider
 from app.providers.instruments import get_instrument, list_instruments
 from app.services.normalization import clip_to_range, normalize_candles
+from app.services import progress
 from app.utils.timeutils import now_ms, to_ms
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ MASSIVE_INTERVAL_MAP: dict[str, str] = {
     "15m": "15 min",
     "30m": "30 min",
     "1h": "1 hour",
-    "1d": "1 day",
+    "1d": "1 session",
 }
 
 #: Nanoseconds per millisecond.  Massive timestamps every bar in nanoseconds.
@@ -192,6 +193,7 @@ class MassiveProvider(MarketDataProvider):
         rows: list[dict[str, Any]] = []
         for segment in contract_segments(start_ms, end_ms, tz_name=instrument.timezone):
             ticker = contract_ticker(product, segment.contract)
+            progress.detail(f"Requesting {ticker} from Massive")
             rows.extend(
                 await self._fetch_contract_memoised(
                     ticker, resolution, segment.start_ms, segment.end_ms

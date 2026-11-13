@@ -524,3 +524,59 @@ def test_the_setup_is_read_again_when_the_history_came_from_another_provider(cli
     )
     selection_reads = [load for load in loads if load == ("NQ", 70 * hour, 75 * hour)]
     assert len(selection_reads) == 2
+@pytest.mark.parametrize("count, status", [(4, 422), (5, 201)])
+def test_pattern_http_uses_inclusive_candle_count_and_real_search(client, count, status):
+    from app.api.deps import backtest_service
+    from app.models.domain import BarsResult, Candle
+    from app.services.backtest_service import BacktestService
+
+    hour = 3_600_000
+    class Feed:
+        async def get_series_for_analysis(self, symbol, interval, start, end):
+            bars = [Candle(symbol=symbol, time=i*hour, open=100+i % 5,
+                           high=102+i % 5, low=99+i % 5, close=101+i % 5)
+                    for i in range(100) if start <= i*hour <= end]
+            return BarsResult(symbol=symbol, interval=interval, bars=bars,
+                              provider="fixture", quality="demo", cached=True, fallback_active=False)
+    service = BacktestService(Feed())
+    app.dependency_overrides[backtest_service] = lambda: service
+    try:
+        response = client.post("/api/backtests", json={
+            "primary_symbol": "NQ", "symbols": ["NQ"], "interval": "1h",
+            "selection": {"start_time": 80*hour, "end_time": (80+count-1)*hour},
+            "search": {"lookback_start": 0, "lookback_end": 99*hour, "minimum_similarity": 0},
+            "trade": {"maximum_holding_bars": 3},
+        })
+        assert response.status_code == status, response.text
+        if status == 201:
+            result = response.json()
+            assert result["trades"]
+            saved = client.get(f'/api/backtests/{result["id"]}').json()
+            assert saved["trades"] == result["trades"]
+        else:
+            assert "4 candles" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(backtest_service, None)
+
+
+def test_gxt_http_runs_real_scanner_and_reloads_warmup_trade(client):
+    from app.api.deps import backtest_service
+    from app.services.backtest_service import BacktestService
+    from test_gxt import BASE, HOUR_MS, FakeFeed, request
+
+    service = BacktestService(FakeFeed())
+    app.dependency_overrides[backtest_service] = lambda: service
+    try:
+        config = request()
+        config.search.lookback_start = BASE + 9*HOUR_MS
+        response = client.post("/api/backtests", json=config.model_dump(mode="json"))
+        assert response.status_code == 201, response.text
+        result = response.json()
+        assert len(result["trades"]) == 1
+        assert result["trades"][0]["entry_price"] == 109
+        assert result["trades"][0]["target_price"] == 140
+        saved = client.get(f'/api/backtests/{result["id"]}').json()
+        assert saved["trades"] == result["trades"]
+        assert saved["summary"]["gxt"] == result["summary"]["gxt"]
+    finally:
+        app.dependency_overrides.pop(backtest_service, None)

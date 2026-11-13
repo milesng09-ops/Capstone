@@ -71,6 +71,12 @@ export interface ChartHandle {
    * say whether the chart used it. Optional, like `plotSize`.
    */
   forwardWheel?: (event: WheelEvent) => boolean
+  /**
+   * Scroll the time axis by a pointer movement, in pixels: positive drags
+   * the candles right, toward older bars, as a drag on the chart itself does.
+   * For the overlay, which holds the pointer while a drawing tool is armed.
+   */
+  panBy?: (dx: number) => void
 }
 
 interface Options {
@@ -419,6 +425,13 @@ export function useChartInstance({
       // listens on its own root and zooms about the pointer's clientX, which
       // the copy carries; it cancels the wheel when it uses it.
       return !chart.chartElement().dispatchEvent(new WheelEvent(event.type, event))
+    },
+    panBy: (dx) => {
+      const scale = chartRef.current?.timeScale()
+      const range = scale?.getVisibleLogicalRange()
+      if (!scale || !range || !dx) return
+      const bars = dx / scale.options().barSpacing
+      scale.setVisibleLogicalRange({ from: range.from - bars, to: range.to - bars })
     },
     subscribe: (listener) => {
       listenersRef.current.add(listener)

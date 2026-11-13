@@ -75,6 +75,7 @@ from app.models.schemas import (
 )
 from app.providers.instruments import get_instrument
 from app.services.candle_service import CandleService, get_candle_service
+from app.services import progress
 from app.services.pattern_service import (
     BLOCK_GROUPS,
     BLOCK_WEIGHTS,
@@ -320,6 +321,7 @@ class BacktestService:
             # primary, but the stretch itself is what must not be scored on.
             if train_range is not None:
                 exclude = [*exclude, train_range]
+            progress.report(f"Searching {item.symbol} for similar setups")
             try:
                 windows = await anyio.to_thread.run_sync(
                     lambda item=item, exclude=exclude: find_similar_windows(
@@ -455,6 +457,9 @@ class BacktestService:
         backtest_id = str(uuid.uuid4())
         provider_name = usable[0].provider
         trade_returns = {trade.pattern_match_id: trade for trade in all_trades}
+        output_trades = [_trade_out(number, trade) for number, trade in enumerate(all_trades, start=1)]
+        for trade in output_trades:
+            trade.id = str(uuid.uuid4())
 
         def _persist() -> None:
             with session_scope() as session:
@@ -493,7 +498,7 @@ class BacktestService:
                 for number, trade in enumerate(all_trades, start=1):
                     session.add(
                         TradeRow(
-                            id=str(uuid.uuid4()),
+                            id=output_trades[number - 1].id,
                             backtest_id=backtest_id,
                             pattern_match_id=trade.pattern_match_id,
                             trade_number=number,
@@ -515,6 +520,7 @@ class BacktestService:
                         )
                     )
 
+        progress.report("Saving the run")
         await anyio.to_thread.run_sync(_persist)
 
         matches_out = [
@@ -555,7 +561,7 @@ class BacktestService:
             configuration=request,
             summary=summary,
             matches=matches_out,
-            trades=[_trade_out(index, trade) for index, trade in enumerate(all_trades, start=1)],
+            trades=output_trades,
         )
 
     # ------------------------------------------------------------------

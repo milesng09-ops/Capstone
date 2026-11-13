@@ -51,6 +51,7 @@ from app.providers.trading_hours import (
     empty_response_indicts_provider,
     has_trading_session,
 )
+from app.services import progress
 from app.services.aggregation_service import aggregate_candles, bucket_end
 from app.services.cache_service import (
     align_range,
@@ -1094,8 +1095,13 @@ class CandleService:
             chunks: list[BarsResult] = []
             cursor = start
 
+            slices = max(1, -(-(end - start) // step))
             while cursor < end:
                 chunk_end = min(cursor + step, end)
+                progress.report(
+                    f"Loading {symbol} {interval} candles",
+                    done=len(chunks), total=slices,
+                )
                 result = await self.get_bars(symbol, interval, cursor, chunk_end)
                 for candle in result.bars:
                     collected[candle.time] = candle

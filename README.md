@@ -10,7 +10,30 @@ performance.
 
 ## Running it
 
+Errors appear in the on-screen **Error log**. Open it to see timestamps,
+operations, HTTP status and server reference IDs, or download its JSON log.
+The last 100 distinct failures are kept in this browser tab's session storage;
+repeated failures are grouped. Dismissing a notification preserves its log.
+Cancelled requests are excluded. Browser failures are also logged to the console.
+
+Backend warnings, failed requests and exception traces are saved to
+`backend/var/logs/backend.log` (5 MB rotation, three backups). `LOG_FILE` can
+override the path. Match an on-screen reference ID to the backend log when
+investigating a failure. Logged messages redact common credential fields;
+request bodies, headers and query strings are excluded from request diagnostics.
+
 Two processes: a FastAPI backend on port 8000 and a Vite frontend on 5173.
+
+After installing the backend and frontend dependencies below, run **`npm run dev` from the repository root**.
+This starts both servers, waits for backend readiness, and opens the frontend
+at `http://localhost:5173`. Keep that terminal running; Ctrl+C stops both.
+Local API requests use Vite's proxy, avoiding localhost IPv4/IPv6 and CORS mismatches.
+
+For Massive CME Group futures, set `DATA_PROVIDER=massive` in `backend/.env`
+alongside `MASSIVE_API_KEY`. This mode uses Massive exclusively and invalidates
+cached prices from other sources on startup while preserving saved backtests.
+ES and NQ are CME products; YM is CBOT (also CME Group). The application
+stitches individual quarterly contracts without back-adjustment.
 
 **Requirements: Python 3.10 or newer** (3.12 recommended) and Node 18+.
 

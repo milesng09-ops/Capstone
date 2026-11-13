@@ -8,6 +8,7 @@
 
 import type {
   BacktestListItem,
+  BacktestJob,
   BacktestRequest,
   BacktestResult,
   Trade,
@@ -22,9 +23,10 @@ import type {
   Interval,
   ProviderStatusResponse,
 } from '@/types/market'
+import { redact, reportError } from '@/lib/errorLog'
 
 export const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+  import.meta.env.VITE_API_BASE_URL ?? ''
 ).replace(/\/$/, '')
 
 /**
@@ -123,6 +125,11 @@ export function describeErrorDetail(detail: unknown): string | undefined {
   return lines.length > 0 ? lines.join('; ') : undefined
 }
 
+/** How often a running backtest job is asked where it is. */
+export const JOB_POLL_MS = 1500
+/** Consecutive failed polls before the page stops trusting the connection. */
+const POLL_FAILURES_ALLOWED = 4
+
 const FRIENDLY_STATUS: Record<number, string> = {
   400: 'That request was not valid. Adjust the settings and try again.',
   404: 'The requested data could not be found.',
@@ -133,7 +140,11 @@ const FRIENDLY_STATUS: Record<number, string> = {
   503: 'Market data is temporarily unavailable. Please try again.',
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * `quiet` lists statuses that are an answer, not a fault, for this call -- a
+ * 404 from "is a backtest running in this tab?" -- and stay out of the error log.
+ */
+async function request<T>(path: string, init?: RequestInit, quiet: number[] = []): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
@@ -146,11 +157,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     })
   } catch (error) {
     if ((error as Error)?.name === 'AbortError') throw error
-    throw new ApiError(
+    const failure = new ApiError(
       'Cannot reach the Market Replay Lab backend. Check that it is running.',
       0,
       true,
     )
+    reportError(failure, `${init?.method ?? 'GET'} ${path}`, 0)
+    throw failure
   }
 
   if (!response.ok) {
@@ -162,16 +175,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       detail = undefined
     }
-    throw new ApiError(
-      detail ?? FRIENDLY_STATUS[response.status] ?? 'Something went wrong.',
+    const failure = new ApiError(
+      redact(detail ?? FRIENDLY_STATUS[response.status] ?? 'Something went wrong.'),
       response.status,
       false,
       parseRetryAfter(response),
     )
+    if (!quiet.includes(response.status)) {
+      reportError(failure, `${init?.method ?? 'GET'} ${path}`, response.status, response.headers.get('X-Request-ID') ?? undefined)
+    }
+    throw failure
   }
 
   if (response.status === 204) return undefined as T
-  return (await response.json()) as T
+  try {
+    return (await response.json()) as T
+  } catch (error) {
+    if ((error as Error)?.name === 'AbortError') throw error
+    const failure = new ApiError('The backend returned an unreadable response. Please retry.', response.status)
+    reportError(failure, `${init?.method ?? 'GET'} ${path}`, response.status, response.headers.get('X-Request-ID') ?? undefined)
+    throw failure
+  }
 }
 
 export const api = {
@@ -272,6 +296,69 @@ export const api = {
   },
 
   getBacktest: (id: string) => request<BacktestResult>(`/api/backtests/${id}`),
+
+  /** Start a backtest in the background; poll `getBacktestJob` for progress. */
+  startBacktestJob: (body: BacktestRequest) =>
+    request<BacktestJob>('/api/backtests/jobs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  getBacktestJob: (id: string) => request<BacktestJob>(`/api/backtests/jobs/${id}`),
+
+  /** Start a backtest job and follow it to the stored run. See `followBacktestJob`. */
+  runBacktest: async (body: BacktestRequest, onProgress?: (job: BacktestJob) => void) => {
+    const job = await api.startBacktestJob(body)
+    onProgress?.(job)
+    return api.followBacktestJob(job.id, onProgress)
+  },
+
+  /**
+   * Poll a background job until it ends, and return the stored run.
+   *
+   * A failed job is thrown as the error the old one-shot request gave, and put
+   * in the error log (its poll answered 200, so `request` did not). A brief
+   * network blip is ridden out; a backend that stays unreachable is reported,
+   * because a run that can no longer be followed must not look like one that
+   * is still loading.
+   */
+  followBacktestJob: async (
+    jobId: string,
+    onProgress?: (job: BacktestJob) => void,
+    pollMs = JOB_POLL_MS,
+  ): Promise<BacktestResult> => {
+    let failures = 0
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+      let job: BacktestJob
+      try {
+        job = await api.getBacktestJob(jobId)
+        failures = 0
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) throw error
+        failures += 1
+        if (failures >= POLL_FAILURES_ALLOWED) throw error
+        continue
+      }
+      onProgress?.(job)
+      if (job.status === 'succeeded' && job.backtest_id) return api.getBacktest(job.backtest_id)
+      if (job.status === 'failed') {
+        const failure = new ApiError(job.error || 'The backtest could not be completed.', job.error_status ?? 500)
+        reportError(failure, `Backtest (${job.strategy === 'gxt_research' ? 'GXT' : 'pattern'})`, job.error_status ?? undefined)
+        throw failure
+      }
+    }
+  },
+
+  /** This tab's running (else latest) job, or null when it has started none. */
+  currentBacktestJob: async (): Promise<BacktestJob | null> => {
+    try {
+      return await request<BacktestJob>('/api/backtests/jobs/current', undefined, [404])
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null
+      throw error
+    }
+  },
 
   getBacktestTrades: async (id: string) => {
     const data = await request<{ backtest_id: string; trades: Trade[] }>(

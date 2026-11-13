@@ -70,6 +70,45 @@ beforeEach(() => {
     higherTimeframe: '4h',
     selection: null,
     detectors: DEFAULT_DETECTOR_FILTERS,
+    primarySymbol: 'NQ', strategy: 'pattern',
+    chartSync: { ...useWorkspace.getState().chartSync, interval: true }, intervalOverrides: {},
+  })
+})
+
+describe('running the setup shown on the primary chart', () => {
+  const bars = Array.from({ length: 5 }, (_, i) => ({
+    symbol: 'NQ', time: 1_780_000_000_000 + i * 300_000,
+    open: 100, high: 102, low: 99, close: 101, volume: 10,
+  }))
+  function setup() {
+    useWorkspace.setState({
+      chartSync: { ...useWorkspace.getState().chartSync, interval: false },
+      intervalOverrides: { NQ: '5m' },
+      selection: { symbol: 'NQ', source_interval: '5m', start_time: bars[0].time, end_time: bars[4].time },
+      resultsOpen: false, showTrades: false,
+    })
+    useBars.mockReturnValue({ data: { bars }, isPlaceholderData: false })
+  }
+
+  it('submits the unlinked pane interval and reveals successful results', async () => {
+    setup()
+    const create = vi.spyOn(api, 'runBacktest').mockResolvedValue({ id: 'new-run' } as never)
+    try {
+      renderPanel()
+      fireEvent.click(screen.getByRole('button', { name: 'Test strategy' }))
+      await waitFor(() => expect(create).toHaveBeenCalled())
+      expect(create.mock.calls[0][0].interval).toBe('5m')
+      await waitFor(() => expect(useWorkspace.getState().activeBacktestId).toBe('new-run'))
+      expect(useWorkspace.getState().resultsOpen).toBe(true)
+      expect(useWorkspace.getState().showTrades).toBe(true)
+    } finally { create.mockRestore() }
+  })
+
+  it('does not run against previous-timeframe placeholder bars', () => {
+    setup()
+    useBars.mockReturnValue({ data: { bars }, isPlaceholderData: true })
+    renderPanel()
+    expect(screen.getByRole('button', { name: 'Test strategy' })).toBeDisabled()
   })
 })
 
@@ -309,7 +348,7 @@ describe('a setup drawn with the interval link off', () => {
   })
 
   it('runs the backtest on that interval', async () => {
-    const create = vi.spyOn(api, 'createBacktest').mockReturnValue(new Promise(() => {}))
+    const create = vi.spyOn(api, 'runBacktest').mockReturnValue(new Promise(() => {}))
     try {
       renderPanel()
       fireEvent.click(screen.getByRole('button', { name: /Test strategy/ }))
@@ -361,7 +400,7 @@ describe('a run that outlives the panel', () => {
   async function runThenRemount() {
     let settle: { resolve: (value: unknown) => void; reject: (error: Error) => void } | null =
       null
-    const create = vi.spyOn(api, 'createBacktest').mockImplementation(
+    const create = vi.spyOn(api, 'runBacktest').mockImplementation(
       () =>
         new Promise((resolve, reject) => {
           settle = { resolve, reject }

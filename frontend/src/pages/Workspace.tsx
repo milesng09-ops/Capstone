@@ -34,7 +34,7 @@ import { StrategyPanel } from '@/components/panels/StrategyPanel'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Button } from '@/components/ui/primitives'
 import { CRAMPED_QUERY, NARROW_QUERY, useMediaQuery } from '@/hooks/useMediaQuery'
-import { useBacktestResult } from '@/hooks/useBacktest'
+import { useBacktestResult, useResumeBacktestJob } from '@/hooks/useBacktest'
 import { useWorkspace, type SidePanel } from '@/store/workspace'
 import { directionClass, formatInteger, formatNumber, formatPercent } from '@/utils/format'
 import { cn } from '@/utils/cn'
@@ -55,6 +55,8 @@ const SIDEBAR_TABS: { value: SidePanel; label: string; icon: LucideIcon; hint: s
 ]
 
 export function Workspace() {
+  // A run still going on the server after a refresh is followed again.
+  useResumeBacktestJob()
   // Held in the store rather than in component state so that a workspace
   // trimmed down to the candles is still trimmed down after a reload. Closing
   // a panel you do not want, every session, is not a preference the app
@@ -368,7 +370,7 @@ function CollapsedResults({ onOpen }: { onOpen: () => void }) {
       {summary && (
         <>
           <span className="numeric text-2xs font-semibold text-foreground">
-            {formatNumber(summary.win_rate, 1)}%
+            {summary.trades_executed > 0 ? `${formatNumber(summary.win_rate, 1)}%` : 'N/A'}
           </span>
           <span className="numeric text-2xs text-muted-foreground">
             {formatInteger(summary.trades_executed)} trades

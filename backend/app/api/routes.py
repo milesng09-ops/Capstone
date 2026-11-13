@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app import __version__
-from app.api.deps import backtest_service, candle_service, ict_service, session_id
+from app.api.deps import backtest_jobs, backtest_service, candle_service, ict_service, session_id
 from app.backtesting.attempts import describe_configuration
 from app.config import get_settings
 from app.database.repository import (
@@ -25,6 +25,7 @@ from app.database.repository import (
 from app.database.session import database_health, session_scope
 from app.models.domain import ProviderStatus
 from app.models.schemas import (
+    BacktestJobResponse,
     BacktestListItem,
     BacktestListResponse,
     BacktestRequest,
@@ -43,6 +44,7 @@ from app.models.schemas import (
 from app.providers.base import ProviderRateLimitError
 from app.providers.health import get_health_registry
 from app.providers.instruments import UnknownSymbolError, get_instrument, list_instruments
+from app.services.backtest_jobs import BacktestJob, BacktestJobs
 from app.services.backtest_service import (
     BacktestBusyError,
     BacktestService,
@@ -315,23 +317,100 @@ async def create_backtest_run(
 ) -> BacktestResponse:
     try:
         return await service.run(request, caller)
-    except BacktestBusyError as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    except (
-        BacktestValidationError,
-        RequestTooLargeError,
-        UnknownSymbolError,
-        TimestampOutOfRangeError,
-    ) as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    except UnsupportedIntervalError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Backtest failed")
+        code, message = _translate_backtest_error(exc)
+        if code >= 500:
+            logger.exception("Backtest failed")
+        raise HTTPException(code, message) from exc
+
+
+def _translate_backtest_error(exc: Exception) -> tuple[int, str]:
+    """The status and the sentence a failed run is reported with.
+
+    Shared by the synchronous endpoint and background jobs, so a run reads the
+    same whichever way it was started.
+    """
+
+    if isinstance(exc, BacktestBusyError):
+        return status.HTTP_409_CONFLICT, str(exc)
+    if isinstance(
+        exc,
+        (BacktestValidationError, RequestTooLargeError, UnknownSymbolError, TimestampOutOfRangeError),
+    ):
+        return status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)
+    if isinstance(exc, UnsupportedIntervalError):
+        return status.HTTP_400_BAD_REQUEST, str(exc)
+    if isinstance(exc, ProviderRateLimitError):
+        return status.HTTP_429_TOO_MANY_REQUESTS, (
+            f"{exc} The market-data provider's quota ran out part-way through. "
+            "Wait a minute and run it again; candles already fetched are cached."
+        )
+    return (
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        "The backtest could not be completed. Check the server log for details.",
+    )
+
+
+def _job_out(job: BacktestJob) -> BacktestJobResponse:
+    p = job.progress
+    return BacktestJobResponse(
+        id=job.id, status=job.status, strategy=job.strategy,
+        stage=p.stage, detail=p.detail, done=p.done, total=p.total,
+        started_at=job.started_at, updated_at=p.updated_at, finished_at=job.finished_at,
+        waiting_until=p.waiting_until, backtest_id=job.backtest_id,
+        error=job.error, error_status=job.error_status,
+    )
+
+
+@api_router.post(
+    "/backtests/jobs",
+    response_model=BacktestJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["backtesting"],
+)
+async def start_backtest_job(
+    request: BacktestRequest,
+    service: Annotated[BacktestService, Depends(backtest_service)],
+    jobs: Annotated[BacktestJobs, Depends(backtest_jobs)],
+    caller: Annotated[str, Depends(session_id)],
+) -> BacktestJobResponse:
+    """Start a backtest and answer at once; poll the job for its progress."""
+
+    running = jobs.current(caller)
+    if running is not None and running.status == "running":
         raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            "The backtest could not be completed. Check the server log for details.",
-        ) from exc
+            status.HTTP_409_CONFLICT,
+            "A backtest is already running for this session. Wait for it to finish before starting another.",
+        )
+    return _job_out(jobs.start(request, caller, service, _translate_backtest_error))
+
+
+@api_router.get("/backtests/jobs/current", response_model=BacktestJobResponse, tags=["backtesting"])
+async def current_backtest_job(
+    jobs: Annotated[BacktestJobs, Depends(backtest_jobs)],
+    caller: Annotated[str, Depends(session_id)],
+) -> BacktestJobResponse:
+    """This tab's running job, else its latest one -- how a refreshed page finds its run."""
+
+    job = jobs.current(caller)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No backtest has been started in this tab.")
+    return _job_out(job)
+
+
+@api_router.get("/backtests/jobs/{job_id}", response_model=BacktestJobResponse, tags=["backtesting"])
+async def get_backtest_job(
+    job_id: str,
+    jobs: Annotated[BacktestJobs, Depends(backtest_jobs)],
+    caller: Annotated[str, Depends(session_id)],
+) -> BacktestJobResponse:
+    job = jobs.get(job_id, caller)
+    if job is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "That backtest job is no longer known to the server (it may have restarted). Run it again.",
+        )
+    return _job_out(job)
 
 
 @api_router.get("/backtests", response_model=BacktestListResponse, tags=["backtesting"])

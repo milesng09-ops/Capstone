@@ -1,4 +1,86 @@
-# GXT research v1
+# GXT research models
+
+## Source-linked C2 continuation (v2)
+
+The default UI variant is **4H continuation / 1H C2 (lesson subset)**. The API
+continues to interpret requests without `gxt.sequence_model` as legacy v1, so
+saved configurations do not silently change meaning. Select `legacy_gap` to
+reproduce the old scanner.
+
+Original sources, public English captions retrieved and author metadata
+verified against YouTube on November 13, 2026:
+
+- [4H PO3 Made Mechanical, 1:26–3:00](https://www.youtube.com/watch?v=BueHY7EFUx0&t=86):
+  a new 4H candle opens into the third lower-timeframe candle after an already
+  confirmed reversal inside the prior 4H candle.
+- [4H Profiling, 0:32–1:01](https://www.youtube.com/watch?v=ayW4VPUw2yk&t=32):
+  the C2 sweep/reclaim swing confirmation used by this subset.
+- [Universal Sequence, 12:32 onward](https://www.youtube.com/watch?v=oucPinjDdlk&t=752):
+  the broader continuation framework also requires gap selection, equilibrium
+  and alignment. Those discretionary components are **not** fully captured by v2.
+
+Executable v2 subset:
+
+1. Build complete 1H and 4H candles from closed execution candles. The existing
+   18:00 New York 4H grid is retained. No missing-candle interpolation.
+2. The last two 1H candles before a new 4H open are C1 and C2. Long: C2 takes
+   C1's low and closes above that low; short mirrors. Reject both-side sweeps
+   as an explicit ambiguity filter. A same-direction candle body is not required.
+3. Optionally require exact-time 1H sweep divergence on the comparison group.
+   This is an additional research filter, not a claim of verified PSP.
+4. Enter the next 4H open, also the start of 1H C3. A future FVG is not required.
+   Stop beyond 1H C2, target the prior 4H extreme, apply configured reward/risk,
+   fees, slippage, overlap, missing-history and holding rules. These exact
+   execution choices are our research interpretation and need expert review.
+5. Save source timestamps, confirmation time, rule version and execution
+   evidence with every signal. Data after confirmation cannot change that signal.
+
+`gxt.entry_interval` optionally selects execution candles independently of the
+displayed chart. Null preserves chart-based behavior. 4H context and 1H swing
+confirmation remain fixed in v2; the entry interval controls actual fills and
+holding-bar duration. Changing it is a strategy change, not a cosmetic view.
+
+The incident run `fbe1e93d-1f7f-4aa6-9186-3c789c206f4a` used legacy v1 on 1H:
+2,986 NQ candles, 40 long profiles, 33 cross-asset rejections, seven remaining
+profiles and no confirmed gap entries. It completed a scan; it did not estimate
+recognition accuracy. Empty-run win rate now displays N/A.
+
+Validation run `b877c777-9679-4938-9861-d5af0af6db9d` kept that original window,
+long-only direction, cross-asset requirement, costs and holding settings, and
+changed only to `c2_continuation`. Through the real API and Massive feed it
+confirmed 17 candidates, executed 11 trades and skipped six for entry reward/risk.
+The result was 36.3636% wins and -0.2455% simulated compounded net return.
+This is a small development comparison, not an independent holdout or proof of
+model fidelity or profitability. The strategy was developed after inspecting
+the zero-trade run and must be evaluated on separate periods.
+
+## Local lesson library and further learning
+
+`research/gxt_lessons.json` records source IDs, rule timestamps, interpretations
+and unresolved model components. Captions and the local index are stored under
+gitignored `data/research/gxtradez/youtube`. Caption text is teaching material;
+it is never automatically promoted into a labeled market setup or training truth.
+
+From `backend`:
+
+```bash
+.venv/bin/pip install -r requirements-research.txt
+.venv/bin/python -m scripts.collect_gxt_youtube collect
+.venv/bin/python -m scripts.collect_gxt_youtube search --query "continuation candle three"
+```
+
+Collection fetches public captions and author metadata only. It stops with a
+clear error on unavailable captions or unexpected authors and preserves old
+captures. The initial three lessons produced 182 timestamped text chunks.
+This is a source library, not a trained neural network. The required next
+training inputs are reviewed positive/negative chart examples for each concept,
+with pre-entry data cutoffs, followed by chronological holdout evaluation.
+
+The supplied playlist `PLYfFh6w3dnU0` resolves to ten third-party course
+reuploads. Its metadata was inspected; it was not treated as verified first-party
+instruction. This implementation uses Garrett's own public uploads above.
+
+## Legacy v1
 
 Select **Backtest model → GXT research (experimental)** in the strategy panel.
 Use a 1m, 2m, 3m, 5m, 15m, 30m or 1h chart; enable ES/NQ/YM comparison
@@ -7,6 +89,11 @@ a lookback, and click **Backtest GXT research**. No example selection is needed.
 Trades appear as labelled position boxes. Click one for saved sequence evidence,
 the confirmation gap, entry, stop and target. Results → Notes explains data
 coverage and rejection counts; Matches explains signals skipped at entry.
+Zero-trade runs show rejection counts and entry failures directly in Trades.
+Missing complete 4H pairs or entirely unsynchronized comparisons produce an
+explicit data error instead of a misleading successful zero-trade result.
+Selecting a trade loads its historical candles even outside the current live
+chart range. The entry timeframe follows the primary pane when charts are unlinked.
 
 ## What this implements
 
@@ -60,7 +147,9 @@ choices, pending review against the user's chosen Garrett lessons.
 Only the primary symbol trades; comparison markets supply context. Scan up to
 the user's requested end, clamped to now, and discard still-forming candles.
 Fetch three calendar days of warmup; warmup cannot generate entries before the
-test start. Test the earliest N signals, currently at most 25 (the existing app
+test start. An unexpired profile formed in warmup may confirm inside the test
+window; invalidations and earlier entry attempts still consume that opportunity.
+Test the earliest N signals, currently at most 25 (the existing app
 cap), including skipped signals. This is a capped sample, not an exhaustive
 test of the period. Diagnostics disclose signals beyond the limit.
 
@@ -115,3 +204,7 @@ Tests cover mirrored long/short signals, prefix stability and future mutation,
 closed 4H data, DST, missing synchronized candles, pre-entry invalidation,
 next-open reward/risk, conservative stop/target ambiguity, missing-data exits,
 source mixing, prevention of misleading weight training, and save/reload.
+The HTTP tests also run the actual scanner and simulator through POST/GET.
+`cd frontend && npm run test:e2e` exercises submission, persistence, empty-run
+diagnostics and historical chart display against an isolated fixture backend.
+Install its browser once with `npx playwright install chromium`.

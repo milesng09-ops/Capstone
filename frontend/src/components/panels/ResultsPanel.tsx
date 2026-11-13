@@ -142,6 +142,16 @@ export function ResultsPanel() {
         {tab === 'equity' && <EquityCurve points={summary.equity_curve} />}
         {tab === 'trades' && (
           <>
+            {summary.gxt && result.trades.length === 0 && (
+              <div className="min-h-0 flex-1 space-y-3 overflow-auto" role="status">
+                <Section title="Why this GXT run has no trades"
+                  items={Object.entries(summary.gxt.diagnostics).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`)} />
+                {Object.keys(summary.gxt.skipped).length > 0 && <Section title="Entry checks"
+                  items={Array.from(new Set(Object.values(summary.gxt.skipped)))} />}
+                <Section title="Data checked" items={summary.data_quality} />
+                <p className="text-2xs text-muted-foreground">A completed scan can legitimately find no eligible trades. Verify the window, data coverage and rejection counts before changing strategy settings.</p>
+              </div>
+            )}
             {/*
              * Capped and scrollable: the evidence for a trade is several
              * paragraphs, and in a short results pane it otherwise pushed
@@ -157,7 +167,7 @@ export function ResultsPanel() {
                 />}
               </div>
             )}
-            <div className="min-h-0 flex-1">
+            {!(summary.gxt && result.trades.length === 0) && <div className="min-h-0 flex-1">
               <TradesTable
                 ruleBased={Boolean(summary.gxt)}
                 trades={result.trades}
@@ -165,7 +175,7 @@ export function ResultsPanel() {
                 onSelect={selectTrade}
                 interval={result.interval}
               />
-            </div>
+            </div>}
           </>
         )}
         {tab === 'matches' && <MatchesList result={result} />}
@@ -180,7 +190,8 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
   // summary defaults both bounds to zero. Rendering that as "0-0% at 95%"
   // would state a certainty about an old result that was never computed, so
   // the band and its caption are simply left off.
-  const hasInterval = summary.win_rate_high > summary.win_rate_low
+  const hasTrades = summary.trades_executed > 0
+  const hasInterval = hasTrades && summary.win_rate_high > summary.win_rate_low
 
   return (
     <div className="grid shrink-0 grid-cols-2 gap-2 p-3 sm:grid-cols-4 xl:grid-cols-8">
@@ -188,7 +199,7 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
         <p className="label-caps">Win rate</p>
         <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <p className="numeric text-2xl font-semibold leading-none">
-            {formatNumber(summary.win_rate, 1)}%
+            {hasTrades ? `${formatNumber(summary.win_rate, 1)}%` : 'N/A'}
           </p>
           {hasInterval && (
             <p className="numeric text-2xs text-muted-foreground">
@@ -207,7 +218,7 @@ function Headline({ summary }: { summary: NonNullable<BacktestResult['summary']>
           />
         )}
         <p className="mt-1 text-2xs text-muted-foreground">
-          {formatInteger(summary.wins)}W / {formatInteger(summary.losses)}L
+          {hasTrades ? `${formatInteger(summary.wins)}W / ${formatInteger(summary.losses)}L` : 'No trades executed — win rate is undefined'}
           {summary.breakeven > 0 && ` / ${formatInteger(summary.breakeven)}F`}
         </p>
       </div>

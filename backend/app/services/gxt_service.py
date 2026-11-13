@@ -15,6 +15,7 @@ from app.database.session import session_scope
 from app.models.db_models import BacktestRow, PatternMatchRow, TradeRow
 from app.models.schemas import BacktestRequest, BacktestResponse, GxtRunDetails, PatternMatchOut
 from app.providers.instruments import get_instrument
+from app.services import progress
 from app.utils.intervals import DAY_MS, interval_ms
 from app.utils.timeutils import now_ms
 
@@ -22,6 +23,11 @@ from app.utils.timeutils import now_ms
 async def run_gxt_backtest(request: BacktestRequest, candle_service) -> BacktestResponse:
     # Local import keeps ordinary backtest loading independent of this scanner.
     from app.services.backtest_service import BacktestValidationError, _trade_out
+
+    # Explicit execution timeframe is independent of the chart being viewed.
+    # Null preserves the interpretation of historical/API v1 requests.
+    if request.gxt.entry_interval is not None:
+        request = request.model_copy(update={"interval": request.gxt.entry_interval})
 
     if request.interval not in ALLOWED_INTERVALS:
         raise BacktestValidationError("GXT research requires 1m, 2m, 3m, 5m, 15m, 30m or 1h candles.")
@@ -68,10 +74,21 @@ async def run_gxt_backtest(request: BacktestRequest, candle_service) -> Backtest
             interval=request.interval, settings=request.gxt,
             tick_size=get_instrument(primary).tick_size, start=start, end=end,
         )
+        if not diagnostics.get("eligible_4h_pairs"):
+            raise BacktestValidationError(
+                "Insufficient GXT history: no adjacent complete 4H candles are available "
+                "for this test window. Load a longer window with continuous 1m–1h data."
+            )
+        if request.gxt.require_cross_asset and not diagnostics.get("synchronized_4h_pairs"):
+            raise BacktestValidationError(
+                "GXT comparison data is not synchronized: no complete C1/C2 pair has "
+                "matching timestamps on every enabled market. Check comparison data coverage."
+            )
         # A cap selects the earliest signals, never the most profitable ones.
         diagnostics["signals_beyond_limit"] = max(0, len(signals) - request.search.maximum_matches)
         signals = signals[:request.search.maximum_matches]
-        details = GxtRunDetails(diagnostics=diagnostics)
+        continuation = request.gxt.sequence_model == 'c2_continuation'
+        details = GxtRunDetails(version='gxt-c2-continuation-v2' if continuation else 'gxt-research-v1', diagnostics=diagnostics)
         trades, matches = [], []
         previous_exit = -1
         for rank, signal in enumerate(signals, start=1):
@@ -140,10 +157,12 @@ async def run_gxt_backtest(request: BacktestRequest, candle_service) -> Backtest
         summary = compute_metrics(
             trades, total_matches=len(matches), skipped_matches=len(details.skipped), data_quality=quality,
             extra_assumptions=[
-                "GXT research v1 is an experimental rule hypothesis, not a trained network or verified implementation of Garrett's complete model.",
+                "GXT research is an experimental rule hypothesis, not a trained network or verified implementation of Garrett's complete model.",
                 "Complete 4H candles use the exchange session grid (18:00 New York). Only closed candles can confirm a signal.",
-                "C2 single-side sweep/reclaim → optional synchronized sweep divergence → lower-timeframe displacement gap → next open.",
-                "Stop is beyond C2; target is the opposite C1 extreme. A failed entry is skipped, never retargeted.",
+                ('Closed 1H C2 reversal → optional matched 1H sweep divergence → next 4H open inside 1H C3.' if continuation
+                 else '4H C2 sweep/reclaim → optional synchronized sweep divergence → lower-timeframe displacement gap → next open.'),
+                ('Research execution choices: stop beyond 1H C2; target prior 4H extreme. These numerical execution rules are not a full transcription of Garrett’s method.' if continuation
+                 else 'Stop is beyond 4H C2; target is the opposite C1 extreme. A failed entry is skipped, never retargeted.'),
                 "PSP and Strength Switch are not confirmed by this version; opposite candle bodies are recorded only as observations.",
                 f"At most the earliest {request.search.maximum_matches} confirmed signals are tested. No similarity ranking or selected-example exclusion applies.",
                 "No random-entry baseline or GXT recognition accuracy has been measured for this strategy.",
@@ -151,7 +170,17 @@ async def run_gxt_backtest(request: BacktestRequest, candle_service) -> Backtest
         )
         summary.assumptions = [a for a in summary.assumptions if not a.startswith("Historical matches are found")]
         if not trades:
-            summary.sample_size_warning = "No trades passed the experimental sequence and execution rules. Inspect the GXT diagnostics and skipped signals."
+            if details.skipped:
+                reasons = list(dict.fromkeys(details.skipped.values()))
+                explanation = " ".join(reasons)
+            elif not diagnostics.get("sweep_reclaim_profiles"):
+                explanation = f"No {'1H C2 continuation' if continuation else '4H sweep/reclaim'} profile passed the selected direction and candle rules."
+            elif diagnostics.get("cross_asset_rejected", 0) == diagnostics.get("sweep_reclaim_profiles"):
+                explanation = "Every sweep/reclaim profile failed the cross-asset check; see the missing-data and divergence counts."
+            else:
+                explanation = ('No eligible next-4H-open entry passed the timing and data checks.' if continuation else
+                               'No in-window displacement-gap entry confirmed before expiry, invalidation or the session cutoff.')
+            summary.sample_size_warning = "No GXT trades executed. " + explanation
         summary.gxt = details
         output_trades = [_trade_out(i, t) for i, t in enumerate(trades, 1)]
         for trade in output_trades:
@@ -159,6 +188,7 @@ async def run_gxt_backtest(request: BacktestRequest, candle_service) -> Backtest
         return summary, matches, output_trades
 
     try:
+        progress.report("Scanning for GXT signals and simulating trades")
         summary, matches, trades = await anyio.to_thread.run_sync(compute)
     except ValueError as exc:
         raise BacktestValidationError(str(exc)) from exc
@@ -181,5 +211,6 @@ async def run_gxt_backtest(request: BacktestRequest, candle_service) -> Backtest
                 session.add(PatternMatchRow(backtest_id=result.id, **match.model_dump(exclude={"outcome", "net_return"})))
             for trade in trades:
                 session.add(TradeRow(backtest_id=result.id, **trade.model_dump()))
+    progress.report("Saving the run")
     await anyio.to_thread.run_sync(persist)
     return result

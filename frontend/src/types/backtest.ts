@@ -235,6 +235,8 @@ export interface LearnedWeightsSummary {
 export type StrategyKind = 'pattern' | 'gxt_research'
 
 export interface GxtSettings {
+  sequence_model?: 'legacy_gap' | 'c2_continuation'
+  entry_interval?: '1m' | '2m' | '3m' | '5m' | '15m' | '30m' | '1h' | null
   direction: 'both' | 'long' | 'short'
   require_cross_asset: boolean
   confirmation_bars: number
@@ -251,6 +253,8 @@ export const DEFAULT_GXT_SETTINGS: GxtSettings = {
 }
 
 export interface GxtEvidence {
+  sequence_model?: string
+  source_links?: string[]
   direction: 'long' | 'short'
   profile: string
   context_start: number
@@ -260,8 +264,8 @@ export interface GxtEvidence {
   swept_level: number
   stop_price: number
   target_price: number
-  gap_bottom: number
-  gap_top: number
+  gap_bottom: number | null
+  gap_top: number | null
   reference_symbols: string[]
   opposed_close_symbols: string[]
   entry_session_ny: string
@@ -511,4 +515,27 @@ export interface BacktestFormState {
   search: SearchConfig
   detectors: DetectorFilters
   learning: LearningSettings
+}
+
+/**
+ * A backtest running on the server in the background. Progress fields are the
+ * latest report from the data layer: which market is loading, how many of its
+ * slices are done, and whether a provider's quota is being waited out.
+ */
+export interface BacktestJob {
+  id: string
+  status: 'running' | 'succeeded' | 'failed'
+  strategy: string
+  stage: string
+  detail: string | null
+  done: number | null
+  total: number | null
+  /** Epoch seconds, as the server keeps them. */
+  started_at: number
+  updated_at: number
+  finished_at: number | null
+  waiting_until: number | null
+  backtest_id: string | null
+  error: string | null
+  error_status: number | null
 }

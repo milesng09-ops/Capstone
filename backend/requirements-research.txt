@@ -1,0 +1,3 @@
+# Optional lesson collection tools; not required by the trading API.
+-r requirements.txt
+youtube-transcript-api==1.2.5

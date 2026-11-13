@@ -370,6 +370,10 @@ export function ChartOverlay({
    * travelled, and it was a pan; still, and it was a click.
    */
   const pressRef = useRef<{ x: number; y: number; tradeId: string | null } | null>(null)
+  /** A pan in progress with a tool held; see `handlePointerDown`. */
+  const panRef = useRef<{ pointerId: number; lastX: number } | null>(null)
+  /** Space is down: a left drag pans instead of drawing while it is. */
+  const spaceHeldRef = useRef(false)
 
   /**
    * One repaint per animation frame, however many events asked for it.
@@ -398,6 +402,8 @@ export function ChartOverlay({
   useEffect(
     () => () => {
       if (frameRef.current) window.cancelAnimationFrame(frameRef.current)
+      // StrictMode replays effects with the same refs. A cancelled frame
+      // must not leave the scheduler permanently believing a paint is queued.
       frameRef.current = 0
     },
     [],
@@ -689,7 +695,7 @@ export function ChartOverlay({
     // with: entry in the middle, risk one side, reward the other, running the
     // length of the hold.
     const projected: ProjectedPosition[] = []
-    if (gxtEvidence) {
+    if (gxtEvidence && gxtEvidence.gap_bottom != null && gxtEvidence.gap_top != null) {
       // The gap becomes actionable only at confirmation. Never draw it as
       // available throughout the earlier 4H context.
       const left = xOfDrawing(gxtEvidence.confirmed_at)
@@ -877,6 +883,44 @@ export function ChartOverlay({
     canvas.addEventListener('wheel', forward, { passive: false })
     return () => canvas.removeEventListener('wheel', forward)
   }, [drawingActive, handle])
+
+  /*
+   * Space held with a tool armed turns a left drag into a pan (see
+   * `handlePointerDown`). Typing a space into a field is left alone, and the
+   * key is otherwise kept from scrolling the page or pressing a focused button.
+   */
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !drawingActive) return
+    const editable = (target: EventTarget | null) =>
+      target instanceof HTMLElement &&
+      (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
+    const down = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || editable(event.target)) return
+      event.preventDefault()
+      if (spaceHeldRef.current) return
+      spaceHeldRef.current = true
+      if (!panRef.current) canvas.style.cursor = 'grab'
+    }
+    const up = (event: KeyboardEvent) => {
+      if (event.code !== 'Space') return
+      spaceHeldRef.current = false
+      if (!panRef.current) canvas.style.cursor = 'crosshair'
+    }
+    const reset = () => {
+      spaceHeldRef.current = false
+      if (!panRef.current) canvas.style.cursor = 'crosshair'
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', reset)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', reset)
+      reset()
+    }
+  }, [drawingActive])
 
   // ---- hit-testing -----------------------------------------------------
   const hitTestAt = useCallback(
@@ -1305,7 +1349,22 @@ export function ChartOverlay({
   }, [drag, drawingActive, hover])
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    if (event.button !== 0 || !drawingActive) return
+    if (!drawingActive) return
+    // Panning with a tool held: the middle button, or the left with Space
+    // down. The canvas has the pointer while a tool is armed, so the chart
+    // could not be dragged at all -- the view had to be set up before picking
+    // the tool, and re-picked after every pan. Plain drags stay with the tool:
+    // they draw. An armed first point survives the pan, so the second can be
+    // placed somewhere that was off screen.
+    if (event.button === 1 || (event.button === 0 && spaceHeldRef.current)) {
+      if (!handle.panBy) return
+      event.preventDefault()
+      event.currentTarget.setPointerCapture(event.pointerId)
+      panRef.current = { pointerId: event.pointerId, lastX: event.clientX }
+      event.currentTarget.style.cursor = 'grabbing'
+      return
+    }
+    if (event.button !== 0) return
     // A press on an axis is not a point on the chart. With a tool held the
     // overlay takes the whole pane, axes included, and a level begun there
     // was stored below the candles where nothing draws it.
@@ -1353,6 +1412,12 @@ export function ChartOverlay({
   }
 
   const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const pan = panRef.current
+    if (pan && pan.pointerId === event.pointerId) {
+      handle.panBy?.(event.clientX - pan.lastX)
+      pan.lastX = event.clientX
+      return
+    }
     const gesture = pendingRef.current
     if (!gesture) return
     const resolved = pointAt(event.clientX, event.clientY, !isRangeTool(tool) && snapToSwings)
@@ -1385,6 +1450,11 @@ export function ChartOverlay({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
+    if (panRef.current && panRef.current.pointerId === event.pointerId) {
+      panRef.current = null
+      event.currentTarget.style.cursor = spaceHeldRef.current ? 'grab' : 'crosshair'
+      return
+    }
     if (!pendingRef.current) return
     updatePending(null)
     onGestureComplete(false)
@@ -1393,6 +1463,11 @@ export function ChartOverlay({
   const handlePointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (panRef.current && panRef.current.pointerId === event.pointerId) {
+      panRef.current = null
+      event.currentTarget.style.cursor = spaceHeldRef.current ? 'grab' : 'crosshair'
+      return
     }
     // Only the button that places points can finish a shape. A right-click
     // while one is armed is for the menu, and it used to drop the second

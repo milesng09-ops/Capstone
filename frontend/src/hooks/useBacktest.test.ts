@@ -307,7 +307,7 @@ describe('running a backtest', () => {
    */
   function deferred() {
     let settle: { resolve: (value: BacktestResult) => void; reject: (error: Error) => void }
-    const sent = vi.spyOn(api, 'createBacktest').mockImplementation(
+    const sent = vi.spyOn(api, 'runBacktest').mockImplementation(
       () =>
         new Promise<BacktestResult>((resolve, reject) => {
           settle = { resolve, reject }

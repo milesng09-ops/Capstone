@@ -90,6 +90,19 @@ def build(providers: dict[str, MarketDataProvider]) -> AutomaticFallbackProvider
 # The chain itself
 # --------------------------------------------------------------------------
 class TestChains:
+    @pytest.mark.asyncio
+    async def test_explicit_massive_never_falls_back_to_yahoo(self, monkeypatch):
+        from app.config import reset_settings_cache
+        monkeypatch.setenv("DATA_PROVIDER", "massive")
+        reset_settings_cache()
+        massive = StubProvider("massive", error=ProviderUnavailableError("offline", provider="massive"))
+        yahoo = StubProvider("yahoo")
+        provider = build({"massive": massive, "yahoo": yahoo})
+        assert provider.chain() == ["massive"]
+        with pytest.raises(Exception, match="All providers failed"):
+            await provider.fetch("ES", "1h", START, END)
+        assert yahoo.calls == 0
+
     @pytest.mark.parametrize("requested", ["auto", "massive", "yahoo"])
     def test_no_automatic_chain_can_reach_demo_data(self, requested):
         assert "demo" not in CHAINS[requested]

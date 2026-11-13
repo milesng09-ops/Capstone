@@ -74,6 +74,10 @@ child.on('error', (error) => {
   process.exit(1)
 })
 
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => child.kill(signal))
+}
+
 // A signalled exit has no code; report it as a failure rather than as the
 // clean zero that `code ?? 0` would produce.
 child.on('exit', (code, signal) => {
